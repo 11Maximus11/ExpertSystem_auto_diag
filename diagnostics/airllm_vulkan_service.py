@@ -427,7 +427,7 @@ class AirLLMVulkanOrchestrator:
         return len(done_files) >= 33
 
     def ensure_model_loaded(self, settings_obj=None):
-        """Ленивая потокобезопасная инициализация AirLLM-модели и мультимодального процессора."""
+        """Потокобезопасная инициализация AirLLM-модели в GPU VRAM и мультимодального процессора."""
         if self._airllm_model is not None and self._processor is not None:
             return self._airllm_model, self._processor
 
@@ -444,7 +444,7 @@ class AirLLMVulkanOrchestrator:
             import transformers
 
             max_seq = getattr(settings_obj, "context_window_tokens", 4096) or 4096
-            logger.info(f"[AirLLM] Загрузка модели из {local_dir} (шарды: {shards_dir})...")
+            logger.info(f"[AirLLM] Загрузка модели из {local_dir} в видеопамять GPU (шарды: {shards_dir})...")
             self._processor = transformers.AutoProcessor.from_pretrained(
                 str(local_dir),
                 trust_remote_code=True,
@@ -456,6 +456,37 @@ class AirLLMVulkanOrchestrator:
             )
             self._loaded_model_id = "Qwen/Qwen3.5-4B"
             return self._airllm_model, self._processor
+
+    def preload_model_on_startup(self, async_load: bool = False) -> None:
+        """
+        Предзагружает модель Qwen/Qwen3.5-4B (резидентные слои в VRAM + закреплённые в pin_memory DMA-слои)
+        непосредственно при старте сервиса, чтобы первый запрос пользователя обрабатывался мгновенно без холодного старта.
+        """
+        if os.environ.get("AUTODIAG_FAST_TEST") == "1" or os.environ.get("SKIP_AIRLLM_PRELOAD") == "1":
+            return
+        if self._airllm_model is not None and self._processor is not None:
+            return
+
+        def _do_preload():
+            t0 = time.perf_counter()
+            try:
+                print("[AirLLM Startup] Предзагрузка модели Qwen/Qwen3.5-4B в видеопамять GPU...", flush=True)
+                model, _ = self.ensure_model_loaded(None)
+                elapsed = time.perf_counter() - t0
+                res_layers = getattr(model, "resident_gpu_layers_count", 0)
+                str_layers = getattr(model, "streamed_layers_count", 0)
+                print(
+                    f"[AirLLM Startup] Модель предзагружена в GPU VRAM за {elapsed:.1f} с "
+                    f"(в VRAM закреплено слоёв: {res_layers}/32 | DMA-стриминг: {str_layers} слоёв).",
+                    flush=True,
+                )
+            except Exception as exc:
+                logger.error(f"[AirLLM Startup] Ошибка предзагрузки модели при старте сервиса: {exc}")
+
+        if async_load:
+            threading.Thread(target=_do_preload, name="airllm-startup-preload", daemon=True).start()
+        else:
+            _do_preload()
 
     def get_hardware_and_model_telemetry(self, settings_obj) -> Dict[str, Any]:
         """Возвращает живую телеметрию по GPU / Vulkan, шардам AirLLM и базе знаний."""

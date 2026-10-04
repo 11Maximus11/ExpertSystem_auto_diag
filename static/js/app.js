@@ -468,10 +468,10 @@
         const messages = data.messages || [];
         if (messages.length === 0) {
           feed.innerHTML = `
-            <div class="msg-card msg-assistant">
+            <div class="msg-card msg-assistant" data-welcome-placeholder="1">
               <div class="msg-header">
                 <span class="msg-role-badge">AUTODIAG PRO AI • ГОТОВ К ДИАГНОСТИКЕ</span>
-                <span>VULKAN + AIRLLM</span>
+                <span>QWEN 3.5-VL + AIRLLM GPU</span>
               </div>
               <div class="diagnosis-verdict-title">
                 <span>Интеллектуальный стенд автодиагностики и пошагового ремонта</span>
@@ -505,8 +505,61 @@
   }
 
   // =========================================================================
-  // 4. Отправка диагностического запроса
+  // 4. Отправка диагностического запроса (Мгновенное сообщение + Анимация генерации)
   // =========================================================================
+  function createPendingGenerationCard() {
+    const wrapper = document.createElement('article');
+    wrapper.className = 'msg-card msg-assistant msg-generating-card msg-card-enter';
+    wrapper.innerHTML = `
+      <div class="msg-header">
+        <span class="msg-role-badge">AUTODIAG PRO AI • ГЕНЕРАЦИЯ ОТВЕТА (QWEN 3.5-VL + AIRLLM GPU)</span>
+        <span class="generating-timer-pill" data-gen-timer>0.0 с</span>
+      </div>
+      <div class="generating-main-row">
+        <div class="neural-wave" aria-hidden="true">
+          <span></span><span></span><span></span><span></span>
+        </div>
+        <div style="min-width:0; flex:1;">
+          <div class="generating-stage-title" data-gen-title>Нейросеть AirLLM анализирует ваш запрос...</div>
+          <div class="generating-stage-sub" data-gen-stage>Этап 1/4: Сверка с базой знаний и словарём OBD-II (RAG + Телеметрия)...</div>
+        </div>
+      </div>
+      <div class="generating-progress-track">
+        <div class="generating-progress-bar"></div>
+      </div>
+      <div class="skeleton-lines" aria-hidden="true">
+        <div class="skeleton-line w-90"></div>
+        <div class="skeleton-line w-75"></div>
+        <div class="skeleton-line w-60"></div>
+      </div>
+    `;
+
+    const startTs = performance.now();
+    const timerEl = wrapper.querySelector('[data-gen-timer]');
+    const stageEl = wrapper.querySelector('[data-gen-stage]');
+
+    const intervalId = setInterval(() => {
+      const elapsedSec = (performance.now() - startTs) / 1000;
+      if (timerEl) {
+        timerEl.textContent = `${elapsedSec.toFixed(1)} с`;
+      }
+      if (stageEl) {
+        if (elapsedSec < 1.5) {
+          stageEl.textContent = 'Этап 1/4: Сверка с базой знаний и словарём OBD-II (RAG + Телеметрия)...';
+        } else if (elapsedSec < 4.5) {
+          stageEl.textContent = 'Этап 2/4: Анализ контекста в резидентных слоях GPU VRAM (Qwen3.5-4B)...';
+        } else if (elapsedSec < 11.0) {
+          stageEl.textContent = 'Этап 3/4: Послойный PCIe DMA-стриминг весов AirLLM и синтез ответа...';
+        } else {
+          stageEl.textContent = 'Этап 4/4: Валидация JSON Schema и сборка чеклиста ремонта...';
+        }
+      }
+    }, 100);
+
+    wrapper._stopAnimation = () => clearInterval(intervalId);
+    return wrapper;
+  }
+
   async function sendDiagnosticQuery(overrideQuery) {
     const queryInput = el('queryInput');
     const vehInput = el('vehicleInfoInput');
@@ -523,29 +576,45 @@
       return;
     }
 
+    // Сохраняем снимок данных запроса для мгновенной отрисовки сообщения пользователя в чате
+    const codesSnapshot = [...state.stagedCodes];
+    const filesSnapshot = [...state.stagedFiles];
+    const shotsSnapshot = [...state.stagedCameraShots];
+    const voiceBlobSnapshot = state.stagedVoiceBlob;
+    const voiceTranscriptSnapshot = state.stagedVoiceTranscript;
+
     const sendBtn = el('btnSendQuery');
-    if (sendBtn) sendBtn.disabled = true;
+    const origSendBtnHtml = sendBtn ? sendBtn.innerHTML : '';
+    if (sendBtn) {
+      sendBtn.disabled = true;
+      sendBtn.innerHTML = `
+        <svg class="spin-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+          <path d="M21 12a9 9 0 1 1-6.219-8.56"/>
+        </svg>
+        <span>Генерация...</span>
+      `;
+    }
 
     const formData = new FormData();
     formData.append('session_id', state.currentSessionId);
     formData.append('query', queryText);
     formData.append('vehicle_info', vehInput ? vehInput.value.trim() : '');
-    formData.append('dtc_codes', JSON.stringify(state.stagedCodes));
+    formData.append('dtc_codes', JSON.stringify(codesSnapshot));
 
-    if (state.stagedCameraShots.length > 0) {
-      formData.append('camera_image_b64', state.stagedCameraShots[0]);
+    if (shotsSnapshot.length > 0) {
+      formData.append('camera_image_b64', shotsSnapshot[0]);
     }
-    state.stagedFiles.forEach((file) => {
+    filesSnapshot.forEach((file) => {
       formData.append('attachments', file);
     });
-    if (state.stagedVoiceBlob) {
-      formData.append('attachments', state.stagedVoiceBlob, 'voice_input.webm');
+    if (voiceBlobSnapshot) {
+      formData.append('attachments', voiceBlobSnapshot, 'voice_input.webm');
     }
-    if (state.stagedVoiceTranscript) {
-      formData.append('voice_transcript', state.stagedVoiceTranscript);
+    if (voiceTranscriptSnapshot) {
+      formData.append('voice_transcript', voiceTranscriptSnapshot);
     }
 
-    // Очищаем поле ввода сразу для высокой отзывчивости
+    // Очищаем поле ввода и панель вложений сразу
     if (typeof overrideQuery !== 'string' && queryInput) {
       queryInput.value = '';
     }
@@ -556,6 +625,70 @@
     state.stagedVoiceTranscript = '';
     renderStagingBar();
 
+    // 1. Мгновенно отображаем сообщение пользователя в чате (Optimistic UI), чтобы оно не исчезало
+    const tempObjectUrls = [];
+    const optimisticAttachments = [];
+    shotsSnapshot.forEach((b64, idx) => {
+      optimisticAttachments.push({
+        type: 'image',
+        url: b64,
+        name: `Снимок камеры #${idx + 1}`,
+      });
+    });
+    filesSnapshot.forEach((f) => {
+      if (f.type && f.type.startsWith('image/')) {
+        const objUrl = URL.createObjectURL(f);
+        tempObjectUrls.push(objUrl);
+        optimisticAttachments.push({ type: 'image', url: objUrl, name: f.name });
+      } else {
+        optimisticAttachments.push({ type: 'document', name: f.name });
+      }
+    });
+    if (voiceBlobSnapshot) {
+      optimisticAttachments.push({
+        type: 'audio',
+        mode: 'GGML/Audio',
+        transcript: voiceTranscriptSnapshot || 'Голосовой запрос',
+      });
+    }
+
+    const nowTimeStr = new Date().toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    const optimisticUserMsg = {
+      id: `temp-user-${Date.now()}`,
+      role: 'user',
+      content: queryText || voiceTranscriptSnapshot || '[Мультимодальный диагностический запрос]',
+      created_at: nowTimeStr,
+      dtc_codes: codesSnapshot,
+      attachments: optimisticAttachments,
+    };
+
+    const feed = el('chatFeed');
+    const arFeed = el('arAssistantFeed');
+    let optimisticUserEl = null;
+    let pendingAssistantEl = null;
+    let pendingArEl = null;
+
+    if (feed) {
+      const welcomePlaceholder = feed.querySelector('[data-welcome-placeholder="1"]');
+      if (welcomePlaceholder) {
+        welcomePlaceholder.remove();
+      }
+      optimisticUserEl = renderMessageElement(optimisticUserMsg);
+      optimisticUserEl.classList.add('msg-card-enter');
+      feed.appendChild(optimisticUserEl);
+
+      // 2. Сразу добавляем анимированную карточку генерации ответа ИИ
+      pendingAssistantEl = createPendingGenerationCard();
+      feed.appendChild(pendingAssistantEl);
+      feed.scrollTop = feed.scrollHeight;
+    }
+
+    if (arFeed && document.body.classList.contains('ar-glasses-mode')) {
+      pendingArEl = createPendingGenerationCard();
+      arFeed.innerHTML = '';
+      arFeed.appendChild(pendingArEl);
+    }
+
     try {
       const resp = await fetch('/api/ask/', {
         method: 'POST',
@@ -563,6 +696,14 @@
       });
       const data = await resp.json();
       if (!resp.ok) {
+        if (pendingAssistantEl) {
+          pendingAssistantEl._stopAnimation?.();
+          pendingAssistantEl.remove();
+        }
+        if (pendingArEl) {
+          pendingArEl._stopAnimation?.();
+          pendingArEl.remove();
+        }
         alert(data.error || 'Ошибка выполнения диагностики');
         return;
       }
@@ -571,14 +712,32 @@
         updateWorkerUi('aborted_for_priority', null, null, true);
       }
 
-      const feed = el('chatFeed');
       if (feed) {
         if (data.user_message) {
-          feed.appendChild(renderMessageElement(data.user_message));
+          const confirmedUserEl = renderMessageElement(data.user_message);
+          if (optimisticUserEl && optimisticUserEl.parentNode === feed) {
+            feed.replaceChild(confirmedUserEl, optimisticUserEl);
+          } else {
+            feed.appendChild(confirmedUserEl);
+          }
         }
         if (data.assistant_message) {
-          feed.appendChild(renderMessageElement(data.assistant_message));
+          const assistantEl = renderMessageElement(data.assistant_message);
+          assistantEl.classList.add('msg-card-enter');
+          if (pendingAssistantEl) {
+            pendingAssistantEl._stopAnimation?.();
+            if (pendingAssistantEl.parentNode === feed) {
+              feed.replaceChild(assistantEl, pendingAssistantEl);
+            } else {
+              feed.appendChild(assistantEl);
+            }
+          } else {
+            feed.appendChild(assistantEl);
+          }
           bindTaskCheckboxes(feed);
+          if (pendingArEl) {
+            pendingArEl._stopAnimation?.();
+          }
           updateInspectorAndArFromAssistant(data.assistant_message);
         }
         feed.scrollTop = feed.scrollHeight;
@@ -588,8 +747,30 @@
       setTimeout(pollWorkerStatus, 250);
     } catch (err) {
       console.error('Ошибка отправки запроса:', err);
+      if (pendingAssistantEl) {
+        pendingAssistantEl._stopAnimation?.();
+        pendingAssistantEl.innerHTML = `
+          <div class="msg-header">
+            <span class="msg-role-badge" style="color:var(--status-crit);">ОШИБКА СОЕДИНЕНИЯ С СЕРВЕРОМ</span>
+          </div>
+          <div style="font-size:0.86rem; color:var(--text-secondary);">
+            Не удалось получить ответ от сервера диагностики. Проверьте, что сервер запущен, и повторите попытку.
+          </div>
+        `;
+      }
+      if (pendingArEl) {
+        pendingArEl._stopAnimation?.();
+      }
     } finally {
-      if (sendBtn) sendBtn.disabled = false;
+      tempObjectUrls.forEach((u) => {
+        try {
+          URL.revokeObjectURL(u);
+        } catch (_) {}
+      });
+      if (sendBtn) {
+        sendBtn.disabled = false;
+        if (origSendBtnHtml) sendBtn.innerHTML = origSendBtnHtml;
+      }
     }
   }
 
@@ -1017,12 +1198,12 @@
     // Сохранение настроек Vulkan / AirLLM / Междиалоговой памяти
     const saveSettings = async () => {
       const payload = {
-        llm_backend: el('settingBackend')?.value || 'hybrid_auto',
-        airllm_model_id: el('settingAirllmModel')?.value || 'Qwen/Qwen2.5-32B-Instruct',
-        airllm_compression: el('settingAirllmCompression')?.value || '4bit',
-        gguf_model_rel_path: el('settingGgufPath')?.value || 'models/gemma-4-12b-it-Q4_K_M.gguf',
-        vulkan_gpu_layers: Number(el('settingGpuLayers')?.value || 37),
-        context_window_tokens: Number(el('settingCtxTokens')?.value || 2048),
+        llm_backend: el('settingBackend')?.value || 'airllm_vulkan',
+        airllm_model_id: el('settingAirllmModel')?.value || 'models/Qwen3.5-4B',
+        airllm_compression: el('settingAirllmCompression')?.value || 'none',
+        gguf_model_rel_path: el('settingGgufPath')?.value || 'models/Qwen3.5-4B',
+        vulkan_gpu_layers: Number(el('settingGpuLayers')?.value || -1),
+        context_window_tokens: Number(el('settingCtxTokens')?.value || 4096),
         voice_mode: el('settingVoiceMode')?.value || 'auto',
         cross_dialog_memory_enabled: Boolean(el('chkCrossDialogMemory')?.checked),
         global_memory_summary: el('globalSummaryTextarea')?.value || '',

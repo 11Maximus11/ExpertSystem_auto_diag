@@ -79,9 +79,9 @@ class DiagnosticStructuredResponse(BaseModel):
     Используется для GBNF-грамматики llama.cpp, OpenAI Structured Outputs и валидации AirLLM.
     """
 
-    response_type: Literal["diagnosis", "followup", "visual_inspection"] = Field(
+    response_type: Literal["diagnosis", "followup", "visual_inspection", "general"] = Field(
         default="diagnosis",
-        description="Тип ответа: первичная диагностика, ответ на уточняющий вопрос или осмотр по фото",
+        description="Тип ответа: первичная диагностика, уточняющий вопрос, осмотр по фото или общая консультация",
     )
     summary_title: str = Field(..., description="Краткий заголовок вердикта экспертной системы")
     mentor_reply: str = Field(

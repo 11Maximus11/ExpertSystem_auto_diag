@@ -1,23 +1,28 @@
 #!/usr/bin/env bash
+# Скрипт быстрого запуска AutoDiag Pro AI на Linux (Bash)
+# Полностью на базе AirLLM (Qwen/Qwen3.5-4B Vision-Language) + адаптивное ускорение GPU / Vulkan
+
 set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-export PYTHONUTF8=1
 export GGML_VULKAN=1
 export LLAMA_VULKAN=1
-export MAX_VRAM_MB=8192
-export LLM_CTX_SIZE=2048
-export AIRLLM_COMPRESSION=4bit
+export VULKAN_DEVICE="${VULKAN_DEVICE:-0}"
+export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True,max_split_size_mb:256"
+export LLM_CTX_SIZE="${LLM_CTX_SIZE:-4096}"
 
-if [ ! -x ".venv/bin/python" ]; then
-    echo "[SETUP] Создание виртуального окружения .venv..."
+if [ ! -d ".venv" ]; then
+    echo "[AutoDiag] Создание виртуального окружения .venv..."
     python3 -m venv .venv
-    .venv/bin/pip install -r requirements.txt
+    ./.venv/bin/pip install -r requirements.txt
 fi
 
-echo "[MIGRATE] Применение миграций БД Django..."
-.venv/bin/python manage.py migrate
+echo "[AutoDiag] Проверка послойных шардов модели AirLLM (Qwen/Qwen3.5-4B)..."
+./.venv/bin/python prepare_airllm_model.py
 
-echo "[START] Запуск AutoDiag Pro AI на http://127.0.0.1:8000 (Режим AR: http://127.0.0.1:8000/ar/)"
-.venv/bin/python manage.py runserver 0.0.0.0:8000
+echo "[AutoDiag] Применение миграций..."
+./.venv/bin/python manage.py migrate --noinput
+
+echo "[AutoDiag] Запуск Django + AirLLM GPU на http://0.0.0.0:8000/ (AR RayNeo: http://0.0.0.0:8000/ar/)"
+exec ./.venv/bin/python manage.py runserver 0.0.0.0:8000

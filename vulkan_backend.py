@@ -96,9 +96,18 @@ def _parse_vulkaninfo_summary() -> Dict[str, Any]:
 
 def _detect_vram_mb() -> tuple[int, int]:
     """
-    Определяет общий и свободный объем видеопамяти (в МБ).
-    По умолчанию ориентируется на целевой профиль 8192 МБ (8 ГБ VRAM).
+    Определяет общий и свободный объем видеопамяти (в МБ) в реальном времени.
+    Приоритет: прямой опрос видеокарты через PyTorch GPU runtime -> nvidia-smi -> профиль окружения.
     """
+    try:
+        import torch  # type: ignore
+
+        if torch.cuda.is_available():
+            free_b, total_b = torch.cuda.mem_get_info(0)
+            return int(total_b // (1024 * 1024)), int(free_b // (1024 * 1024))
+    except Exception:
+        pass
+
     default_total = int(os.environ.get("MAX_VRAM_MB", "8192"))
     default_free = int(os.environ.get("FREE_VRAM_MB", "6800"))
 
@@ -129,12 +138,13 @@ def _detect_vram_mb() -> tuple[int, int]:
 def compute_optimal_vulkan_layers(
     model_path: Optional[Path] = None,
     vram_free_mb: int = 6800,
-    ctx_size: int = 2048,
-    total_layers: int = 42,
+    ctx_size: int = 4096,
+    total_layers: int = 36,
 ) -> int:
     """
-    Рассчитывает безопасное количество слоев для выгрузки в Vulkan на 8 ГБ VRAM,
-    чтобы избежать переполнения видеопамяти (OOM) при активном контексте.
+    Рассчитывает оптимальное количество резидентных слоев GPU для AirLLM и Vulkan,
+    оставляя гарантированный запас видеопамяти под окно контекста (KV-cache) и буфер подгрузки слоев.
+    Работает динамически для любого объема VRAM (4 ГБ, 6 ГБ, 8 ГБ, 12 ГБ, 24 ГБ).
     """
     env_layers = os.environ.get("VULKAN_GPU_LAYERS")
     if env_layers is not None:
@@ -144,22 +154,29 @@ def compute_optimal_vulkan_layers(
             pass
 
     if model_path and model_path.exists():
-        size_mb = model_path.stat().st_size / (1024 * 1024)
+        if model_path.is_dir():
+            size_mb = sum(f.stat().st_size for f in model_path.rglob("*.safetensors")) / (1024 * 1024)
+            if size_mb < 100:
+                size_mb = 6200.0
+        else:
+            size_mb = model_path.stat().st_size / (1024 * 1024)
     else:
-        size_mb = 6800.0  # ~7 ГБ для Q4_K_M 12B
+        size_mb = 6200.0
 
-    kv_cache_mb = max(384.0, (ctx_size / 2048.0) * 512.0)
-    usable_vram_mb = max(1024.0, vram_free_mb - kv_cache_mb - 450.0)
+    # Запас под KV-кэш окна контекста + пиковый буфер одного стримингового слоя AirLLM
+    kv_cache_mb = max(512.0, (ctx_size / 4096.0) * 768.0)
+    streaming_headroom_mb = 650.0
+    usable_vram_mb = max(512.0, vram_free_mb - kv_cache_mb - streaming_headroom_mb)
 
     if usable_vram_mb >= size_mb:
-        return -1  # Все слои помещаются в память Vulkan
+        return total_layers
 
-    ratio = min(0.95, max(0.15, usable_vram_mb / size_mb))
-    return max(8, int(total_layers * ratio))
+    ratio = min(0.95, max(0.10, usable_vram_mb / max(1.0, size_mb)))
+    return max(4, int(total_layers * ratio))
 
 
 def get_vulkan_status(model_path: Optional[Path] = None) -> VulkanDeviceInfo:
-    """Возвращает полный статус подсистемы Vulkan и параметры видеокарты."""
+    """Возвращает полный статус подсистемы Vulkan / GPU и параметры видеопамяти."""
     lib_ok = _check_vulkan_shared_library()
     vk_summary = _parse_vulkaninfo_summary()
     total_mb, free_mb = _detect_vram_mb()
@@ -167,17 +184,28 @@ def get_vulkan_status(model_path: Optional[Path] = None) -> VulkanDeviceInfo:
     devices: List[Dict[str, str]] = vk_summary.get("devices", [])
     primary = devices[0] if devices else {}
 
-    device_name = primary.get("deviceName", os.environ.get("VULKAN_DEVICE_NAME", "Vulkan Compatible GPU (8GB Profile)"))
+    device_name = primary.get("deviceName", "")
+    if not device_name:
+        try:
+            import torch  # type: ignore
+
+            if torch.cuda.is_available():
+                device_name = torch.cuda.get_device_name(0)
+        except Exception:
+            pass
+    if not device_name:
+        device_name = os.environ.get("VULKAN_DEVICE_NAME", "Vulkan Compatible GPU")
+
     api_version = primary.get("apiVersion", vk_summary.get("instance_version", "1.3+"))
     driver_info = primary.get("driverInfo", primary.get("driverName", "System Vulkan ICD"))
     device_type = primary.get("deviceType", "PHYSICAL_DEVICE_TYPE_DISCRETE_GPU")
     device_idx = int(os.environ.get("VULKAN_DEVICE", "0"))
 
-    ctx_size = int(os.environ.get("LLM_CTX_SIZE", "2048"))
+    ctx_size = int(os.environ.get("LLM_CTX_SIZE", "4096"))
     if model_path is None:
-        default_gguf = BASE_DIR / "models" / "gemma-4-12b-it-Q4_K_M.gguf"
-        if default_gguf.exists():
-            model_path = default_gguf
+        default_airllm = BASE_DIR / "models" / "airllm_shards"
+        if default_airllm.exists():
+            model_path = default_airllm
 
     rec_layers = compute_optimal_vulkan_layers(
         model_path=model_path,
@@ -209,42 +237,41 @@ def get_vulkan_status(model_path: Optional[Path] = None) -> VulkanDeviceInfo:
 
 def init_vulkan_environment(model_path: Optional[Path] = None, verbose: bool = True) -> VulkanDeviceInfo:
     """
-    Активирует переменные окружения для работы llama.cpp / ggml / PyTorch через Vulkan
-    и отключает жесткую привязку к проприетарному стеку CUDA.
+    Активирует переменные окружения Vulkan и GPU-управления памятью для AirLLM.
     """
     os.environ.setdefault("GGML_VULKAN", "1")
     os.environ.setdefault("LLAMA_VULKAN", "1")
     os.environ.setdefault("VULKAN_DEVICE", "0")
     os.environ.setdefault("GGML_VK_VISIBLE_DEVICES", os.environ.get("VULKAN_DEVICE", "0"))
-    # Ограничение буфера под 8 ГБ видеопамяти
-    os.environ.setdefault("MAX_VRAM_MB", "8192")
-    os.environ.setdefault("LLM_CTX_SIZE", "2048")
+    os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True,max_split_size_mb:256")
+    os.environ.setdefault("LLM_CTX_SIZE", "4096")
 
     status = get_vulkan_status(model_path=model_path)
 
     if verbose:
         if status.available:
             print(
-                f"[VULKAN] Ускорение Vulkan активно: {status.device_name} "
-                f"(API {status.api_version}, Драйвер {status.driver_info}) | "
+                f"[VULKAN + AirLLM GPU] Активно: {status.device_name} "
+                f"(Vulkan API {status.api_version}, Драйвер {status.driver_info}) | "
                 f"VRAM: {status.vram_free_mb}/{status.vram_total_mb} МБ | "
-                f"Рекомендуемые слои GPU: {status.recommended_gpu_layers} | Окно контекста: {status.recommended_ctx_size}"
+                f"Резидентные слои GPU: {status.recommended_gpu_layers} | Окно контекста: {status.recommended_ctx_size}"
             )
         else:
-            print("[VULKAN] Библиотека Vulkan не обнаружена, используется программный конвейер CPU / AirLLM.")
+            print("[VULKAN] Библиотека Vulkan не обнаружена, используется конвейер CPU / AirLLM.")
 
     return status
 
 
-def get_torch_device(prefer_vulkan: bool = True) -> str:
+def get_torch_device(prefer_gpu: bool = True) -> str:
     """
-    Определяет устройство для PyTorch без использования CUDA (приоритет Vulkan, затем CPU,
-    чтобы не занимать 8 ГБ видеопамяти вспомогательными моделями во время работы основной LLM).
+    Возвращает устройство максимального аппаратного ускорения для AirLLM / PyTorch.
     """
     try:
         import torch  # type: ignore
 
-        if prefer_vulkan and hasattr(torch.backends, "vulkan") and torch.backends.vulkan.is_available():
+        if prefer_gpu and torch.cuda.is_available():
+            return "cuda:0"
+        if prefer_gpu and hasattr(torch.backends, "vulkan") and torch.backends.vulkan.is_available():
             return "vulkan"
     except Exception:
         pass

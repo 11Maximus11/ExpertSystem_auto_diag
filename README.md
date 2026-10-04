@@ -1,18 +1,20 @@
-# AutoDiag Pro AI — Экспертная ИИ-система автодиагностики и пошагового ремонта (Django + Vulkan + AirLLM + RayNeo AR HUD)
+# AutoDiag Pro AI — Экспертная ИИ-система автодиагностики и пошагового ремонта (Django + AirLLM Qwen3.5 + Adaptive GPU VRAM + RayNeo AR HUD)
 
 **AutoDiag Pro AI** — полнофункциональная кроссплатформенная экспертная система для автомастерских, диагностов и автовладельцев, выполняющая комплексную диагностику неисправностей автомобилей по описанию симптомов, кодам ошибок OBD-II (DTC), логам сканеров, голосовым запросам и фотографиям узлов/приборной панели с выдачей пошаговых интерактивных инструкций по ремонту.
+
+Система полностью автономна (**без зависимости от Ollama или внешних серверов `llama-server`**) и работает напрямую через официальный послойный движок **[AirLLM](https://github.com/lyogavin/airllm)** (`AirLLMQwen3_5`) с современной мультимодальной моделью **`Qwen/Qwen3.5-4B`** (`Qwen3_5ForConditionalGeneration`) и адаптивным управлением видеопамятью GPU.
 
 ---
 
 ## Содержание
 1. [Ключевые возможности и архитектура](#1-ключевые-возможности-и-архитектура)
 2. [Структура проекта и относительные пути](#2-структура-проекта-и-относительные-пути)
-3. [Аппаратное ускорение Vulkan (вместо CUDA) под 8 ГБ VRAM](#3-аппаратное-ускорение-vulkan-вместо-cuda-под-8-гб-vram)
-4. [Послойный инференс мощных моделей через AirLLM](#4-послойный-инференс-мощных-моделей-через-airllm)
+3. [Автономный движок AirLLM (`AirLLMQwen3_5`) и модель `Qwen/Qwen3.5-4B`](#3-автономный-движок-airllm-airllmqwen3_5-и-модель-qwenqwen35-4b)
+4. [Адаптивное управление GPU VRAM и ускорение Vulkan/CUDA](#4-адаптивное-управление-gpu-vram-и-ускорение-vulkancuda)
 5. [Фоновый воркер выжимки контекста и междиалоговая память (Zero-Wait Preemption)](#5-фоновый-воркер-выжимки-контекста-и-междиалоговая-память-zero-wait-preemption)
 6. [Строгий JSON-формат ответов и Function Calling](#6-строгий-json-формат-ответов-и-function-calling)
 7. [Task-Friendly ответы: блок инвентаря и пошаговые чекбоксы задач](#7-task-friendly-ответы-блок-инвентаря-и-пошаговые-чекбоксы-задач)
-8. [Мультимодальный ввод: словарь БД, камера, документы и голос (Direct Audio / GGML)](#8-мультимодальный-ввод-словарь-бд-камера-документы-и-голос-direct-audio--ggml)
+8. [Мультимодальный ввод: словарь БД, камера, документы и голос](#8-мультимодальный-ввод-словарь-бд-камера-документы-и-голос)
 9. [Режим для AR-очков типа RayNeo (`/ar/`)](#9-режим-для-ar-очков-типа-rayneo-ar)
 10. [Mobile-First эргономика, PWA и Desktop-стенд](#10-mobile-first-эргономика-pwa-и-desktop-стенд)
 11. [Быстрый старт на Windows и Linux](#11-быстрый-старт-на-windows-и-linux)
@@ -35,7 +37,7 @@
 ┌─────────────────────────────────────────▼─────────────────────────────────────────┐
 │                         БЭКЕНД DJANGO (autodiag_project)                          │
 │  ┌──────────────────────────────┐   ┌──────────────────────────────────────────┐  │
-│  │ Вытесняемый воркер контекста │   │ Оркестратор ИИ + Function Calling        │  │
+│  │ Вытесняемый воркер контекста │   │ Оркестратор AirLLM + Function Calling    │  │
 │  │ (diagnostics/context_worker) │   │ (diagnostics/airllm_vulkan_service.py)   │  │
 │  │ • Фоновая выжимка диалога    │   │ • Строгая валидация Pydantic + JSONSchema│  │
 │  │ • Междиалоговая память       │   │ • Инструменты: lookup_dtc_code,          │  │
@@ -48,11 +50,11 @@
         ┌──────────────────────────────────────────────────┼────────────────────┐
         ▼                                                  ▼                    ▼
 ┌──────────────────────────────┐  ┌───────────────────────────────┐  ┌──────────────────────┐
-│ Гибридное ядро RAG (engine)  │  │ AirLLM Layer-wise Inference   │  │ Стек ускорения Vulkan│
-│ • kb_data.json               │  │ • Qwen2.5-32B / Llama-3.3-70B │  │ (vulkan_backend.py)  │
-│ • VehicleDiagnosticSample.txt│  │ • 4-bit / 8-bit компрессия    │  │ • GGML_VULKAN=1      │
-│ • BM25 + TF-IDF N-gram       │  │ • Послойная выгрузка под 8 ГБ │  │ • GGUF Local Models  │
-│ • Время отклика ~4.5 мс      │  │   видеопамяти                 │  │ • GGML Whisper Voice │
+│ Гибридное ядро RAG (engine)  │  │ AdaptiveAirLLMQwen3_5         │  │ Стек GPU / Vulkan    │
+│ • kb_data.json               │  │ • Модель Qwen/Qwen3.5-4B (VL) │  │ (vulkan_backend.py)  │
+│ • VehicleDiagnosticSample.txt│  │ • 35 послойных шардов         │  │ • Замер свободной    │
+│ • BM25 + TF-IDF N-gram       │  │ • Максимум слоев в VRAM +     │  │   VRAM в реальном    │
+│ • Фильтрация нерелевантных   │  │   стриминг остальных слоев    │  │   времени            │
 └──────────────────────────────┘  └───────────────────────────────┘  └──────────────────────┘
 ```
 
@@ -66,10 +68,10 @@
 ExpertSystem_auto_diag/
 ├── autodiag_project/              # Конфигурация проекта Django (settings, urls, wsgi, asgi)
 ├── diagnostics/                   # Основное приложение экспертной системы
-│   ├── airllm_vulkan_service.py   # Оркестратор AirLLM (послойная выгрузка) + Vulkan GGUF + Function Calling
+│   ├── airllm_vulkan_service.py   # Движок AdaptiveAirLLMQwen3_5 + гибридное управление GPU VRAM + Function Calling
 │   ├── context_worker.py          # Неблокирующий фоновый воркер выжимки диалога и междиалоговой памяти
 │   ├── document_service.py        # Парсинг документов (.pdf, .docx, .txt, .log, .json, .csv) и CV-анализ фото
-│   ├── voice_service.py           # Голосовой ввод: прямое аудио для мультимодальных моделей или GGML Whisper
+│   ├── voice_service.py           # Голосовой ввод: прямое аудио или локальное распознавание речи
 │   ├── schemas.py                 # Схемы Pydantic v2, JSON Schema и описания инструментов Function Calling
 │   ├── models.py                  # Модели БД: SystemSettings, DialogSession, ChatMessage
 │   ├── views.py                   # Представления интерфейса, AR-режима, PWA и REST API
@@ -82,57 +84,65 @@ ExpertSystem_auto_diag/
 │   ├── js/app.js                  # Клиентская логика: воркер, чеклисты, камера, диктофон, перетаскивание окон AR
 │   ├── js/sw.js                   # Service Worker для офлайн-работы PWA
 │   └── icons/                     # Векторные иконки PWA (192x192, 512x512)
-├── llama/
-│   ├── start_server.bat           # Запуск локального сервера llama.cpp с ускорением Vulkan (Windows)
-│   └── start_server.sh            # Запуск локального сервера llama.cpp с ускорением Vulkan (Linux)
 ├── docker/
 │   └── entrypoint.sh              # Скрипт инициализации контейнера Docker
-├── .vscode/                       # Конфигурации отладки VSCode под 8 ГБ видеопамяти
+├── .vscode/                       # Конфигурации отладки VSCode под AirLLM и 8 ГБ видеопамяти
 │   ├── launch.json
 │   ├── tasks.json
 │   ├── settings.json
 │   └── extensions.json
-├── models/                        # Каталог для локальных весов GGUF, GGML Whisper и шардов AirLLM
-│   └── gemma-4-12b-it-Q4_K_M.gguf # Локальная модель (относительный путь models/...)
-├── vulkan_backend.py              # Кроссплатформенный детектор и конфигуратор ускорения Vulkan (Windows/Linux)
+├── models/                        # Каталог локальной модели и послойных шардов AirLLM (относительные пути)
+│   ├── Qwen3.5-4B/                # Конфигурация, токенизатор и процессор Qwen/Qwen3.5-4B
+│   └── airllm_shards/
+│       └── splitted_model/        # 35 послойных шардов safetensors (embed, layers.0..31, norm, visual)
+├── prepare_airllm_model.py        # Скрипт автоматического скачивания Qwen/Qwen3.5-4B с HF и нарезки на шарды AirLLM
+├── vulkan_backend.py              # Детектор и менеджер памяти GPU / Vulkan (Windows/Linux)
 ├── engine.py                      # Поисковое ядро RAG + индексатор kb_data.json и VehicleDiagnosticSample.txt
 ├── kb_data.json                   # База знаний кодов неисправностей и регламентов ремонта
 ├── VehicleDiagnosticSample.txt    # База эталонной телеметрии, датчиков и индексов здоровья (32 733 строки)
-├── evaluate_model.py              # Бенчмарк точности (Recall@3: 100%, MRR: 0.929, Latency: ~4.5 мс)
+├── evaluate_model.py              # Бенчмарк точности RAG (Recall@3: 100%, MRR: 0.929, Latency: ~4.5 мс)
+├── MAIN_app_with_LLM.py           # Консольный режим диагностики через AirLLM Qwen3.5-4B
+├── api_server.py                  # FastAPI микросервис прямого доступа к оркестратору AirLLM
 ├── manage.py                      # Точка входа Django
 ├── run_dev.ps1                    # Скрипт быстрого запуска для Windows (PowerShell)
 ├── run_dev.sh                     # Скрипт быстрого запуска для Linux (Bash)
-├── Dockerfile                     # Образ контейнера с поддержкой Vulkan
-├── docker-compose.yml             # Оркестрация контейнеров с пробросом GPU и томов
+├── Dockerfile                     # Образ контейнера с поддержкой AirLLM и GPU/Vulkan
+├── docker-compose.yml             # Оркестрация контейнера с пробросом GPU и томов
 └── requirements.txt               # Зависимости Python
 ```
 
 ---
 
-## 3. Аппаратное ускорение Vulkan (вместо CUDA) под 8 ГБ VRAM
+## 3. Автономный движок AirLLM (`AirLLMQwen3_5`) и модель `Qwen/Qwen3.5-4B`
 
-Модуль [`vulkan_backend.py`](file:///d:/GDrive/Документы/Visual%20Studio%202022/ExpertSystem_auto_diag/vulkan_backend.py) полностью заменяет проприетарную привязку к CUDA на кроссплатформенный стек **Vulkan**:
-- Автоматически проверяет наличие системной библиотеки `vulkan-1.dll` (Windows) или `libvulkan.so.1` (Linux) и опрашивает `vulkaninfo --summary`.
-- Выставляет переменные среды `GGML_VULKAN=1`, `LLAMA_VULKAN=1`, `VULKAN_DEVICE=0`, `GGML_VK_VISIBLE_DEVICES=0`.
-- Функция `compute_optimal_vulkan_layers()` рассчитывает безопасное число слоев выгрузки на GPU с учётом бюджета **8 ГБ видеопамяти** (например, NVIDIA GeForce RTX 3050 8GB) и размера KV-кэша контекстного окна (`2048` токенов), предотвращая ошибку нехватки памяти (VRAM OOM).
+Система переведена на чистый автономный инференс через библиотеку **AirLLM** без использования внешних серверов (`Ollama` / `llama-server`):
+- В качестве основной модели внедрена современная официально поддерживаемая в AirLLM мультимодальная модель **[`Qwen/Qwen3.5-4B`](https://huggingface.co/Qwen/Qwen3.5-4B)** (архитектура `Qwen3_5ForConditionalGeneration`, класс `airllm.airllm_qwen3_5.AirLLMQwen3_5`).
+- Модель сочетает гибридную архитектуру **Gated DeltaNet + Gated Attention** (32 текстовых слоя) и встроенный визуальный энкодер **SigLIP (`model.visual`)**, что позволяет обрабатывать как текстовые диалоги и коды ошибок, так и фотографии с камеры (`PIL.Image` через `Qwen3VLProcessor`).
+- Скрипт [`prepare_airllm_model.py`](file:///d:/GDrive/Документы/Visual%20Studio%202022/ExpertSystem_auto_diag/prepare_airllm_model.py) скачивает модель из HuggingFace в `models/Qwen3.5-4B/` и за один проход нарезает веса на **35 послойных шардов** в `models/airllm_shards/splitted_model/`:
+  - `model.language_model.embed_tokens.safetensors`
+  - `model.language_model.layers.0.safetensors` ... `model.language_model.layers.31.safetensors`
+  - `model.language_model.norm.safetensors`
+  - `model.visual.safetensors`
 
 ---
 
-## 4. Послойный инференс мощных моделей через AirLLM
+## 4. Адаптивное управление GPU VRAM и ускорение Vulkan/CUDA
 
-Для преодоления ограничений окна контекста и глубины рассуждений компактных моделей на 8 ГБ видеопамяти в систему интегрирована библиотека **[AirLLM](https://github.com/lyogavin/airllm)** ([`diagnostics/airllm_vulkan_service.py`](file:///d:/GDrive/Документы/Visual%20Studio%202022/ExpertSystem_auto_diag/diagnostics/airllm_vulkan_service.py)):
-- Позволяет запускать модели класса **14B–70B** (`Qwen/Qwen2.5-32B-Instruct`, `Qwen/Qwen2.5-14B-Instruct`, `deepseek-ai/DeepSeek-R1-Distill-Qwen-32B`, `meta-llama/Llama-3.3-70B-Instruct`), выполняя инференс **послойно (layer-by-layer)**.
-- В каждый момент времени в видеопамяти находится только один слой трансформера (~150–300 МБ при `compression="4bit"`), а остальные слои асинхронно предзагружаются (`prefetching=True`) из папки `./models/airllm_shards/` на NVMe SSD.
-- В правой панели интерфейса (**вкладка «Vulkan & AirLLM»**) пользователь может переключаться между режимами:
-  1. **Авто-Гибрид** (совместная работа локального сервера Vulkan, AirLLM и экспертного синтезатора).
-  2. **AirLLM Layer-wise** (послойная выгрузка мощной модели с выбором `4bit` / `8bit` / `none`).
-  3. **Llama.cpp Vulkan GGUF** (работа с локальным файлом `models/gemma-4-12b-it-Q4_K_M.gguf`).
+В модуле [`diagnostics/airllm_vulkan_service.py`](file:///d:/GDrive/Документы/Visual%20Studio%202022/ExpertSystem_auto_diag/diagnostics/airllm_vulkan_service.py) реализован подкласс **`AdaptiveAirLLMQwen3_5(AirLLMQwen3_5)`**, который использует доступную видеопамять по максимуму независимо от объема VRAM (4 ГБ, 6 ГБ, 8 ГБ, 12 ГБ, 16 ГБ и более):
+
+1. **Гарантированный резерв под окно контекста (KV-Cache)**:
+   - Перед загрузкой весов система опрашивает реальную свободную видеопамять (`torch.cuda.mem_get_info(0)` и `vulkaninfo`) и резервирует неприкосновенный буфер под KV-кэш окна контекста (`max(1350 МБ, 19% общей VRAM)`).
+2. **Закрепление максимума слоев в VRAM (Pinned GPU Layers)**:
+   - Все слои, которые помещаются в оставшийся бюджет свободной видеопамяти (например, на RTX 3050 8 ГБ в VRAM постоянно закрепляются `embed_tokens`, `norm` и 22–26 слоев декодера), загружаются напрямую на GPU (`cuda:0`) и **не перезагружаются с диска** при генерации каждого токена.
+3. **Мгновенный послойный стриминг оставшихся слоев из RAM-кэша**:
+   - Те слои, которые не поместились в бюджет VRAM (например, последние 6–10 слоев на 8 ГБ видеокарте), кэшируются в оперативной памяти хоста (`_ram_shard_cache`) и подгружаются в GPU на лету через хуки AirLLM `_pre_hook` / `_post_hook` с немедленным освобождением буфера после прохода слоя.
+   - Благодаря этому в видеопамять гарантированно помещаются и модель, и полное окно контекста без ошибок `CUDA out of memory`.
 
 ---
 
 ## 5. Фоновый воркер выжимки контекста и междиалоговая память (Zero-Wait Preemption)
 
-Из-за ограниченного объема видеопамяти (8 ГБ) передавать всю длинную историю сообщений и объемные документы в каждый запрос неэффективно. В модуле [`diagnostics/context_worker.py`](file:///d:/GDrive/Документы/Visual%20Studio%202022/ExpertSystem_auto_diag/diagnostics/context_worker.py) реализован **вытесняемый фоновый воркер (`ContextSummarizerWorkerManager`)**:
+Из-за ограниченного объема видеопамяти передавать всю длинную историю сообщений и объемные документы в каждый запрос неэффективно. В модуле [`diagnostics/context_worker.py`](file:///d:/GDrive/Документы/Visual%20Studio%202022/ExpertSystem_auto_diag/diagnostics/context_worker.py) реализован **вытесняемый фоновый воркер (`ContextSummarizerWorkerManager`)**:
 
 1. **Фоновое сжатие после каждого сообщения**: как только пользователю выдан ответ, запускается фоновый поток, формирующий концентрированную техническую выжимку диалога (`DialogSession.summary`): марка/модель автомобиля, зафиксированные коды ошибок DTC, жалобы, установленные причины, а также какие шаги чеклиста и какие инструменты уже отмечены пользователем как выполненные.
 2. **Междиалоговая память (`cross_dialog_memory_enabled`)**: при включении соответствующего переключателя в левой панели воркер также синхронизирует глобальную сводку **между всеми диалогами** (`SystemSettings.global_memory_summary`), позволяя ИИ помнить историю прошлых ремонтов и особенности машины в новых сессиях.
@@ -146,18 +156,18 @@ ExpertSystem_auto_diag/
 ## 6. Строгий JSON-формат ответов и Function Calling
 
 В модуле [`diagnostics/schemas.py`](file:///d:/GDrive/Документы/Visual%20Studio%202022/ExpertSystem_auto_diag/diagnostics/schemas.py) все ответы модели приводятся к строго типизированной структуре **`DiagnosticStructuredResponse`** с использованием **Pydantic v2** и **JSON Schema (`jsonschema`)**:
-- При обращении к серверу `llama.cpp` схема передается в `response_format={"type": "json_object", "schema": DIAGNOSTIC_JSON_SCHEMA}`, что активирует грамматическое ограничение токенов на уровне сэмплера.
+- Поддерживаются как диагностические ответы (`response_type="diagnostic"`), так и живое свободное общение (`response_type="general"`, например при приветствиях и общих вопросах, без показа ложных карточек ошибок).
 - Поддерживается автоматический вызов диагностических инструментов (**Function Calling**):
   - `lookup_dtc_code(code)` — точная карточка кода неисправности и эталонной телеметрии из базы данных.
   - `search_knowledge_base(symptom_query, system)` — гибридный RAG-поиск по `kb_data.json` и `VehicleDiagnosticSample.txt`.
-  - `inspect_attached_image(filename, resolution)` — визуально-технический анализ прикрепленных фотографий и снимков с камеры.
+  - `inspect_attached_image(filename, resolution)` — визуально-технический анализ прикрепленных фотографий и снимков с камеры через `Qwen3.5-VL` и CV-инспектор.
   - `build_repair_inventory(system, codes)` — формирование специфицированного перечня инструментов, запчастей и моментов затяжки.
 
 ---
 
 ## 7. Task-Friendly ответы: блок инвентаря и пошаговые чекбоксы задач
 
-Каждый ответ экспертной системы визуализируется в виде удобной рабочей карты механика:
+Каждый диагностический ответ экспертной системы визуализируется в виде удобной рабочей карты механика:
 - **Карточки установленных неисправностей (`faults`)**: код ошибки, система, уровень критичности (`critical` / `warning`), шкала индекса здоровья узла (`Health Index %`) и первопричина.
 - **Блок инвентаря (`inventory`)**: список необходимых инструментов, запчастей, расходников и средств защиты с указанием характеристик (размеры головок, моменты затяжки в Н·м, сопротивления в Ом) и **интерактивными чекбоксами наличия** (`Готово: X / Y`).
 - **Пошаговый план ремонта (`repair_steps`)**: пронумерованные этапы работ с подробными инструкциями, эталонными параметрами, предупреждениями по технике безопасности и **интерактивными чекбоксами выполнения** (`Выполнено: X / Y`).
@@ -165,15 +175,13 @@ ExpertSystem_auto_diag/
 
 ---
 
-## 8. Мультимодальный ввод: словарь БД, камера, документы и голос (Direct Audio / GGML)
+## 8. Мультимодальный ввод: словарь БД, камера, документы и голос
 
 В нижней панели ввода (доступной под большим пальцем на мобильных устройствах) поддерживаются все виды ввода:
 1. **Словарь кодов ошибок БД (`DTC`)**: объединяет `kb_data.json` и 32 733 строки телеметрии из `VehicleDiagnosticSample.txt`. Позволяет искать коды по номеру (`P0300`, `P0796`, `C0050`, `U1900`, `P0A80` и др.), фильтровать по системам и прикреплять к запросу в один клик.
-2. **Встроенное окно камеры**: открывает видеопоток камеры прямо внутри веб-интерфейса (`getUserMedia`) с переключением фронтальной/тыльной камеры, координатной сеткой прицела и генератором тестового кадра приборной панели (для проверки на ПК без физической веб-камеры).
+2. **Встроенное окно камеры**: открывает видеопоток камеры прямо внутри веб-интерфейса (`getUserMedia`) с переключением фронтальной/тыльной камеры, координатной сеткой прицела и генератором тестового кадра приборной панели. Сделанный снимок напрямую передается в визуальный блок `Qwen3.5-4B` (`model.visual`).
 3. **Прикрепление фото и документов**: загрузка изображений (`.jpg`, `.png`, `.webp`) и технических файлов/логов сканеров (`.txt`, `.log`, `.json`, `.csv`, `.pdf`, `.docx`) с автоматическим извлечением кодов ошибок и метрик телеметрии ([`diagnostics/document_service.py`](file:///d:/GDrive/Документы/Visual%20Studio%202022/ExpertSystem_auto_diag/diagnostics/document_service.py)).
-4. **Голосовой ввод ([`diagnostics/voice_service.py`](file:///d:/GDrive/Документы/Visual%20Studio%202022/ExpertSystem_auto_diag/diagnostics/voice_service.py))**:
-   - Если выбранная модель поддерживает прямой мультимодальный аудиоввод (`Gemma-4-Omni`, `Qwen2-Audio` и др.), аудиопоток передается напрямую в формате `input_audio`.
-   - Если модель текстовая (или выбран режим GGML), выполняется локальное распознавание речи через стек **GGML Whisper** (`pywhispercpp` / `whisper.cpp` с весами `models/ggml-base.bin` / `faster-whisper`) в сочетании с мгновенным предпросмотром речи в браузере.
+4. **Голосовой ввод ([`diagnostics/voice_service.py`](file:///d:/GDrive/Документы/Visual%20Studio%202022/ExpertSystem_auto_diag/diagnostics/voice_service.py))**: поддерживает передачу аудиопотока и локальное распознавание речи через стек **GGML Whisper** (`pywhispercpp` / `whisper.cpp` / `faster-whisper`).
 
 ---
 
@@ -192,7 +200,7 @@ ExpertSystem_auto_diag/
 
 - **Mobile-First и Thumb-Zone**: все элементы управления (камера, файлы, словарь DTC, микрофон, отправка и переключение вкладок «Диагноз / Чеклист / Коды DTC / Память») расположены в нижней зоне досягаемости большого пальца без необходимости лишнего скролла.
 - **Адаптированное PWA**: проект включает `/manifest.json`, Service Worker `/sw.js` с офлайн-кэшированием интерфейса и словаря ошибок, векторные иконки и поддержку `100dvh` / `safe-area-inset`.
-- **Desktop-версия**: на широких экранах автоматически раскрывается трехколоночный инженерный стенд (Журнал сессий и память воркера слева, Диалог по центру, Инспектор чеклистов / Словарь DTC / Настройки Vulkan & AirLLM справа).
+- **Desktop-версия**: на широких экранах автоматически раскрывается трехколоночный инженерный стенд (Журнал сессий и память воркера слева, Диалог по центру, Инспектор чеклистов / Словарь DTC / Настройки AirLLM & GPU справа).
 
 ---
 
@@ -200,19 +208,20 @@ ExpertSystem_auto_diag/
 
 ### Запуск на Windows (PowerShell)
 ```powershell
-# Вариант 1: Автоматический скрипт запуска в один клик
+# Вариант 1: Автоматический скрипт запуска в один клик (проверяет шарды AirLLM и запускает Django)
 .\run_dev.ps1
 
 # Вариант 2: Ручной запуск через виртуальное окружение .venv
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe prepare_airllm_model.py
 .\.venv\Scripts\python.exe manage.py migrate
 .\.venv\Scripts\python.exe manage.py runserver 0.0.0.0:8000
 ```
 
 ### Запуск на Linux (Bash)
 ```bash
-chmod +x run_dev.sh llama/start_server.sh
+chmod +x run_dev.sh
 ./run_dev.sh
 ```
 
@@ -224,24 +233,23 @@ chmod +x run_dev.sh llama/start_server.sh
 
 ## 12. Запуск в Docker и Docker Compose
 
-Проект полностью контейнеризирован с поддержкой библиотек `libvulkan1`, `vulkan-tools` и `mesa-vulkan-drivers`:
+Проект полностью контейнеризирован с поддержкой GPU/Vulkan и автономного движка AirLLM:
 
 ```bash
 docker compose up --build -d
 ```
 
-- Веса моделей монтируются из относительной директории `./models:/app/models`.
-- Для аппаратного проброса видеокарты в Linux-хостах раскомментируйте секцию `devices: - /dev/dri:/dev/dri` в `docker-compose.yml`.
+- Веса моделей и шарды AirLLM монтируются из относительной директории `./models:/app/models`.
 
 ---
 
 ## 13. Отладка в VSCode на 8 ГБ видеопамяти
 
-В каталоге [`.vscode/`](file:///d:/GDrive/Документы/Visual%20Studio%202022/ExpertSystem_auto_diag/.vscode/launch.json) преднастроены профили отладки специально под конфигурацию с **8 ГБ VRAM** и ускорением **Vulkan**:
-1. **`Django: AutoDiag Pro AI (8GB VRAM Vulkan Debug)`** — запуск и пошаговая отладка веб-сервера Django с переменными `GGML_VULKAN=1`, `MAX_VRAM_MB=8192`, `VULKAN_GPU_LAYERS=37`, `LLM_CTX_SIZE=2048`, `AIRLLM_COMPRESSION=4bit`.
-2. **`Django: Тестирование системы (Vulkan + Воркер + JSON)`** — запуск полного набора автотестов.
+В каталоге [`.vscode/`](file:///d:/GDrive/Документы/Visual%20Studio%202022/ExpertSystem_auto_diag/.vscode/launch.json) преднастроены профили отладки под **AirLLM Qwen3.5-4B** и **8 ГБ VRAM**:
+1. **`Django: AutoDiag Pro AI (AirLLM Qwen3.5-4B + Adaptive GPU VRAM)`** — запуск и пошаговая отладка веб-сервера Django с автоматическим закреплением максимума слоев в VRAM и стримингом оставшихся слоев через AirLLM.
+2. **`Django: Тестирование системы (AirLLM + Воркер + JSON)`** — запуск полного набора автотестов.
 3. **`RAG Benchmark: Оценка точности и Vulkan (evaluate_model.py)`** — замер метрик `Recall@3`, `MRR` и времени отклика.
-4. **`CLI: Локальный запуск GGUF Vulkan (MAIN_app_with_LLM.py)`** — отладка консольного режима с относительными путями.
+4. **`CLI: Локальный запуск AirLLM Qwen3.5-4B (MAIN_app_with_LLM.py)`** — отладка консольного режима с относительными путями.
 
 ---
 
@@ -251,11 +259,11 @@ docker compose up --build -d
 |---|---|---|
 | `GET` | `/` | Главный адаптивный интерфейс (Mobile-First PWA + Desktop) |
 | `GET` | `/ar/` | Режим для AR-очков типа RayNeo (чисто черный прозрачный фон + 2 плавающих окна) |
-| `POST` | `/api/ask/` | Диагностический запрос (текст, фото, снимок камеры, документ, коды DTC, голос) с мгновенным сбросом старого воркера контекста |
+| `POST` | `/api/ask/` | Диагностический или общий запрос (текст, фото, снимок камеры, документ, коды DTC, голос) с мгновенным сбросом старого воркера контекста |
 | `GET` | `/api/worker-status/<session_id>/` | Статус фонового воркера выжимки контекста и междиалоговой памяти |
 | `POST` | `/api/messages/<id>/toggle-task/` | Сохранение состояния чекбоксов шагов ремонта и инвентаря |
 | `GET` | `/api/dtc/?q=...&system=...` | Поиск и фильтрация по словарю кодов ошибок БД и эталонной телеметрии |
-| `GET/POST` | `/api/settings/` | Получение и сохранение настроек Vulkan, AirLLM, окна контекста и голоса |
+| `GET/POST` | `/api/settings/` | Получение и сохранение настроек AirLLM, GPU VRAM, окна контекста и голоса |
 
 ### Запуск автотестов и бенчмарка RAG
 ```powershell

@@ -11,15 +11,13 @@ class SystemSettings(models.Model):
     """Глобальные настройки экспертной системы и управления 8 ГБ видеопамяти."""
 
     BACKEND_CHOICES = [
-        ("airllm_vulkan", "AirLLM Layer-wise + Vulkan (Мощные модели 14B–70B на 8 ГБ VRAM)"),
-        ("llamacpp_vulkan", "Llama.cpp Vulkan GGUF (Локальная модель Gemma-4 12B Q4_K_M)"),
-        ("hybrid_auto", "Авто-Гибрид (AirLLM + Vulkan GGUF + Экспертный синтезатор)"),
+        ("airllm_vulkan", "AirLLM Adaptive GPU + Layer Offload (Qwen 3.5 9B Vision-Language)"),
     ]
 
     COMPRESSION_CHOICES = [
-        ("4bit", "4-bit блок-квантование (Рекомендуется для 8 ГБ VRAM)"),
+        ("4bit", "4-bit NF4 квантование (Оптимально для GPU от 4 до 8+ ГБ VRAM)"),
         ("8bit", "8-bit квантование"),
-        ("none", "Без компрессии (FP16/BF16 послойная подгрузка с SSD)"),
+        ("none", "BF16/FP16 послойная выгрузка через AirLLM"),
     ]
 
     VOICE_CHOICES = [
@@ -31,13 +29,13 @@ class SystemSettings(models.Model):
     llm_backend = models.CharField(
         max_length=32,
         choices=BACKEND_CHOICES,
-        default="hybrid_auto",
+        default="airllm_vulkan",
         verbose_name="Бэкенд ИИ и ускорения",
     )
     airllm_model_id = models.CharField(
         max_length=160,
-        default="Qwen/Qwen2.5-32B-Instruct",
-        verbose_name="Модель для послойной выгрузки AirLLM",
+        default="models/Qwen3.5-4B",
+        verbose_name="Модель AirLLM (локальный путь или HuggingFace ID)",
     )
     airllm_compression = models.CharField(
         max_length=16,
@@ -47,20 +45,20 @@ class SystemSettings(models.Model):
     )
     gguf_model_rel_path = models.CharField(
         max_length=255,
-        default="models/gemma-4-12b-it-Q4_K_M.gguf",
-        verbose_name="Относительный путь к GGUF модели (Vulkan)",
+        default="models/airllm_shards",
+        verbose_name="Директория послойных шардов AirLLM",
     )
     llama_server_url = models.CharField(
         max_length=255,
-        default="http://127.0.0.1:8080/v1",
-        verbose_name="URL локального Vulkan сервера llama.cpp",
+        default="airllm://local-gpu",
+        verbose_name="Внутренний конвейер AirLLM",
     )
     vulkan_gpu_layers = models.IntegerField(
-        default=37,
-        verbose_name="Слои GPU в Vulkan (под 8 ГБ VRAM)",
+        default=32,
+        verbose_name="Макс. резидентных слоев GPU (авто-баланс VRAM)",
     )
     context_window_tokens = models.IntegerField(
-        default=2048,
+        default=4096,
         verbose_name="Размер окна контекста (токенов)",
     )
     cross_dialog_memory_enabled = models.BooleanField(

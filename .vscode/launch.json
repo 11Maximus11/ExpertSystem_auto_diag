@@ -2,7 +2,7 @@
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "Django: AutoDiag Pro AI (8GB VRAM Vulkan Debug)",
+      "name": "Django: AutoDiag Pro AI (AirLLM Qwen3.5-4B + Adaptive GPU VRAM)",
       "type": "debugpy",
       "request": "launch",
       "program": "${workspaceFolder}/manage.py",
@@ -22,15 +22,13 @@
         "LLAMA_VULKAN": "1",
         "VULKAN_DEVICE": "0",
         "MAX_VRAM_MB": "8192",
-        "FREE_VRAM_MB": "6800",
-        "VULKAN_GPU_LAYERS": "37",
-        "LLM_CTX_SIZE": "2048",
-        "AIRLLM_MODEL_ID": "Qwen/Qwen2.5-32B-Instruct",
-        "AIRLLM_COMPRESSION": "4bit"
+        "LLM_CTX_SIZE": "4096",
+        "AIRLLM_MODEL_ID": "models/Qwen3.5-4B",
+        "AIRLLM_COMPRESSION": "none"
       }
     },
     {
-      "name": "Django: Тестирование системы (Vulkan + Воркер + JSON)",
+      "name": "Django: Тестирование системы (AirLLM + Воркер + JSON)",
       "type": "debugpy",
       "request": "launch",
       "program": "${workspaceFolder}/manage.py",
@@ -47,7 +45,8 @@
       "env": {
         "PYTHONUTF8": "1",
         "GGML_VULKAN": "1",
-        "MAX_VRAM_MB": "8192"
+        "MAX_VRAM_MB": "8192",
+        "AUTODIAG_FAST_TEST": "1"
       }
     },
     {
@@ -65,7 +64,7 @@
       }
     },
     {
-      "name": "CLI: Локальный запуск GGUF Vulkan (MAIN_app_with_LLM.py)",
+      "name": "CLI: Локальный запуск AirLLM Qwen3.5-4B (MAIN_app_with_LLM.py)",
       "type": "debugpy",
       "request": "launch",
       "program": "${workspaceFolder}/MAIN_app_with_LLM.py",
@@ -76,7 +75,8 @@
         "PYTHONUTF8": "1",
         "GGML_VULKAN": "1",
         "MAX_VRAM_MB": "8192",
-        "LLM_CTX_SIZE": "2048"
+        "LLM_CTX_SIZE": "4096",
+        "AIRLLM_MODEL_ID": "models/Qwen3.5-4B"
       }
     }
   ]

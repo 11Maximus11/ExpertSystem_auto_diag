@@ -569,6 +569,11 @@ class VehicleExpertEngine:
             char_score = float(char_sims[idx])
             sys_boost = min(2.0, inferred_systems.get(doc_sys, 0.0) * 0.65)
             code_boost = 2.5 if doc_code in extracted_codes else 0.0
+
+            # Отсекаем нерелевантные совпадения на общих фразах/приветствиях («привет» и т.д.)
+            if norm_bm25 <= 0.01 and char_score < 0.14 and sys_boost <= 0.0 and code_boost <= 0.0:
+                continue
+
             kb_priority = 0.25 if meta.get("source") == "kb_data.json" else 0.0
 
             health = float(meta.get("health_index", 100.0))

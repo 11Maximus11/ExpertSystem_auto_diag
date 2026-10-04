@@ -1,22 +1,26 @@
 """
-Комплексный набор автотестов для проверки всех 14 требований проекта AutoDiag Pro AI:
+Комплексный набор автотестов для проверки всех требований проекта AutoDiag Pro AI:
 1. Относительные пути и отсутствие жестких абсолютных путей
-2. Инициализация и расчет слоев ускорения Vulkan (профиль 8 ГБ VRAM)
-3. Индексация kb_data.json и VehicleDiagnosticSample.txt + поиск по словарю DTC
+2. Инициализация и расчет слоев ускорения GPU / Vulkan (адаптивный профиль VRAM)
+3. Индексация kb_data.json и VehicleDiagnosticSample.txt + фильтрация нерелевантных запросов (например «привет»)
 4. Фоновый воркер выжимки контекста, междиалоговая память и принудительный сброс (preemption)
 5. Строгий JSON-формат ответов (Pydantic v2 + JSON Schema) и Function Calling
 6. Прикрепление фото/снимков камеры, документов, кодов ошибок и голоса (GGML / Direct Audio)
 7. Режим для AR-очков типа RayNeo (чисто черный прозрачный фон + два плавающих окна)
-8. Интерактивные чекбоксы задач ремонта и блока инвентаря
+8. Интерактивные чекбоксы задач ремонта, блок инвентаря и проверка шардов AirLLM Qwen3.5-4B
 """
 
 import base64
 import io
 import json
+import os
 import threading
 import time
 from django.test import Client, TransactionTestCase
 from PIL import Image
+
+# Для быстрых модульных тестов HTTP/воркера используем быстрый тестовый режим без 35-слойного прогона весов на каждый запрос
+os.environ.setdefault("AUTODIAG_FAST_TEST", "1")
 
 from engine import VehicleExpertEngine
 from vulkan_backend import BASE_DIR, compute_optimal_vulkan_layers, init_vulkan_environment
@@ -30,20 +34,24 @@ class AutoDiagComprehensiveTests(TransactionTestCase):
         self.client = Client()
 
     def test_01_vulkan_backend_and_relative_paths(self):
-        """Проверка инициализации стека Vulkan и использования относительных путей."""
+        """Проверка инициализации стека Vulkan/GPU и использования относительных путей."""
         status = init_vulkan_environment(verbose=False)
         self.assertEqual(status.backend, "Vulkan")
         self.assertGreaterEqual(status.vram_total_mb, 1024)
-        layers = compute_optimal_vulkan_layers(vram_free_mb=6800, ctx_size=2048)
+        layers = compute_optimal_vulkan_layers(vram_free_mb=6800, ctx_size=4096)
         self.assertTrue(layers == -1 or layers >= 8)
         self.assertTrue((BASE_DIR / "kb_data.json").exists())
         self.assertTrue((BASE_DIR / "VehicleDiagnosticSample.txt").exists())
 
     def test_02_rag_engine_and_telemetry_dictionary(self):
-        """Проверка гибридного RAG-поиска и словаря кодов ошибок (DTC) с телеметрией."""
+        """Проверка гибридного RAG-поиска, словаря кодов ошибок (DTC) и отсечения приветствий."""
         engine = VehicleExpertEngine()
         self.assertGreater(len(engine.raw_data), 110)
         self.assertGreater(len(engine.dtc_catalog), 50)
+
+        # Обычное приветствие не должно возвращать ложный код ошибки P0650
+        greeting_hits = engine.diagnose("привет", top_n=3)
+        self.assertEqual(len(greeting_hits), 0)
 
         hits = engine.diagnose("пинки АКПП при переключении передач P0796", top_n=3)
         self.assertTrue(len(hits) > 0)
@@ -160,7 +168,6 @@ class AutoDiagComprehensiveTests(TransactionTestCase):
 
     def test_05_multimodal_photo_and_ar_rayneo_mode(self):
         """Проверка прикрепления фото камеры, PWA манифеста и режима AR-очков RayNeo."""
-        # Создаём тестовое изображение приборной панели
         img = Image.new("RGB", (320, 240), color=(15, 20, 30))
         buf = io.BytesIO()
         img.save(buf, format="JPEG")
@@ -193,3 +200,20 @@ class AutoDiagComprehensiveTests(TransactionTestCase):
         manifest_resp = self.client.get("/manifest.json")
         self.assertEqual(manifest_resp.status_code, 200)
         self.assertEqual(manifest_resp.json()["short_name"], "AutoDiag AI")
+
+    def test_06_greeting_does_not_trigger_false_fault_and_shards_exist(self):
+        """Проверка, что приветствие возвращает живой ответ (response_type='general', faults=0) и шарды AirLLM Qwen3.5-4B готовы."""
+        resp = self.client.post(
+            "/api/ask/",
+            data=json.dumps({"query": "привет"}),
+            content_type="application/json",
+        )
+        self.assertEqual(resp.status_code, 200)
+        sdata = resp.json()["assistant_message"]["structured_data"]
+        self.assertEqual(sdata["response_type"], "general")
+        self.assertEqual(len(sdata["faults"]), 0)
+
+        shards_dir = BASE_DIR / "models" / "airllm_shards" / "splitted_model"
+        if shards_dir.exists():
+            shards = list(shards_dir.glob("*.safetensors"))
+            self.assertGreaterEqual(len(shards), 35)

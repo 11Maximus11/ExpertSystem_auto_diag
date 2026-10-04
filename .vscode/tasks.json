@@ -18,21 +18,18 @@
       "problemMatcher": []
     },
     {
-      "label": "Vulkan: Запустить локальный llama-server (8GB VRAM)",
+      "label": "AirLLM: Скачать и нарезать Qwen/Qwen3.5-4B на послойные шарды",
       "type": "shell",
-      "windows": {
-        "command": "${workspaceFolder}/llama/start_server.bat"
-      },
+      "command": "${workspaceFolder}/.venv/Scripts/python.exe",
       "linux": {
-        "command": "bash",
-        "args": [
-          "${workspaceFolder}/llama/start_server.sh"
-        ]
+        "command": "${workspaceFolder}/.venv/bin/python"
       },
+      "args": [
+        "prepare_airllm_model.py"
+      ],
       "options": {
         "cwd": "${workspaceFolder}"
       },
-      "isBackground": true,
       "problemMatcher": []
     },
     {
@@ -53,7 +50,7 @@
       "problemMatcher": []
     },
     {
-      "label": "Docker: Собрать и запустить контейнер с Vulkan",
+      "label": "Docker: Собрать и запустить контейнер с AirLLM и GPU",
       "type": "shell",
       "command": "docker",
       "args": [

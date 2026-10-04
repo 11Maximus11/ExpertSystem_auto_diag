@@ -260,39 +260,38 @@
               Бэкенд ИИ и аппаратного ускорения:
             </label>
             <select id="settingBackend" class="settings-select">
-              <option value="hybrid_auto" {% if active_settings.llm_backend == "hybrid_auto" %}selected{% endif %}>Авто-Гибрид (AirLLM + Vulkan GGUF + Синтезатор)</option>
-              <option value="airllm_vulkan" {% if active_settings.llm_backend == "airllm_vulkan" %}selected{% endif %}>AirLLM Layer-wise (Модели 14B–70B на 8 ГБ VRAM)</option>
-              <option value="llamacpp_vulkan" {% if active_settings.llm_backend == "llamacpp_vulkan" %}selected{% endif %}>Llama.cpp Vulkan (Локальная GGUF модель)</option>
+              <option value="airllm_vulkan" {% if active_settings.llm_backend == "airllm_vulkan" %}selected{% endif %}>AirLLM Layer-wise + Adaptive GPU VRAM (Qwen3.5-VL)</option>
+              <option value="hybrid_auto" {% if active_settings.llm_backend == "hybrid_auto" %}selected{% endif %}>Авто-Гибрид (AirLLM Qwen3.5 + Экспертный RAG)</option>
             </select>
           </div>
 
           <div style="margin-bottom: 12px;">
             <label for="settingAirllmModel" style="display:block; font-size:0.78rem; font-weight:600; margin-bottom:4px;">
-              Мощная модель для послойной выгрузки AirLLM:
+              Мультимодальная модель AirLLM (`AirLLMQwen3_5`):
             </label>
             <input type="text" id="settingAirllmModel" class="settings-input" value="{{ active_settings.airllm_model_id }}" list="airllmModelsPreset" />
             <datalist id="airllmModelsPreset">
-              <option value="Qwen/Qwen2.5-32B-Instruct"></option>
-              <option value="Qwen/Qwen2.5-14B-Instruct"></option>
-              <option value="deepseek-ai/DeepSeek-R1-Distill-Qwen-32B"></option>
-              <option value="meta-llama/Llama-3.3-70B-Instruct"></option>
+              <option value="models/Qwen3.5-4B"></option>
+              <option value="Qwen/Qwen3.5-4B"></option>
+              <option value="Qwen/Qwen3.5-9B"></option>
+              <option value="Qwen/Qwen3.8-27B"></option>
             </datalist>
           </div>
 
           <div style="margin-bottom: 12px;">
             <label for="settingAirllmCompression" style="display:block; font-size:0.78rem; font-weight:600; margin-bottom:4px;">
-              Блок-компрессия слоев AirLLM (под 8 ГБ VRAM):
+              Режим загрузки слоев AirLLM (под любую VRAM):
             </label>
             <select id="settingAirllmCompression" class="settings-select">
-              <option value="4bit" {% if active_settings.airllm_compression == "4bit" %}selected{% endif %}>4-bit (Минимум VRAM, высокая скорость)</option>
-              <option value="8bit" {% if active_settings.airllm_compression == "8bit" %}selected{% endif %}>8-bit (Баланс точности и скорости)</option>
-              <option value="none" {% if active_settings.airllm_compression == "none" %}selected{% endif %}>Без сжатия (FP16 подгрузка с NVMe SSD)</option>
+              <option value="none" {% if active_settings.airllm_compression == "none" %}selected{% endif %}>Нативный BFloat16 (Максимум слоев в VRAM + стриминг)</option>
+              <option value="4bit" {% if active_settings.airllm_compression == "4bit" %}selected{% endif %}>4-bit (Блок-компрессия BitsAndBytes NF4)</option>
+              <option value="8bit" {% if active_settings.airllm_compression == "8bit" %}selected{% endif %}>8-bit (Блок-компрессия BitsAndBytes Int8)</option>
             </select>
           </div>
 
           <div style="margin-bottom: 12px;">
             <label for="settingGgufPath" style="display:block; font-size:0.78rem; font-weight:600; margin-bottom:4px;">
-              Относительный путь к GGUF модели (Vulkan):
+              Относительный путь к локальному чекпоинту модели:
             </label>
             <input type="text" id="settingGgufPath" class="settings-input" value="{{ active_settings.gguf_model_rel_path }}" />
           </div>
@@ -300,7 +299,7 @@
           <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 12px;">
             <div>
               <label for="settingGpuLayers" style="display:block; font-size:0.75rem; font-weight:600; margin-bottom:4px;">
-                Слои Vulkan GPU:
+                Слои в GPU (-1 = макс):
               </label>
               <input type="number" id="settingGpuLayers" class="settings-input" value="{{ active_settings.vulkan_gpu_layers }}" min="-1" max="120" />
             </div>
@@ -328,11 +327,11 @@
           </button>
 
           <div class="context-worker-card" style="margin-top: 12px; font-family: var(--font-mono); font-size: 0.72rem;">
-            <div style="font-weight:700; color:var(--accent-cyan); margin-bottom:6px;">ДИАГНОСТИКА VULKAN &amp; ПАМЯТИ:</div>
+            <div style="font-weight:700; color:var(--accent-cyan); margin-bottom:6px;">ДИАГНОСТИКА AIRLLM &amp; GPU VRAM:</div>
             <div>GPU: {{ hw_telemetry.vulkan.device_name }}</div>
-            <div>API: Vulkan {{ hw_telemetry.vulkan.api_version }} (Драйвер {{ hw_telemetry.vulkan.driver_info }})</div>
-            <div>VRAM: {{ hw_telemetry.vulkan.vram_free_mb }} / {{ hw_telemetry.vulkan.vram_total_mb }} МБ (Бюджет 8 ГБ)</div>
-            <div>GGUF файл: {% if hw_telemetry.gguf.exists %}Найден ({{ hw_telemetry.gguf.size_gb }} ГБ){% else %}Ожидание в ./models/{% endif %}</div>
+            <div>API: Vulkan {{ hw_telemetry.vulkan.api_version }} + PyTorch CUDA</div>
+            <div>VRAM: {{ hw_telemetry.vulkan.vram_free_mb }} / {{ hw_telemetry.vulkan.vram_total_mb }} МБ</div>
+            <div>Шарды AirLLM: {{ hw_telemetry.airllm.shards_count }} слоев (Qwen3.5-4B VL)</div>
             <div>Документов в RAG: {{ hw_telemetry.rag.total_documents }} (кодов: {{ hw_telemetry.rag.total_dtc_codes }})</div>
           </div>
         </div>

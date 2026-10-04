@@ -1,6 +1,6 @@
 # =====================================================================
-# Dockerfile для экспертной системы AutoDiag Pro AI (Django + Vulkan + AirLLM)
-# Поддерживает аппаратное ускорение Vulkan (через /dev/dri) и кроссплатформенный запуск
+# Dockerfile для экспертной системы AutoDiag Pro AI (Django + AirLLM Qwen3.5 + Vulkan)
+# Поддерживает аппаратное ускорение GPU / Vulkan и автономную послойную выгрузку AirLLM
 # =====================================================================
 FROM python:3.12-slim-bookworm
 
@@ -10,8 +10,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     GGML_VULKAN=1 \
     LLAMA_VULKAN=1 \
     MAX_VRAM_MB=8192 \
-    LLM_CTX_SIZE=2048 \
-    AIRLLM_COMPRESSION=4bit
+    LLM_CTX_SIZE=4096 \
+    AIRLLM_MODEL_ID=models/Qwen3.5-4B \
+    AIRLLM_COMPRESSION=none
 
 WORKDIR /app
 
@@ -31,9 +32,9 @@ RUN pip install --no-cache-dir --upgrade pip && \
 
 COPY . /app/
 
-RUN chmod +x /app/docker/entrypoint.sh /app/llama/start_server.sh /app/run_dev.sh || true
+RUN chmod +x /app/docker/entrypoint.sh /app/run_dev.sh || true
 
-EXPOSE 8000 8010 8080
+EXPOSE 8000 8010
 
 ENTRYPOINT ["/app/docker/entrypoint.sh"]
 CMD ["python", "manage.py", "runserver", "0.0.0.0:8000"]

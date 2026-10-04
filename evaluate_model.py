@@ -1,12 +1,18 @@
-import time  
 import json
+import time
+from pathlib import Path
+
 from engine import VehicleExpertEngine
+from vulkan_backend import BASE_DIR, init_vulkan_environment
+
 
 def run_evaluation():
-    with open("kb_data.json", "r", encoding="utf-8") as f:
+    init_vulkan_environment(verbose=True)
+    kb_path = BASE_DIR / "kb_data.json"
+    with open(kb_path, "r", encoding="utf-8") as f:
         kb_data = json.load(f)
-    
-    engine = VehicleExpertEngine(kb_data)
+
+    engine = VehicleExpertEngine(kb_data=kb_data, kb_path=kb_path)
 
     test_cases = [
         {"query": "пинки при переключении передач", "expected_system": "transmission"},
@@ -19,17 +25,17 @@ def run_evaluation():
     ]
 
     mrr, recall = [], 0
-    total_time = 0 
-    print(f"МЕТРИКИ\n")
-    
+    total_time = 0.0
+    print("\nМЕТРИКИ КАЧЕСТВА RAG-ЯДРА (VULKAN)\n" + "=" * 60)
+
     for case in test_cases:
-        start_time = time.perf_counter()  
+        start_time = time.perf_counter()
         results = engine.diagnose(case["query"], top_n=3)
-        elapsed_time = time.perf_counter() - start_time  
-        total_time += elapsed_time  
-        
+        elapsed_time = time.perf_counter() - start_time
+        total_time += elapsed_time
+
         found_systems = [r["meta"].get("system") for r in results]
-        
+
         rank = 0
         if case["expected_system"] in found_systems:
             rank = found_systems.index(case["expected_system"]) + 1
@@ -37,15 +43,21 @@ def run_evaluation():
             recall += 1
         else:
             mrr.append(0.0)
-            
-        print(f"Запрос: {case['query'][:25]}... | Найдено: {found_systems} | Ранг: {rank if rank>0 else 'Промах'} | Время: {elapsed_time * 1000:.1f} мс")
+
+        print(
+            f"Запрос: {case['query'][:28]:<28} | Найдено: {found_systems} | "
+            f"Ранг: {rank if rank > 0 else 'Промах'} | Время: {elapsed_time * 1000:.2f} мс"
+        )
 
     avg_latency = (total_time / len(test_cases)) * 1000
 
-    print(f"\nИТОГИ:")
-    print(f"Recall@3: {(recall/len(test_cases))*100:.1f}%")
-    print(f"MRR: {sum(mrr)/len(test_cases):.3f}")
-    print(f"Среднее время отклика (Latency): {avg_latency:.2f} мс") 
+    print("\nИТОГИ:")
+    print(f"Всего документов в индексе (KB + Telemetry): {len(engine.raw_data)}")
+    print(f"Уникальных кодов ошибок (DTC) в словаре: {len(engine.dtc_catalog)}")
+    print(f"Recall@3: {(recall / len(test_cases)) * 100:.1f}%")
+    print(f"MRR: {sum(mrr) / len(test_cases):.3f}")
+    print(f"Среднее время отклика (Latency): {avg_latency:.2f} мс")
+
 
 if __name__ == "__main__":
     run_evaluation()

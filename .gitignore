@@ -1,3 +1,32 @@
+# Логи и временные файлы
 /diagnostics_history.log
-/llama
-/__pycache__
+*.log
+
+# Локальные бинарники и модели
+/llama/bin/
+/llama/*.exe
+/llama/*.dll
+/llama/*.so
+models/
+!models/.gitkeep
+
+# Виртуальные окружения Python
+.venv/
+venv/
+ENV/
+env/
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Django и база данных
+db.sqlite3
+db.sqlite3-journal
+/media/
+/staticfiles/
+.env
+
+# IDE и системные файлы
+.DS_Store
+Thumbs.db
+*.swp

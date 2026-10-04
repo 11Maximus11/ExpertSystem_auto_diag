@@ -1,0 +1,29 @@
+services:
+  autodiag-web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: autodiag-pro-ai
+    ports:
+      - "8000:8000"
+      - "8010:8010"
+    environment:
+      - DJANGO_DEBUG=1
+      - GGML_VULKAN=1
+      - LLAMA_VULKAN=1
+      - VULKAN_DEVICE=0
+      - MAX_VRAM_MB=8192
+      - FREE_VRAM_MB=6800
+      - VULKAN_GPU_LAYERS=37
+      - LLM_CTX_SIZE=2048
+      - AIRLLM_MODEL_ID=Qwen/Qwen2.5-32B-Instruct
+      - AIRLLM_COMPRESSION=4bit
+    volumes:
+      - ./models:/app/models
+      - ./media:/app/media
+      - ./kb_data.json:/app/kb_data.json:ro
+      - ./VehicleDiagnosticSample.txt:/app/VehicleDiagnosticSample.txt:ro
+    # На Linux хостах раскомментируйте секцию devices для прямого проброса GPU в Vulkan:
+    # devices:
+    #   - /dev/dri:/dev/dri
+    restart: unless-stopped

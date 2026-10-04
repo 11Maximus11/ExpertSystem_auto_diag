@@ -243,9 +243,10 @@ class ContextSummarizerWorkerManager:
         for sess in recent_sessions:
             if cancel_event.is_set():
                 return
-            first_line = sess.summary.splitlines()[0] if sess.summary else sess.title
+            summary_lines = [ln.strip() for ln in sess.summary.splitlines() if ln.strip()]
+            compact_summary = " | ".join(summary_lines[:3]) if summary_lines else sess.title
             veh_prefix = f"[{sess.vehicle_info}] " if sess.vehicle_info else ""
-            global_blocks.append(f"• Сессия «{sess.title}» {veh_prefix}: {first_line[:180]}")
+            global_blocks.append(f"• Сессия «{sess.title}» {veh_prefix}: {compact_summary[:260]}")
 
         if cancel_event.is_set():
             return

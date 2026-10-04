@@ -260,7 +260,10 @@ class AirLLMVulkanOrchestrator:
         self._airllm_instance = None
         self._airllm_loaded_model_id: Optional[str] = None
         self._llamacpp_instance = None
-        self._http_client = httpx.Client(trust_env=False, timeout=25.0)
+        self._http_client = httpx.Client(
+            trust_env=False,
+            timeout=httpx.Timeout(25.0, connect=0.12),
+        )
 
     def get_hardware_and_model_telemetry(self, settings_obj) -> Dict[str, Any]:
         """Возвращает живую телеметрию по Vulkan, видеопамяти (8 ГБ), AirLLM и базе знаний."""
@@ -764,6 +767,7 @@ class AirLLMVulkanOrchestrator:
                 base_url=settings_obj.llama_server_url,
                 api_key="not-needed",
                 http_client=self._http_client,
+                max_retries=0,
             )
             response = client.chat.completions.create(
                 model="local",

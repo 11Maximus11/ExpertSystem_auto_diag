@@ -1,0 +1,14 @@
+.git
+.venv
+venv
+__pycache__
+*.pyc
+*.pyo
+*.log
+db.sqlite3
+db.sqlite3-journal
+media/
+staticfiles/
+models/*.gguf
+models/*.bin
+models/airllm_shards/

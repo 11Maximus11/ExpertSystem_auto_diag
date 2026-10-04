@@ -1,0 +1,1184 @@
+/* ==========================================================================
+   AutoDiag Pro AI — Индустриальная дизайн-система (Mobile-First PWA + AR HUD)
+   Палитра: Carbon Slate (#090D16 / #111827) + Safety Orange (#F97316) + HUD Cyan (#38BDF8)
+   Режим AR-очков RayNeo: Чисто черный фон (#000000) для оптической прозрачности
+   ========================================================================== */
+
+:root {
+  --bg-base: #090d16;
+  --bg-surface: #111827;
+  --bg-elevated: #1e293b;
+  --bg-glass: rgba(17, 24, 39, 0.88);
+  --border-subtle: rgba(148, 163, 184, 0.16);
+  --border-strong: rgba(249, 115, 22, 0.45);
+  --text-primary: #f8fafc;
+  --text-secondary: #cbd5e1;
+  --text-muted: #94a3b8;
+  --accent-orange: #f97316;
+  --accent-orange-hover: #ea580c;
+  --accent-cyan: #38bdf8;
+  --status-ok: #22c55e;
+  --status-warn: #f59e0b;
+  --status-crit: #ef4444;
+  --radius-card: 14px;
+  --radius-control: 10px;
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: 'Fira Code', 'JetBrains Mono', 'Cascadia Code', Consolas, monospace;
+  --font-display: 'Share Tech Mono', 'Fira Code', monospace;
+}
+
+[data-theme="light"] {
+  --bg-base: #f1f5f9;
+  --bg-surface: #ffffff;
+  --bg-elevated: #f8fafc;
+  --bg-glass: rgba(255, 255, 255, 0.92);
+  --border-subtle: #cbd5e1;
+  --border-strong: #f97316;
+  --text-primary: #0f172a;
+  --text-secondary: #334155;
+  --text-muted: #475569;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html {
+  -webkit-tap-highlight-color: transparent;
+  -webkit-text-size-adjust: 100%;
+  overscroll-behavior: none;
+  height: 100%;
+}
+
+body {
+  font-family: var(--font-sans);
+  background-color: var(--bg-base);
+  color: var(--text-primary);
+  height: 100dvh;
+  width: 100vw;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  line-height: 1.5;
+}
+
+input,
+textarea,
+select {
+  font-size: 16px;
+  font-family: inherit;
+  color: var(--text-primary);
+}
+
+button,
+a,
+[role="button"],
+.clickable {
+  cursor: pointer;
+  touch-action: manipulation;
+  user-select: none;
+  -webkit-user-select: none;
+  transition: transform 150ms var(--ease-out), background-color 180ms var(--ease-out), border-color 180ms var(--ease-out), opacity 180ms var(--ease-out);
+}
+
+button:active,
+[role="button"]:active,
+.clickable:active {
+  transform: scale(0.97);
+}
+
+button:focus-visible,
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible {
+  outline: 2px solid var(--accent-orange);
+  outline-offset: 2px;
+}
+
+/* ==========================================================================
+   Верхняя панель телеметрии (Header)
+   ========================================================================== */
+.app-header {
+  height: 60px;
+  min-height: 60px;
+  padding: env(safe-area-inset-top, 0px) 16px 0 16px;
+  background: var(--bg-surface);
+  border-bottom: 1px solid var(--border-subtle);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  z-index: 30;
+}
+
+.brand-group {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.brand-logo {
+  width: 36px;
+  height: 36px;
+  border-radius: 9px;
+  background: linear-gradient(135deg, rgba(249, 115, 22, 0.2), rgba(56, 189, 248, 0.15));
+  border: 1px solid var(--border-strong);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--accent-orange);
+  flex-shrink: 0;
+}
+
+.brand-title {
+  font-family: var(--font-display);
+  font-size: 1.05rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--text-primary);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.badge-vulkan {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  padding: 2px 7px;
+  border-radius: 6px;
+  background: rgba(249, 115, 22, 0.15);
+  border: 1px solid rgba(249, 115, 22, 0.45);
+  color: var(--accent-orange);
+  font-weight: 600;
+}
+
+.header-telemetry {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+}
+
+.telemetry-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border-radius: 8px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  font-size: 0.75rem;
+  font-family: var(--font-mono);
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--status-ok);
+  flex-shrink: 0;
+}
+
+.status-dot.running {
+  background: var(--accent-cyan);
+  box-shadow: 0 0 8px var(--accent-cyan);
+}
+
+.status-dot.aborted {
+  background: var(--status-warn);
+}
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.btn-ar-launch {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 8px 13px;
+  border-radius: var(--radius-control);
+  background: linear-gradient(135deg, #f97316, #ea580c);
+  color: #ffffff;
+  border: none;
+  font-weight: 600;
+  font-size: 0.82rem;
+  box-shadow: 0 2px 10px rgba(249, 115, 22, 0.3);
+}
+
+.btn-icon-top {
+  width: 38px;
+  height: 38px;
+  border-radius: var(--radius-control);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* ==========================================================================
+   Трехколоночный рабочий стол (Desktop) и адаптивный контейнер (Mobile-First)
+   ========================================================================== */
+.workbench-grid {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 290px 1fr 370px;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.panel-sidebar,
+.panel-inspector {
+  background: var(--bg-surface);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.panel-sidebar {
+  border-right: 1px solid var(--border-subtle);
+}
+
+.panel-inspector {
+  border-left: 1px solid var(--border-subtle);
+}
+
+.panel-main {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--bg-base);
+  position: relative;
+}
+
+.panel-section-header {
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border-subtle);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-weight: 600;
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+}
+
+.scrollable-y {
+  flex: 1;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 12px;
+}
+
+/* ==========================================================================
+   Левая панель: Сессии, Автомобиль, Фоновый воркер выжимки контекста
+   ========================================================================== */
+.btn-new-session {
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: var(--radius-control);
+  background: rgba(249, 115, 22, 0.14);
+  border: 1px solid var(--border-strong);
+  color: var(--accent-orange);
+  font-weight: 600;
+  font-size: 0.85rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.sessions-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 16px;
+}
+
+.session-item {
+  padding: 10px 12px;
+  border-radius: var(--radius-control);
+  background: var(--bg-elevated);
+  border: 1px solid transparent;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.session-item.active {
+  border-color: var(--accent-orange);
+  background: rgba(249, 115, 22, 0.1);
+}
+
+.session-item-info {
+  min-width: 0;
+  flex: 1;
+}
+
+.session-item-title {
+  font-size: 0.84rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.session-item-meta {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+}
+
+.btn-delete-session {
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.context-worker-card {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-card);
+  padding: 12px;
+  margin-top: 8px;
+}
+
+.worker-header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.worker-badge {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  padding: 3px 8px;
+  border-radius: 6px;
+  background: rgba(34, 197, 94, 0.15);
+  color: var(--status-ok);
+  border: 1px solid rgba(34, 197, 94, 0.35);
+}
+
+.worker-badge.running {
+  background: rgba(56, 189, 248, 0.16);
+  color: var(--accent-cyan);
+  border-color: rgba(56, 189, 248, 0.4);
+}
+
+.worker-badge.aborted {
+  background: rgba(245, 158, 11, 0.16);
+  color: var(--status-warn);
+  border-color: rgba(245, 158, 11, 0.4);
+}
+
+.summary-box {
+  font-size: 0.76rem;
+  color: var(--text-secondary);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  padding: 8px 10px;
+  max-height: 130px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  font-family: var(--font-mono);
+}
+
+.toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border-subtle);
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+}
+
+/* ==========================================================================
+   Центральная панель: Чат диагностики и Task-Friendly карточки ответов
+   ========================================================================== */
+.vehicle-bar {
+  padding: 8px 16px;
+  background: var(--bg-surface);
+  border-bottom: 1px solid var(--border-subtle);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.vehicle-input {
+  flex: 1;
+  min-width: 180px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  padding: 6px 10px;
+  font-size: 0.84rem;
+}
+
+.quick-scenarios {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  padding-bottom: 2px;
+}
+
+.chip-scenario {
+  padding: 5px 10px;
+  border-radius: 999px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+  white-space: nowrap;
+}
+
+.chat-feed {
+  flex: 1;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.msg-card {
+  border-radius: var(--radius-card);
+  padding: 16px;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-surface);
+  max-width: 920px;
+  width: 100%;
+  margin: 0 auto;
+}
+
+.msg-card.msg-user {
+  background: linear-gradient(180deg, rgba(30, 41, 59, 0.9), rgba(17, 24, 39, 0.95));
+  border-color: rgba(56, 189, 248, 0.35);
+}
+
+[data-theme="light"] .msg-card.msg-user {
+  background: #eff6ff;
+  border-color: #93c5fd;
+}
+
+.msg-card.msg-assistant {
+  border-left: 4px solid var(--accent-orange);
+}
+
+.msg-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 10px;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+}
+
+.msg-role-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 700;
+  color: var(--text-primary);
+  font-family: var(--font-display);
+  letter-spacing: 0.03em;
+}
+
+.dtc-badge-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.dtc-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 9px;
+  border-radius: 6px;
+  background: rgba(249, 115, 22, 0.16);
+  border: 1px solid rgba(249, 115, 22, 0.45);
+  color: var(--accent-orange);
+  font-family: var(--font-mono);
+  font-size: 0.76rem;
+  font-weight: 600;
+}
+
+.attachments-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.attachment-thumb {
+  width: 120px;
+  height: 86px;
+  object-fit: cover;
+  border-radius: 8px;
+  border: 1px solid var(--border-strong);
+}
+
+.attachment-doc-chip {
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  font-size: 0.78rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* Структурированные блоки ответа эксперта (Task-Friendly) */
+.diagnosis-verdict-title {
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  margin-bottom: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.faults-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  gap: 10px;
+  margin: 12px 0;
+}
+
+.fault-box {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  padding: 12px;
+}
+
+.fault-box.critical {
+  border-color: rgba(239, 68, 68, 0.55);
+}
+
+.fault-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.health-bar-wrap {
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.2);
+  overflow: hidden;
+  margin: 6px 0;
+}
+
+.health-bar-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent-orange), var(--status-ok));
+}
+
+/* Блок инвентаря и чекбоксов задач */
+.task-section-box {
+  margin-top: 14px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  border-radius: 12px;
+  padding: 12px 14px;
+}
+
+.task-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
+  font-weight: 700;
+  font-size: 0.88rem;
+}
+
+.task-progress-pill {
+  font-family: var(--font-mono);
+  font-size: 0.74rem;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(34, 197, 94, 0.16);
+  color: var(--status-ok);
+  border: 1px solid rgba(34, 197, 94, 0.35);
+}
+
+.inventory-list,
+.steps-checklist {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.check-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  cursor: pointer;
+}
+
+.check-row.completed {
+  border-color: rgba(34, 197, 94, 0.45);
+  background: rgba(34, 197, 94, 0.06);
+}
+
+.check-row.completed .check-title {
+  text-decoration: line-through;
+  opacity: 0.72;
+}
+
+.custom-checkbox {
+  width: 22px;
+  height: 22px;
+  min-width: 22px;
+  border-radius: 6px;
+  border: 2px solid var(--accent-orange);
+  background: transparent;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-top: 2px;
+  accent-color: var(--accent-orange);
+  cursor: pointer;
+}
+
+.check-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.check-title {
+  font-weight: 600;
+  font-size: 0.88rem;
+  color: var(--text-primary);
+}
+
+.check-desc {
+  font-size: 0.82rem;
+  color: var(--text-secondary);
+  margin-top: 4px;
+}
+
+.check-meta-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.spec-tag {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  padding: 2px 7px;
+  border-radius: 5px;
+  background: rgba(56, 189, 248, 0.12);
+  color: var(--accent-cyan);
+  border: 1px solid rgba(56, 189, 248, 0.3);
+}
+
+.safety-tag {
+  font-size: 0.72rem;
+  padding: 2px 7px;
+  border-radius: 5px;
+  background: rgba(245, 158, 11, 0.14);
+  color: var(--status-warn);
+  border: 1px solid rgba(245, 158, 11, 0.35);
+}
+
+.tool-calls-drawer {
+  margin-top: 12px;
+  font-size: 0.76rem;
+  border-top: 1px dashed var(--border-subtle);
+  padding-top: 8px;
+  color: var(--text-muted);
+}
+
+.tool-call-item {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: var(--bg-elevated);
+  margin-top: 4px;
+}
+
+/* ==========================================================================
+   Нижний док ввода (Thumb-Zone Mobile-First + Мультимодальные кнопки)
+   ========================================================================== */
+.composer-dock {
+  background: var(--bg-surface);
+  border-top: 1px solid var(--border-subtle);
+  padding: 10px 14px calc(10px + env(safe-area-inset-bottom, 0px)) 14px;
+  z-index: 20;
+}
+
+.staging-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.staged-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 8px;
+  background: rgba(249, 115, 22, 0.16);
+  border: 1px solid var(--border-strong);
+  font-size: 0.76rem;
+  font-family: var(--font-mono);
+  color: var(--text-primary);
+}
+
+.composer-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  max-width: 960px;
+  margin: 0 auto;
+}
+
+.composer-tools {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.btn-tool {
+  width: 44px;
+  height: 44px;
+  border-radius: var(--radius-control);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.btn-tool.recording {
+  background: rgba(239, 68, 68, 0.2);
+  border-color: var(--status-crit);
+  color: var(--status-crit);
+}
+
+.composer-textarea {
+  flex: 1;
+  min-height: 44px;
+  max-height: 120px;
+  resize: none;
+  padding: 10px 12px;
+  border-radius: var(--radius-control);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  line-height: 1.4;
+}
+
+.btn-send {
+  height: 44px;
+  padding: 0 18px;
+  border-radius: var(--radius-control);
+  background: var(--accent-orange);
+  color: #ffffff;
+  border: none;
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+/* ==========================================================================
+   Правая панель: Вкладки Чеклист / Словарь DTC / Настройки Vulkan & AirLLM
+   ========================================================================== */
+.inspector-tabs {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--bg-elevated);
+}
+
+.inspector-tab-btn {
+  padding: 11px 6px;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 0.76rem;
+  font-weight: 600;
+  border-bottom: 2px solid transparent;
+}
+
+.inspector-tab-btn.active {
+  color: var(--accent-orange);
+  border-bottom-color: var(--accent-orange);
+  background: var(--bg-surface);
+}
+
+.inspector-pane {
+  display: none;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.inspector-pane.active {
+  display: flex;
+}
+
+.dtc-search-box {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border-subtle);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.dtc-input,
+.dtc-select,
+.settings-input,
+.settings-select {
+  width: 100%;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+}
+
+.dtc-card-item {
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  margin-bottom: 8px;
+}
+
+.dtc-card-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.btn-attach-code {
+  padding: 4px 9px;
+  border-radius: 6px;
+  background: rgba(249, 115, 22, 0.16);
+  border: 1px solid var(--border-strong);
+  color: var(--accent-orange);
+  font-size: 0.74rem;
+  font-weight: 600;
+}
+
+/* ==========================================================================
+   Модальное окно встроенной камеры (Requirement #6)
+   ========================================================================== */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.82);
+  display: none;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  z-index: 90;
+}
+
+.modal-backdrop.open {
+  display: flex;
+}
+
+.camera-modal-card {
+  width: 100%;
+  max-width: 640px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-card);
+  overflow: hidden;
+}
+
+.camera-Viewport {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  background: #000000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+.camera-Viewport video,
+.camera-Viewport canvas {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.hud-reticle {
+  position: absolute;
+  inset: 16%;
+  border: 1px dashed rgba(56, 189, 248, 0.65);
+  border-radius: 12px;
+  pointer-events: none;
+}
+
+/* ==========================================================================
+   РЕЖИМ AR-ОЧКОВ ТИПА RAYNEO (Requirement #7)
+   Чисто черный фон (#000000) для 100% прозрачности на оптических дисплеях очков
+   и пара свободно перетаскиваемых плавающих окон (Камера + Ответы ИИ)
+   ========================================================================== */
+body.ar-glasses-mode {
+  background: #000000 !important;
+  background-color: #000000 !important;
+  color: #f8fafc !important;
+}
+
+body.ar-glasses-mode .app-header,
+body.ar-glasses-mode .workbench-grid,
+body.ar-glasses-mode .mobile-bottom-nav {
+  display: none !important;
+}
+
+.ar-hud-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: #000000 !important;
+  z-index: 120;
+  overflow: hidden;
+}
+
+body.ar-glasses-mode .ar-hud-overlay {
+  display: block;
+}
+
+.ar-top-status {
+  position: fixed;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 14px;
+  border-radius: 999px;
+  background: rgba(10, 15, 25, 0.85);
+  border: 1px solid rgba(56, 189, 248, 0.5);
+  font-family: var(--font-mono);
+  font-size: 0.76rem;
+  color: #38bdf8;
+  z-index: 140;
+}
+
+.ar-floating-window {
+  position: absolute;
+  background: rgba(8, 12, 20, 0.88);
+  border: 1.5px solid rgba(249, 115, 22, 0.65);
+  border-radius: 14px;
+  box-shadow: 0 0 24px rgba(249, 115, 22, 0.18);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  z-index: 130;
+}
+
+#arWindowCamera {
+  top: 64px;
+  left: 28px;
+  width: min(420px, 90vw);
+}
+
+#arWindowAssistant {
+  top: 64px;
+  right: 28px;
+  width: min(520px, 92vw);
+  max-height: calc(100dvh - 90px);
+  border-color: rgba(56, 189, 248, 0.7);
+  box-shadow: 0 0 24px rgba(56, 189, 248, 0.18);
+}
+
+.ar-window-dragbar {
+  padding: 10px 14px;
+  background: rgba(249, 115, 22, 0.16);
+  border-bottom: 1px solid rgba(249, 115, 22, 0.4);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  cursor: grab;
+  touch-action: none;
+  font-family: var(--font-display);
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: #f8fafc;
+}
+
+#arWindowAssistant .ar-window-dragbar {
+  background: rgba(56, 189, 248, 0.16);
+  border-bottom-color: rgba(56, 189, 248, 0.4);
+}
+
+.ar-window-dragbar:active {
+  cursor: grabbing;
+}
+
+.ar-window-content {
+  padding: 12px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  flex: 1;
+}
+
+/* ==========================================================================
+   Нижняя навигация для мобильных устройств (Thumb-Zone Mobile-First)
+   ========================================================================== */
+.mobile-bottom-nav {
+  display: none;
+  background: var(--bg-surface);
+  border-top: 1px solid var(--border-subtle);
+  padding: 6px 8px calc(6px + env(safe-area-inset-bottom, 0px)) 8px;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 4px;
+  z-index: 35;
+}
+
+.mobile-nav-btn {
+  padding: 8px 4px;
+  border-radius: 10px;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.7rem;
+  font-weight: 600;
+}
+
+.mobile-nav-btn.active {
+  color: var(--accent-orange);
+  background: rgba(249, 115, 22, 0.12);
+}
+
+/* Hover только для устройств с точным указателем (мышь/трекпад) */
+@media (hover: hover) and (pointer: fine) {
+  .btn-tool:hover,
+  .btn-icon-top:hover,
+  .chip-scenario:hover,
+  .session-item:hover {
+    border-color: var(--accent-orange);
+    color: var(--text-primary);
+  }
+  .btn-send:hover,
+  .btn-ar-launch:hover {
+    background: var(--accent-orange-hover);
+  }
+}
+
+/* Адаптивность для планшетов и смартфонов (375px, 768px, 1024px) */
+@media (max-width: 1120px) {
+  .workbench-grid {
+    grid-template-columns: 250px 1fr;
+  }
+  .panel-inspector {
+    position: fixed;
+    inset: 60px 0 58px 0;
+    z-index: 40;
+    display: none;
+  }
+  .panel-inspector.mobile-active {
+    display: flex;
+  }
+}
+
+@media (max-width: 768px) {
+  .workbench-grid {
+    grid-template-columns: 1fr;
+  }
+  .panel-sidebar {
+    position: fixed;
+    inset: 60px 0 58px 0;
+    z-index: 40;
+    display: none;
+  }
+  .panel-sidebar.mobile-active {
+    display: flex;
+  }
+  .mobile-bottom-nav {
+    display: grid;
+  }
+  .header-telemetry {
+    display: none;
+  }
+  #arWindowCamera {
+    top: 56px;
+    left: 10px;
+    width: calc(100vw - 20px);
+  }
+  #arWindowAssistant {
+    top: auto;
+    bottom: 12px;
+    left: 10px;
+    right: 10px;
+    width: calc(100vw - 20px);
+    max-height: 48dvh;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+  }
+}

@@ -1,116 +1,96 @@
 import base64
-import requests
-import tkinter as tk
-from tkinter import filedialog
 import os
+import tkinter as tk
+from pathlib import Path
+from tkinter import filedialog
+import requests
 
-API_URL = "http://127.0.0.1:8010/ask"
+BASE_DIR = Path(__file__).resolve().parent
+API_URL = os.environ.get("AUTODIAG_API_URL", "http://127.0.0.1:8000/api/ask/")
 
-def select_image_via_explorer():
-    """Открывает системный проводник поверх всех окон для выбора картинки"""
+
+def select_image_via_explorer() -> str:
+    """Открывает системный проводник поверх всех окон для выбора картинки (с относительным стартовым каталогом)."""
     try:
         root = tk.Tk()
-        root.withdraw() 
-        root.wm_attributes('-topmost', True) 
-        
+        root.withdraw()
+        root.wm_attributes("-topmost", True)
+
         file_path = filedialog.askopenfilename(
-            title="Выберите фото поломки (или отмените для текстового режима)", 
-            filetypes=[("Images", "*.jpg *.png *.jpeg *.bmp")]
+            initialdir=str(BASE_DIR),
+            title="Выберите фото поломки (или отмените для текстового режима)",
+            filetypes=[("Images", "*.jpg *.png *.jpeg *.bmp *.webp")],
         )
         return file_path if file_path else ""
     except Exception as e:
         print(f"[WARNING] Не удалось запустить проводник: {e}. Переходим на ручной ввод пути.")
-        return input("Введите путь к изображению вручную (или нажмите Enter): ").strip()
+        return input("Введите относительный или полный путь к изображению (или нажмите Enter): ").strip()
+
 
 def main():
-    print("=" * 50)
-    print("(API Mode + Vision) ")
-    print("=" * 50)
-    
-    history = [
-        {
-            "role": "system", 
-            "content": (
-                "Ты — ведущий инженер-диагност и наставник. Ты ведешь связный диалог с пользователем. "
-                "К каждому новому сообщению сервер автоматически подмешивает технические документы (RAG). "
-                "Твоя задача — анализировать вопрос, историю диалога и прикрепленный контекст.\n\n"
-                "ПРАВИЛА ОТВЕТА:\n"
-                "1. НОВЫЙ ДИАГНОЗ: Если пользователь описывает новую поломку или прикрепляет фото, "
-                "опирайся на новые документы и отвечай строго по структуре:\n"
-                "   1. Установленная неисправность (с кодом ошибки);\n"
-                "   2. Пошаговое руководство по устранению;\n"
-                "   3. Важные рекомендации.\n\n"
-                "2. УТОЧНЯЮЩИЙ ВОПРОС: Если пользователь задает вопрос по ходу диалога (например, "
-                "'как открутить деталь?', 'почему это сломалось?', 'ты помнишь?'), отвечай как живой "
-                "человек-наставник. Структуру 1-2-3 применять НЕ нужно. Опирайся на историю диалога. "
-                "Если прикрепленные новые технические документы не относятся к текущей беседе — просто игнорируй их.\n\n"
-                "ВНИМАНИЕ: Игнорируй системную фразу 'Если информации недостаточно — прямо скажи об этом', "
-                "если ты можешь ответить на вопрос пользователя, опираясь на вашу историю переписки. "
-                "Всегда отвечай на русском языке.В конце спроси, нужна ли дополнительная помощь по теме."
-            )
-        }
-    ]
-    
-    
+    print("=" * 60)
+    print("AutoDiag Pro AI — Консольный клиент (Django / Vulkan API)")
+    print(f"Активный эндпоинт: {API_URL}")
+    print("=" * 60)
+
     while True:
-        query = input("\nВведите симптом (или 'q' для выхода):\n> ").strip()
-        if query.lower() in ['q', 'exit', 'quit']: 
+        query = input("\nВведите симптом или код ошибки (или 'q' для выхода):\n> ").strip()
+        if query.lower() in ["q", "exit", "quit"]:
             break
-        if not query: 
+        if not query:
             continue
-            
-        print("Открытие проводника для выбора фото...")
+
         img_path = select_image_via_explorer()
         img_b64 = None
-        
+
         if img_path:
-            if img_path.startswith(('"', "'")) and img_path.endswith(('"', "'")):
-                img_path = img_path[1:-1]
-                
-            print(f"[*] Выбрано фото: {os.path.basename(img_path)}")
-            try:
-                with open(img_path, "rb") as f:
-                    img_b64 = "data:image/jpeg;base64," + base64.b64encode(f.read()).decode("utf-8")
-            except Exception as e:
-                print(f"[ERROR] Ошибка кодирования изображения: {e}")
-                img_b64 = None
-        
-        print("[*] Отправка данных на сервер...")
+            img_path = img_path.strip("\"'")
+            resolved = Path(img_path)
+            if not resolved.is_absolute():
+                resolved = BASE_DIR / resolved
+            if resolved.exists():
+                print(f"[*] Выбрано фото: {resolved.name}")
+                try:
+                    img_b64 = "data:image/jpeg;base64," + base64.b64encode(resolved.read_bytes()).decode("utf-8")
+                except Exception as e:
+                    print(f"[ERROR] Ошибка кодирования изображения: {e}")
 
         payload = {
             "query": query,
             "image": img_b64,
-            "history": history
         }
-        
-        try:
 
+        try:
             response = requests.post(
-                API_URL, 
-                json=payload, 
-                stream=True, 
-                proxies={"http": None, "https": None} 
+                API_URL,
+                json=payload,
+                proxies={"http": None, "https": None},
+                timeout=60,
             )
             response.raise_for_status()
-            
-            print("ОТВЕТ ЭКСПЕРТНОЙ СИСТЕМЫ:")
-            print("-" * 50)
-            
-            bot_response = ""
-            for chunk in response.iter_content(chunk_size=None, decode_unicode=True):
-                if chunk:
-                    print(chunk, end='', flush=True)
-                    bot_response += chunk
-            print("\n" + "-" * 50)
-            
-            history.append({"role": "user", "content": query})
-            history.append({"role": "assistant", "content": bot_response})
-            
-            if len(history) > 7:
-                history = [history[0]] + history[-6:]
-                
+            data = response.json()
+            assistant = data.get("assistant_message", {})
+            sdata = assistant.get("structured_data", {})
+
+            print("\nОТВЕТ ЭКСПЕРТНОЙ СИСТЕМЫ:")
+            print("-" * 60)
+            print(f"ВЕРДИКТ: {sdata.get('summary_title', '')}")
+            print(assistant.get("content", ""))
+
+            if sdata.get("inventory"):
+                print("\n[БЛОК ИНВЕНТАРЯ]:")
+                for inv in sdata["inventory"]:
+                    print(f"  [ ] {inv['name']} ({inv.get('spec', '')})")
+
+            if sdata.get("repair_steps"):
+                print("\n[ПОШАГОВЫЙ ПЛАН РЕМОНТА]:")
+                for step in sdata["repair_steps"]:
+                    print(f"  [ ] Шаг {step['step_number']}: {step['title']} ({step.get('torque_or_spec', '')})")
+                    print(f"      {step['instruction']}")
+            print("-" * 60)
         except Exception as e:
             print(f"[ERROR] Нет связи с сервером: {e}")
+
 
 if __name__ == "__main__":
     main()

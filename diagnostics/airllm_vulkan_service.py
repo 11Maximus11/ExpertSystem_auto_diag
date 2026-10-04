@@ -443,8 +443,8 @@ class AirLLMVulkanOrchestrator:
 
             import transformers
 
-            max_seq = getattr(settings_obj, "context_window_tokens", 4096) or 4096
-            logger.info(f"[AirLLM] Загрузка модели из {local_dir} в видеопамять GPU (шарды: {shards_dir})...")
+            max_seq = getattr(settings_obj, "context_window_tokens", 6144) or 6144
+            logger.info(f"[AirLLM] Загрузка модели из {local_dir} в видеопамять GPU (шарды: {shards_dir}, ctx={max_seq})...")
             self._processor = transformers.AutoProcessor.from_pretrained(
                 str(local_dir),
                 trust_remote_code=True,
@@ -861,16 +861,17 @@ class AirLLMVulkanOrchestrator:
         if is_conversational:
             sys_prompt = (
                 "Ты — AutoDiag Pro AI, ведущий инженер-диагност и доброжелательный наставник автосервиса. "
-                "Отвечай на русском языке живо, профессионально и лаконично (в 3–4 предложениях). "
-                "Поприветствуй пользователя, коротко перечисли свои возможности (диагностика по симптомам, "
-                "кодам OBD-II, фото поломок и AR-режим) и спроси, какой автомобиль нужно проверить."
+                "Отвечай на русском языке живо, профессионально и структурированно. "
+                "Поприветствуй пользователя или ответь на его вопрос, расскажи о своих возможностях "
+                "(диагностика по симптомам, кодам OBD-II, фото поломок и AR-режим) и спроси, какой автомобиль нужно проверить. "
+                "Всегда полностью завершай мысль и последнее предложение."
             )
             user_prompt_text = query
             if dialog_summary:
                 user_prompt_text = f"[Контекст диалога: {dialog_summary}]\nСообщение пользователя: {query}"
         else:
             extra_docs_text = "\n".join(
-                f"Документ {d['filename']}: {d['text_snippet'][:500]}" for d in doc_analyses
+                f"Документ {d['filename']}: {d['text_snippet'][:1200]}" for d in doc_analyses
             )
             rag_context = self.rag_engine.prepare_llm_context(
                 query=query,
@@ -883,10 +884,11 @@ class AirLLMVulkanOrchestrator:
             sys_prompt = (
                 "Ты — AutoDiag Pro AI, ведущий инженер-диагност автосервиса. "
                 "На основе предоставленного технического контекста, телеметрии и фото дай точный, "
-                "ёмкий практический инженерный разбор неисправности на русском языке (в 5–7 предложениях): "
+                "полный практический инженерный разбор неисправности на русском языке: "
                 "1) Главная причина поломки и физика процесса; "
                 "2) На что обратить особое внимание при проверке и ремонте (допуски, типичные ошибки); "
-                "3) Ответ на конкретный вопрос пользователя."
+                "3) Ответ на конкретный вопрос пользователя. "
+                "Всегда дописывай ответ до логического конца, не обрывай фразы."
             )
             user_prompt_text = rag_context
 
@@ -895,12 +897,12 @@ class AirLLMVulkanOrchestrator:
             {"role": "system", "content": [{"type": "text", "text": sys_prompt}]}
         ]
 
-        for msg in recent_messages[-4:]:
+        for msg in recent_messages[-6:]:
             if msg.role in ("user", "assistant") and (msg.content or "").strip():
                 chat_messages.append(
                     {
                         "role": msg.role,
-                        "content": [{"type": "text", "text": (msg.content or "")[:450]}],
+                        "content": [{"type": "text", "text": (msg.content or "")[:1000]}],
                     }
                 )
 
@@ -952,7 +954,10 @@ class AirLLMVulkanOrchestrator:
                     for k, v in model_inputs.items()
                 }
                 input_len = model_inputs["input_ids"].shape[-1]
-                max_new = 180 if is_conversational else 260
+                ctx_limit = getattr(settings_obj, "context_window_tokens", 6144) or 6144
+                available_ctx = max(384, ctx_limit - input_len)
+                target_max_new = 450 if is_conversational else 768
+                max_new = min(target_max_new, available_ctx)
 
                 eos_ids = [248044, 248046]
                 tok = getattr(processor, "tokenizer", processor)

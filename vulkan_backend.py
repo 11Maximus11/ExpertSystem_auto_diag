@@ -138,7 +138,7 @@ def _detect_vram_mb() -> tuple[int, int]:
 def compute_optimal_vulkan_layers(
     model_path: Optional[Path] = None,
     vram_free_mb: int = 6800,
-    ctx_size: int = 4096,
+    ctx_size: int = 6144,
     total_layers: int = 36,
 ) -> int:
     """
@@ -164,7 +164,7 @@ def compute_optimal_vulkan_layers(
         size_mb = 6200.0
 
     # Запас под KV-кэш окна контекста + пиковый буфер одного стримингового слоя AirLLM
-    kv_cache_mb = max(512.0, (ctx_size / 4096.0) * 768.0)
+    kv_cache_mb = max(512.0, (ctx_size / 6144.0) * 768.0)
     streaming_headroom_mb = 650.0
     usable_vram_mb = max(512.0, vram_free_mb - kv_cache_mb - streaming_headroom_mb)
 
@@ -201,7 +201,7 @@ def get_vulkan_status(model_path: Optional[Path] = None) -> VulkanDeviceInfo:
     device_type = primary.get("deviceType", "PHYSICAL_DEVICE_TYPE_DISCRETE_GPU")
     device_idx = int(os.environ.get("VULKAN_DEVICE", "0"))
 
-    ctx_size = int(os.environ.get("LLM_CTX_SIZE", "4096"))
+    ctx_size = int(os.environ.get("LLM_CTX_SIZE", "6144"))
     if model_path is None:
         default_airllm = BASE_DIR / "models" / "airllm_shards"
         if default_airllm.exists():
@@ -244,7 +244,7 @@ def init_vulkan_environment(model_path: Optional[Path] = None, verbose: bool = T
     os.environ.setdefault("VULKAN_DEVICE", "0")
     os.environ.setdefault("GGML_VK_VISIBLE_DEVICES", os.environ.get("VULKAN_DEVICE", "0"))
     os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True,max_split_size_mb:256")
-    os.environ.setdefault("LLM_CTX_SIZE", "4096")
+    os.environ.setdefault("LLM_CTX_SIZE", "6144")
 
     status = get_vulkan_status(model_path=model_path)
 

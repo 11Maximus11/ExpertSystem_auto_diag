@@ -1203,7 +1203,7 @@
         airllm_compression: el('settingAirllmCompression')?.value || 'none',
         gguf_model_rel_path: el('settingGgufPath')?.value || 'models/Qwen3.5-4B',
         vulkan_gpu_layers: Number(el('settingGpuLayers')?.value || -1),
-        context_window_tokens: Number(el('settingCtxTokens')?.value || 4096),
+        context_window_tokens: Number(el('settingCtxTokens')?.value || 6144),
         voice_mode: el('settingVoiceMode')?.value || 'auto',
         cross_dialog_memory_enabled: Boolean(el('chkCrossDialogMemory')?.checked),
         global_memory_summary: el('globalSummaryTextarea')?.value || '',

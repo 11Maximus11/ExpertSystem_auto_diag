@@ -58,7 +58,7 @@ class SystemSettings(models.Model):
         verbose_name="Макс. резидентных слоев GPU (авто-баланс VRAM)",
     )
     context_window_tokens = models.IntegerField(
-        default=4096,
+        default=6144,
         verbose_name="Размер окна контекста (токенов)",
     )
     cross_dialog_memory_enabled = models.BooleanField(
@@ -89,6 +89,9 @@ class SystemSettings(models.Model):
     @classmethod
     def get_active(cls) -> "SystemSettings":
         obj, _ = cls.objects.get_or_create(pk=1)
+        if obj.context_window_tokens < 6144:
+            obj.context_window_tokens = 6144
+            obj.save(update_fields=["context_window_tokens", "updated_at"])
         return obj
 
 

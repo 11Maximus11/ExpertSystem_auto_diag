@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from django.conf import settings
+from django.contrib.auth import authenticate, get_user_model, login, logout
 from django.db import models
 from django.http import HttpRequest, HttpResponse, JsonResponse
 from django.shortcuts import render
@@ -37,9 +38,18 @@ from .models import ChatMessage, DialogSession, DiagnosticProject, SystemSetting
 from .voice_service import process_voice_input
 
 
-def _ensure_default_session() -> DialogSession:
-    """Гарантирует наличие хотя бы одной диагностической сессии при первом запуске."""
-    session = DialogSession.objects.first()
+def _ensure_default_session(user=None) -> DialogSession:
+    """Гарантирует наличие хотя бы одной диагностической сессии для пользователя."""
+    if user and user.is_authenticated:
+        session = DialogSession.objects.filter(user=user).first()
+        if not session:
+            session = DialogSession.objects.create(
+                user=user,
+                title="Диагностика #1",
+                vehicle_info="",
+            )
+        return session
+    session = DialogSession.objects.filter(user__isnull=True).first()
     if not session:
         session = DialogSession.objects.create(
             title="Диагностика #1",
@@ -86,10 +96,18 @@ def _sanitize_attachments(attachments: List[Any]) -> List[Any]:
 def index_view(request: HttpRequest) -> HttpResponse:
     """Главная страница экспертной системы (Mobile-First PWA + Desktop + RayNeo AR HUD)."""
     active_settings = SystemSettings.get_active()
-    current_session = _ensure_default_session()
-    sessions = list(DialogSession.objects.select_related("project").all()[:40])
-    projects = [p.to_dict() for p in DiagnosticProject.objects.all()]
-    all_tags = list(DialogSession.objects.exclude(tag="").values_list("tag", flat=True).distinct())
+    current_user = request.user if request.user.is_authenticated else None
+    current_session = _ensure_default_session(user=current_user)
+
+    if current_user:
+        sessions = list(DialogSession.objects.filter(user=current_user).select_related("project").all()[:40])
+        projects = [p.to_dict() for p in DiagnosticProject.objects.filter(user=current_user)]
+        all_tags = list(DialogSession.objects.filter(user=current_user).exclude(tag="").values_list("tag", flat=True).distinct())
+    else:
+        sessions = list(DialogSession.objects.filter(user__isnull=True).select_related("project").all()[:40])
+        projects = [p.to_dict() for p in DiagnosticProject.objects.filter(user__isnull=True)]
+        all_tags = list(DialogSession.objects.filter(user__isnull=True).exclude(tag="").values_list("tag", flat=True).distinct())
+
     systems_list = orchestrator.rag_engine.get_all_systems()
     hw_telemetry = orchestrator.get_hardware_and_model_telemetry(active_settings)
     ar_mode_initial = request.GET.get("mode", "").lower() == "ar"
@@ -104,6 +122,7 @@ def index_view(request: HttpRequest) -> HttpResponse:
         "hw_telemetry": hw_telemetry,
         "hw_telemetry_json": json.dumps(hw_telemetry, ensure_ascii=False),
         "ar_mode_initial": ar_mode_initial,
+        "current_user": current_user,
     }
     return render(request, "diagnostics/index.html", context)
 
@@ -178,8 +197,12 @@ def service_worker_view(request: HttpRequest) -> HttpResponse:
 @require_http_methods(["GET", "POST"])
 def api_projects(request: HttpRequest) -> JsonResponse:
     """Список проектов диагностики и создание нового проекта."""
+    user = request.user if request.user.is_authenticated else None
     if request.method == "GET":
-        projects = DiagnosticProject.objects.prefetch_related("sessions").all()
+        if user:
+            projects = DiagnosticProject.objects.filter(user=user).prefetch_related("sessions").all()
+        else:
+            projects = DiagnosticProject.objects.filter(user__isnull=True).prefetch_related("sessions").all()
         return JsonResponse({"projects": [p.to_dict() for p in projects]})
 
     try:
@@ -189,10 +212,11 @@ def api_projects(request: HttpRequest) -> JsonResponse:
 
     name = str(payload.get("name", "")).strip()
     if not name:
-        name = f"Проект #{DiagnosticProject.objects.count() + 1}"
+        base_count = DiagnosticProject.objects.filter(user=user).count() if user else DiagnosticProject.objects.count()
+        name = f"Проект #{base_count + 1}"
     description = str(payload.get("description", "")).strip()
 
-    proj = DiagnosticProject.objects.create(name=name, description=description)
+    proj = DiagnosticProject.objects.create(user=user, name=name, description=description)
     return JsonResponse(proj.to_dict(), status=201)
 
 
@@ -200,7 +224,11 @@ def api_projects(request: HttpRequest) -> JsonResponse:
 @require_http_methods(["GET", "PATCH", "DELETE"])
 def api_project_detail(request: HttpRequest, project_id: int) -> JsonResponse:
     """Детали проекта, переименование или удаление."""
-    proj = DiagnosticProject.objects.filter(pk=project_id).first()
+    user = request.user if request.user.is_authenticated else None
+    if user:
+        proj = DiagnosticProject.objects.filter(pk=project_id, user=user).first()
+    else:
+        proj = DiagnosticProject.objects.filter(pk=project_id).first()
     if not proj:
         return JsonResponse({"error": "Проект не найден"}, status=404)
 
@@ -232,8 +260,17 @@ def api_project_detail(request: HttpRequest, project_id: int) -> JsonResponse:
 @csrf_exempt
 @require_http_methods(["GET", "POST"])
 def api_sessions(request: HttpRequest) -> JsonResponse:
+    user = request.user if request.user.is_authenticated else None
     if request.method == "GET":
-        qs = DialogSession.objects.select_related("project").all()
+        if user:
+            qs = DialogSession.objects.filter(user=user).select_related("project")
+            all_tags = list(DialogSession.objects.filter(user=user).exclude(tag="").values_list("tag", flat=True).distinct())
+            projects = [p.to_dict() for p in DiagnosticProject.objects.filter(user=user)]
+        else:
+            qs = DialogSession.objects.filter(user__isnull=True).select_related("project")
+            all_tags = list(DialogSession.objects.filter(user__isnull=True).exclude(tag="").values_list("tag", flat=True).distinct())
+            projects = [p.to_dict() for p in DiagnosticProject.objects.filter(user__isnull=True)]
+
         project_id = request.GET.get("project_id")
         if project_id:
             if project_id == "none":
@@ -254,9 +291,6 @@ def api_sessions(request: HttpRequest) -> JsonResponse:
             )
 
         sessions = qs[:60]
-        all_tags = list(DialogSession.objects.exclude(tag="").values_list("tag", flat=True).distinct())
-        projects = [p.to_dict() for p in DiagnosticProject.objects.all()]
-
         return JsonResponse({
             "sessions": [s.to_dict() for s in sessions],
             "all_tags": all_tags,
@@ -268,7 +302,7 @@ def api_sessions(request: HttpRequest) -> JsonResponse:
     except Exception:
         payload = {}
 
-    count = DialogSession.objects.count() + 1
+    count = (DialogSession.objects.filter(user=user).count() if user else DialogSession.objects.count()) + 1
     title = str(payload.get("title", "")).strip() or f"Диагностика #{count}"
     vehicle_info = str(payload.get("vehicle_info", "")).strip() or "Автомобиль OBD-II"
     tag = str(payload.get("tag", "")).strip()[:60]
@@ -276,9 +310,13 @@ def api_sessions(request: HttpRequest) -> JsonResponse:
     project_id = payload.get("project_id")
     project = None
     if project_id and str(project_id).isdigit():
-        project = DiagnosticProject.objects.filter(pk=int(project_id)).first()
+        if user:
+            project = DiagnosticProject.objects.filter(pk=int(project_id), user=user).first()
+        else:
+            project = DiagnosticProject.objects.filter(pk=int(project_id)).first()
 
     session = DialogSession.objects.create(
+        user=user,
         title=title,
         vehicle_info=vehicle_info,
         tag=tag,
@@ -290,14 +328,25 @@ def api_sessions(request: HttpRequest) -> JsonResponse:
 @csrf_exempt
 @require_http_methods(["GET", "PATCH", "DELETE"])
 def api_session_detail(request: HttpRequest, session_id: uuid.UUID) -> JsonResponse:
-    session = DialogSession.objects.select_related("project").filter(pk=session_id).first()
+    user = request.user if request.user.is_authenticated else None
+    if user:
+        session = DialogSession.objects.select_related("project").filter(pk=session_id, user=user).first()
+        if not session:
+            # При необходимости связываем ничейную сессию с авторизованным пользователем
+            session = DialogSession.objects.select_related("project").filter(pk=session_id, user__isnull=True).first()
+            if session:
+                session.user = user
+                session.save(update_fields=["user"])
+    else:
+        session = DialogSession.objects.select_related("project").filter(pk=session_id).first()
+
     if not session:
         return JsonResponse({"error": "Сессия не найдена"}, status=404)
 
     if request.method == "DELETE":
         context_worker_manager.preempt_if_running(str(session.id))
         session.delete()
-        next_sess = _ensure_default_session()
+        next_sess = _ensure_default_session(user=user)
         return JsonResponse({"deleted": True, "active_session_id": str(next_sess.id)})
 
     if request.method == "PATCH":
@@ -485,9 +534,13 @@ def api_ask_expert(request: HttpRequest) -> JsonResponse:
         client_transcript = request.POST.get("voice_transcript", "").strip()
         uploaded_files = request.FILES.getlist("attachments")
 
+    user = request.user if request.user.is_authenticated else None
     session = DialogSession.objects.filter(pk=session_id).first() if session_id else None
+    if session and user and session.user is None:
+        session.user = user
+        session.save(update_fields=["user"])
     if not session:
-        session = _ensure_default_session()
+        session = _ensure_default_session(user=user)
 
     # ШАГ 1 (Requirement #3): Мгновенный принудительный сброс старого воркера контекста без ожидания!
     worker_was_preempted = context_worker_manager.preempt_if_running(str(session.id))
@@ -969,3 +1022,98 @@ def api_delete_single_message(request: HttpRequest, message_id: int) -> JsonResp
             "session_summary": session.summary,
         }
     )
+
+
+# =========================================================================
+# REST API: Аутентификация, Регистрация и Профиль пользователя (Requirement #4)
+# =========================================================================
+@csrf_exempt
+@require_http_methods(["POST"])
+def api_auth_register(request: HttpRequest) -> JsonResponse:
+    """Регистрация нового пользователя (Requirement #4)."""
+    try:
+        payload = json.loads(request.body.decode("utf-8") or "{}")
+    except Exception:
+        payload = {}
+    username = str(payload.get("username", "")).strip()
+    password = str(payload.get("password", "")).strip()
+    email = str(payload.get("email", "")).strip()
+
+    if not username or len(username) < 3:
+        return JsonResponse({"error": "Логин должен содержать не менее 3 символов"}, status=400)
+    if not password or len(password) < 6:
+        return JsonResponse({"error": "Пароль должен содержать не менее 6 символов"}, status=400)
+
+    User = get_user_model()
+    if User.objects.filter(username__iexact=username).exists():
+        return JsonResponse({"error": f"Пользователь с логином '{username}' уже существует"}, status=400)
+
+    try:
+        user = User.objects.create_user(username=username, password=password, email=email)
+        login(request, user)
+        # Создаем для нового пользователя персональный первый диалог
+        _ensure_default_session(user=user)
+        return JsonResponse({
+            "success": True,
+            "is_authenticated": True,
+            "username": user.username,
+            "is_staff": user.is_staff,
+            "user": {
+                "username": user.username,
+                "is_staff": user.is_staff,
+            },
+        }, status=201)
+    except Exception as exc:
+        logger.error("Ошибка регистрации пользователя: %s", exc)
+        return JsonResponse({"error": f"Ошибка регистрации: {exc}"}, status=500)
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def api_auth_login(request: HttpRequest) -> JsonResponse:
+    """Вход пользователя в систему (Requirement #4)."""
+    try:
+        payload = json.loads(request.body.decode("utf-8") or "{}")
+    except Exception:
+        payload = {}
+    username = str(payload.get("username", "")).strip()
+    password = str(payload.get("password", "")).strip()
+
+    if not username or not password:
+        return JsonResponse({"error": "Введите имя пользователя и пароль"}, status=400)
+
+    user = authenticate(request, username=username, password=password)
+    if user is None:
+        return JsonResponse({"error": "Неверное имя пользователя или пароль"}, status=401)
+
+    login(request, user)
+    _ensure_default_session(user=user)
+    return JsonResponse({
+        "success": True,
+        "is_authenticated": True,
+        "username": user.username,
+        "is_staff": user.is_staff,
+        "user": {
+            "username": user.username,
+            "is_staff": user.is_staff,
+        },
+    })
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def api_auth_logout(request: HttpRequest) -> JsonResponse:
+    """Выход из аккаунта (Requirement #4)."""
+    logout(request)
+    return JsonResponse({"success": True, "is_authenticated": False})
+
+
+@require_http_methods(["GET"])
+def api_auth_status(request: HttpRequest) -> JsonResponse:
+    """Текущий статус авторизации пользователя."""
+    is_auth = request.user.is_authenticated
+    return JsonResponse({
+        "is_authenticated": is_auth,
+        "username": request.user.username if is_auth else "",
+        "is_staff": request.user.is_staff if is_auth else False,
+    })

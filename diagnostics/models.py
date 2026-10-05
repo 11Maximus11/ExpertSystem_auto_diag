@@ -5,6 +5,7 @@
 """
 
 import uuid
+from django.conf import settings
 from django.db import models
 
 
@@ -127,6 +128,14 @@ class SystemSettings(models.Model):
 
 class DiagnosticProject(models.Model):
     """Проект диагностики / автомобиль / заказ-наряд (по аналогии с AIBPMN и emotions_chat)."""
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="diagnostic_projects",
+        verbose_name="Владелец проекта",
+    )
     name = models.CharField(max_length=200, verbose_name="Название проекта")
     description = models.TextField(blank=True, default="", verbose_name="Описание проекта")
     created_at = models.DateTimeField(auto_now_add=True)
@@ -163,6 +172,14 @@ class DialogSession(models.Model):
     ]
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="dialog_sessions",
+        verbose_name="Владелец сессии",
+    )
     project = models.ForeignKey(
         DiagnosticProject,
         on_delete=models.SET_NULL,

@@ -279,8 +279,8 @@
   // 1. Отрисовка очереди вложений (Staging Bar: Коды DTC, Фото, Документы, Голос)
   // =========================================================================
   function renderStagingBar() {
-    const bar = el('stagingBar');
-    if (!bar) return;
+    const bars = [el('stagingBar'), el('arStagingBar')].filter(Boolean);
+    if (!bars.length) return;
     const chips = [];
 
     state.stagedCodes.forEach((code, idx) => {
@@ -319,31 +319,35 @@
       );
     }
 
-    bar.innerHTML = chips.join('');
+    const htmlContent = chips.join('');
+    bars.forEach((bar) => {
+      bar.innerHTML = htmlContent;
+      bar.style.display = chips.length ? 'flex' : 'none';
 
-    bar.querySelectorAll('[data-remove-code]').forEach((btn) => {
-      btn.addEventListener('click', () => {
-        state.stagedCodes.splice(Number(btn.dataset.removeCode), 1);
-        renderStagingBar();
+      bar.querySelectorAll('[data-remove-code]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          state.stagedCodes.splice(Number(btn.dataset.removeCode), 1);
+          renderStagingBar();
+        });
       });
-    });
-    bar.querySelectorAll('[data-remove-shot]').forEach((btn) => {
-      btn.addEventListener('click', () => {
-        state.stagedCameraShots.splice(Number(btn.dataset.removeShot), 1);
-        renderStagingBar();
+      bar.querySelectorAll('[data-remove-shot]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          state.stagedCameraShots.splice(Number(btn.dataset.removeShot), 1);
+          renderStagingBar();
+        });
       });
-    });
-    bar.querySelectorAll('[data-remove-file]').forEach((btn) => {
-      btn.addEventListener('click', () => {
-        state.stagedFiles.splice(Number(btn.dataset.removeFile), 1);
-        renderStagingBar();
+      bar.querySelectorAll('[data-remove-file]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          state.stagedFiles.splice(Number(btn.dataset.removeFile), 1);
+          renderStagingBar();
+        });
       });
-    });
-    bar.querySelectorAll('[data-remove-voice]').forEach((btn) => {
-      btn.addEventListener('click', () => {
-        state.stagedVoiceBlob = null;
-        state.stagedVoiceTranscript = '';
-        renderStagingBar();
+      bar.querySelectorAll('[data-remove-voice]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          state.stagedVoiceBlob = null;
+          state.stagedVoiceTranscript = '';
+          renderStagingBar();
+        });
       });
     });
   }
@@ -724,7 +728,7 @@
   function updateSelectionToolbar() {
     const toolbar = el('chatSelectionToolbar');
     const chkSelectAll = el('chkSelectAllMessages');
-    const counterBadge = el('selectedMessagesCount');
+    const counterBadge = el('selectionCountBadge') || el('selectedMessagesCount');
     const btnDelete = el('btnDeleteSelectedMessages');
     if (!toolbar) return;
 
@@ -733,8 +737,14 @@
     const checkedBoxes = checkboxes.filter((cb) => cb.checked);
     const checkedCount = checkedBoxes.length;
 
+    if (checkedCount > 0) {
+      toolbar.style.display = 'flex';
+    } else {
+      toolbar.style.display = 'none';
+    }
+
     if (counterBadge) {
-      counterBadge.textContent = `${checkedCount} / ${totalCount}`;
+      counterBadge.textContent = `${checkedCount} из ${totalCount} выбрано`;
     }
     if (chkSelectAll) {
       chkSelectAll.checked = totalCount > 0 && checkedCount === totalCount;
@@ -742,6 +752,10 @@
     }
     if (btnDelete) {
       btnDelete.disabled = checkedCount === 0;
+      const btnSpan = btnDelete.querySelector('span');
+      if (btnSpan) {
+        btnSpan.textContent = checkedCount > 0 ? `Удалить выбранные (${checkedCount})` : 'Удалить выбранные';
+      }
     }
   }
 
@@ -855,6 +869,25 @@
     }
   }
 
+  function scrollFeedToBottom(forceImmediate = false) {
+    const feed = el('chatFeed');
+    if (!feed) return;
+    const doScroll = () => {
+      feed.scrollTop = feed.scrollHeight;
+      const lastChild = feed.lastElementChild;
+      if (lastChild && typeof lastChild.scrollIntoView === 'function') {
+        lastChild.scrollIntoView({ behavior: forceImmediate ? 'auto' : 'smooth', block: 'end' });
+      }
+    };
+    if (forceImmediate) {
+      doScroll();
+    } else {
+      requestAnimationFrame(doScroll);
+      setTimeout(doScroll, 80);
+      setTimeout(doScroll, 260);
+    }
+  }
+
   async function loadSession(sessionId) {
     if (!sessionId) return;
     state.currentSessionId = sessionId;
@@ -874,9 +907,9 @@
       );
 
       const feed = el('chatFeed');
+      const messages = data.messages || [];
       if (feed) {
         feed.innerHTML = '';
-        const messages = data.messages || [];
         if (messages.length === 0) {
           renderEmptyState(feed);
         } else {
@@ -889,9 +922,27 @@
           if (lastAssistant) {
             updateInspectorAndArFromAssistant(lastAssistant);
           }
-          feed.scrollTop = feed.scrollHeight;
+          scrollFeedToBottom(true);
           updateSelectionToolbar();
         }
+      }
+
+      const arFeed = el('arAssistantFeed');
+      if (arFeed) {
+        arFeed.innerHTML = '';
+        if (!messages.length) {
+          arFeed.innerHTML = '<div style="color:var(--text-secondary);font-size:0.85rem;">Диалог пуст. Введите вопрос или отправьте голосовой запрос/снимок узла.</div>';
+        } else {
+          messages.forEach((m) => {
+            arFeed.appendChild(renderMessageElement(m));
+          });
+          arFeed.scrollTop = arFeed.scrollHeight;
+        }
+      }
+
+      const arSel = el('arSessionSelect');
+      if (arSel) {
+        arSel.value = String(sessionId);
       }
 
       document.querySelectorAll('.session-item').forEach((item) => {
@@ -1082,13 +1133,14 @@
       // 2. Сразу добавляем анимированную карточку генерации ответа ИИ
       pendingAssistantEl = createPendingGenerationCard();
       feed.appendChild(pendingAssistantEl);
-      feed.scrollTop = feed.scrollHeight;
+      scrollFeedToBottom();
     }
 
     if (arFeed && document.body.classList.contains('ar-glasses-mode')) {
       pendingArEl = createPendingGenerationCard();
       arFeed.innerHTML = '';
       arFeed.appendChild(pendingArEl);
+      arFeed.scrollTop = arFeed.scrollHeight;
     }
 
     try {
@@ -1142,8 +1194,18 @@
           }
           updateInspectorAndArFromAssistant(data.assistant_message);
         }
-        feed.scrollTop = feed.scrollHeight;
+        scrollFeedToBottom();
         updateSelectionToolbar();
+      }
+
+      if (arFeed && data.assistant_message) {
+        const arEl = renderMessageElement(data.assistant_message);
+        if (pendingArEl && pendingArEl.parentNode === arFeed) {
+          arFeed.replaceChild(arEl, pendingArEl);
+        } else {
+          arFeed.appendChild(arEl);
+        }
+        arFeed.scrollTop = arFeed.scrollHeight;
       }
 
       // Запускаем опрос фонового воркера, который обновляет краткую выжимку
@@ -1613,6 +1675,7 @@
     if (btnRayneo) btnRayneo.classList.toggle('active', state.arSubmode === 'rayneo');
     if (btnPassthrough) btnPassthrough.classList.toggle('active', state.arSubmode === 'passthrough');
 
+    const cameraWin = el('arWindowCamera');
     if (state.arSubmode === 'passthrough') {
       if (overlay) overlay.classList.add('passthrough-mode');
       if (bgVideo) {
@@ -1621,6 +1684,8 @@
           state.arBgCameraStream = await startCameraStream(bgVideo, state.cameraFacingMode);
         }
       }
+      // Скрываем дублирующее плавающее окно камеры — видеопоток уже является полноэкранным фоном
+      if (cameraWin) cameraWin.style.display = 'none';
     } else {
       if (overlay) overlay.classList.remove('passthrough-mode');
       if (bgVideo) {
@@ -1628,6 +1693,8 @@
         stopStream(state.arBgCameraStream);
         state.arBgCameraStream = null;
       }
+      // В оптическом режиме RayNeo на черном фоне #000000 окно визира камеры отображается
+      if (cameraWin) cameraWin.style.display = 'flex';
     }
   }
 
@@ -1651,6 +1718,8 @@
     state.arBgCameraStream = null;
     const bgVideo = el('arBgVideoEl');
     if (bgVideo) bgVideo.style.display = 'none';
+    const cameraWin = el('arWindowCamera');
+    if (cameraWin) cameraWin.style.display = '';
     try {
       if (document.fullscreenElement && document.exitFullscreen) {
         document.exitFullscreen();
@@ -2062,19 +2131,43 @@
       }
     });
     el('btnArSnapAndDiagnose')?.addEventListener('click', () => {
-      const shot = captureVideoFrame(el('arCameraVideoEl'));
+      const activeVideo = state.arSubmode === 'passthrough' ? el('arBgVideoEl') : el('arCameraVideoEl');
+      const shot = captureVideoFrame(activeVideo || el('arCameraVideoEl'));
       state.stagedCameraShots.push(shot);
+      renderStagingBar();
       sendDiagnosticQuery('Визуальная диагностика узла автомобиля с камеры AR-очков');
     });
+
+    el('btnArSnapInAssistant')?.addEventListener('click', () => {
+      const activeVideo = state.arSubmode === 'passthrough' ? el('arBgVideoEl') : el('arCameraVideoEl');
+      const shot = captureVideoFrame(activeVideo || el('arCameraVideoEl'));
+      state.stagedCameraShots.push(shot);
+      renderStagingBar();
+    });
+
     el('btnArSendQuick')?.addEventListener('click', () => {
       const inp = el('arQuickInput');
-      if (inp && inp.value.trim()) {
-        const val = inp.value.trim();
-        inp.value = '';
-        sendDiagnosticQuery(val);
+      const val = inp ? inp.value.trim() : '';
+      if (!val && !state.stagedVoiceBlob && !state.stagedCameraShots.length && !state.stagedCodes.length && !state.stagedFiles.length) {
+        return;
+      }
+      if (inp) inp.value = '';
+      sendDiagnosticQuery(val || 'Диагностический запрос в AR');
+    });
+
+    el('btnArVoiceTrigger')?.addEventListener('click', () => toggleVoiceRecording());
+    el('btnArVoiceTriggerAssistant')?.addEventListener('click', () => toggleVoiceRecording());
+
+    el('arSessionSelect')?.addEventListener('change', (e) => {
+      const targetId = e.target.value;
+      if (targetId) {
+        loadSession(targetId);
       }
     });
-    el('btnArVoiceTrigger')?.addEventListener('click', () => toggleVoiceRecording());
+
+    el('btnArNewSession')?.addEventListener('click', async () => {
+      await createNewSession();
+    });
 
     // =========================================================================
     // Модальное окно настроек и междиалоговой памяти
@@ -2237,10 +2330,18 @@
       deleteSelectedMessages();
     });
 
+    el('btnDeselectAllMessages')?.addEventListener('click', () => {
+      document.querySelectorAll('.msg-select-cb').forEach((cb) => {
+        cb.checked = false;
+      });
+      updateSelectionToolbar();
+    });
+
     el('btnClearAllMessages')?.addEventListener('click', () => {
       clearAllMessages();
     });
 
+    initAuthUi();
     initDraggableArWindows();
     if (document.body.classList.contains('ar-glasses-mode')) {
       startCameraStream(el('arCameraVideoEl'), state.cameraFacingMode).then((s) => {
@@ -2252,6 +2353,127 @@
     if ('serviceWorker' in navigator) {
       navigator.serviceWorker.register('/sw.js').catch(() => {});
     }
+  }
+
+  // =========================================================================
+  // 10. Управление учетными записями и авторизацией (Requirement #4)
+  // =========================================================================
+  function initAuthUi() {
+    const authModal = el('authModal');
+    const btnOpenAuth = el('btnOpenAuthModal');
+    const btnCloseAuth = el('btnCloseAuthModal');
+    const tabLogin = el('tabAuthLogin');
+    const tabRegister = el('tabAuthRegister');
+    const authForm = el('authForm');
+    const emailGroup = el('authEmailGroup');
+    const btnSubmit = el('btnSubmitAuth');
+    const errBanner = el('authErrorBanner');
+    const btnLogout = el('btnLogout');
+
+    let authMode = 'login';
+
+    function setAuthMode(mode) {
+      authMode = mode;
+      if (errBanner) {
+        errBanner.style.display = 'none';
+        errBanner.textContent = '';
+      }
+      if (mode === 'login') {
+        tabLogin?.classList.add('active');
+        tabRegister?.classList.remove('active');
+        if (emailGroup) emailGroup.style.display = 'none';
+        if (btnSubmit) {
+          const s = btnSubmit.querySelector('span');
+          if (s) s.textContent = 'Войти';
+        }
+        const title = el('authModalTitle');
+        if (title) title.textContent = 'Вход в ИИдеал Авто';
+      } else {
+        tabRegister?.classList.add('active');
+        tabLogin?.classList.remove('active');
+        if (emailGroup) emailGroup.style.display = 'flex';
+        if (btnSubmit) {
+          const s = btnSubmit.querySelector('span');
+          if (s) s.textContent = 'Зарегистрироваться';
+        }
+        const title = el('authModalTitle');
+        if (title) title.textContent = 'Регистрация в ИИдеал Авто';
+      }
+    }
+
+    tabLogin?.addEventListener('click', () => setAuthMode('login'));
+    tabRegister?.addEventListener('click', () => setAuthMode('register'));
+
+    btnOpenAuth?.addEventListener('click', () => {
+      setAuthMode('login');
+      if (authModal) authModal.style.display = 'flex';
+      el('authUsernameInput')?.focus();
+    });
+
+    btnCloseAuth?.addEventListener('click', () => {
+      if (authModal) authModal.style.display = 'none';
+    });
+
+    authModal?.addEventListener('click', (e) => {
+      if (e.target === authModal) {
+        authModal.style.display = 'none';
+      }
+    });
+
+    authForm?.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const username = (el('authUsernameInput')?.value || '').trim();
+      const password = (el('authPasswordInput')?.value || '').trim();
+      const email = (el('authEmailInput')?.value || '').trim();
+
+      if (!username || !password) return;
+
+      if (btnSubmit) btnSubmit.disabled = true;
+      if (errBanner) {
+        errBanner.style.display = 'none';
+        errBanner.textContent = '';
+      }
+
+      const endpoint = authMode === 'login' ? '/api/auth/login/' : '/api/auth/register/';
+      const payload = { username, password };
+      if (authMode === 'register' && email) payload.email = email;
+
+      try {
+        const resp = await fetch(endpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        const data = await resp.json();
+        if (!resp.ok) {
+          if (errBanner) {
+            errBanner.textContent = data.error || 'Ошибка авторизации';
+            errBanner.style.display = 'block';
+          }
+          return;
+        }
+
+        window.location.reload();
+      } catch (err) {
+        if (errBanner) {
+          errBanner.textContent = 'Ошибка сетевого соединения с сервером';
+          errBanner.style.display = 'block';
+        }
+      } finally {
+        if (btnSubmit) btnSubmit.disabled = false;
+      }
+    });
+
+    btnLogout?.addEventListener('click', async () => {
+      const confirmed = await uiConfirm('Вы действительно хотите выйти из своего аккаунта?', 'Выход из системы', false, 'Выйти');
+      if (!confirmed) return;
+      try {
+        await fetch('/api/auth/logout/', { method: 'POST' });
+        window.location.reload();
+      } catch (_) {
+        window.location.reload();
+      }
+    });
   }
 
   document.addEventListener('DOMContentLoaded', () => {

@@ -8,6 +8,9 @@
 6. Нативный аудиовход Gemma 4 12B (embed_audio 16kHz), прикрепление фото и документов разных форматов
 7. Режим для AR-очков (два подрежима: RayNeo Optical #000000 и Камера-фон Passthrough)
 8. Интерактивные чекбоксы задач ремонта, блок инвентаря и автообрезка ответа по последнему предложению
+9. Удаление сообщений и контекста из чата
+10. Проекты, тегирование, закрепление и переименование диалогов
+11. Регистрация, вход и многопользовательская изоляция сессий и проектов
 """
 
 import base64
@@ -413,5 +416,93 @@ class AIdealAutoComprehensiveTests(TransactionTestCase):
         self.assertEqual(idx_resp.status_code, 200)
         self.assertIn("projects", idx_resp.context)
         self.assertIn("all_tags", idx_resp.context)
+
+    def test_11_user_authentication_and_multi_tenant_isolation(self):
+        """Проверка регистрации, входа, выхода и изоляции диалогов/проектов между пользователями."""
+        # 1. Проверка исходного статуса гостя
+        guest_status = self.client.get("/api/auth/status/")
+        self.assertEqual(guest_status.status_code, 200)
+        self.assertFalse(guest_status.json()["is_authenticated"])
+
+        # 2. Регистрация первого пользователя
+        reg1_resp = self.client.post(
+            "/api/auth/register/",
+            data=json.dumps({"username": "mechanic_ivan", "password": "Password123!", "password_confirm": "Password123!"}),
+            content_type="application/json",
+        )
+        self.assertEqual(reg1_resp.status_code, 201)
+        self.assertTrue(reg1_resp.json()["is_authenticated"])
+        self.assertEqual(reg1_resp.json()["user"]["username"], "mechanic_ivan")
+
+        # 3. Создание проекта и сессии под первым пользователем
+        p1_resp = self.client.post(
+            "/api/projects/",
+            data=json.dumps({"name": "Проект Ивана", "description": "Сервис VAG"}),
+            content_type="application/json",
+        )
+        self.assertEqual(p1_resp.status_code, 201)
+        p1_id = p1_resp.json()["id"]
+
+        s1_resp = self.client.post(
+            "/api/sessions/",
+            data=json.dumps({"vehicle_info": "VW Golf 7", "project_id": p1_id, "title": "Диагностика Гольфа"}),
+            content_type="application/json",
+        )
+        self.assertEqual(s1_resp.status_code, 201)
+        s1_id = s1_resp.json()["id"]
+
+        # 4. Выход первого пользователя
+        logout_resp = self.client.post("/api/auth/logout/")
+        self.assertEqual(logout_resp.status_code, 200)
+        self.assertFalse(logout_resp.json()["is_authenticated"])
+
+        # 5. Регистрация второго пользователя
+        reg2_resp = self.client.post(
+            "/api/auth/register/",
+            data=json.dumps({"username": "mechanic_olga", "password": "Password456!", "password_confirm": "Password456!"}),
+            content_type="application/json",
+        )
+        self.assertEqual(reg2_resp.status_code, 201)
+        self.assertEqual(reg2_resp.json()["user"]["username"], "mechanic_olga")
+
+        # 6. Проверка изоляции: Ольга НЕ должна видеть проекты и сессии Ивана
+        olga_projects = self.client.get("/api/projects/").json()["projects"]
+        self.assertEqual(len(olga_projects), 0)
+
+        olga_sessions = self.client.get("/api/sessions/").json()["sessions"]
+        olga_session_ids = [s["id"] for s in olga_sessions]
+        self.assertNotIn(s1_id, olga_session_ids)
+
+        # 7. Ольга создает свой проект
+        p2_resp = self.client.post(
+            "/api/projects/",
+            data=json.dumps({"name": "Проект Ольги", "description": "Сервис BMW"}),
+            content_type="application/json",
+        )
+        self.assertEqual(p2_resp.status_code, 201)
+        p2_id = p2_resp.json()["id"]
+
+        olga_projects_updated = self.client.get("/api/projects/").json()["projects"]
+        self.assertEqual(len(olga_projects_updated), 1)
+        self.assertEqual(olga_projects_updated[0]["name"], "Проект Ольги")
+
+        # 8. Вход обратно под Иваном: Иван видит только свой проект и сессию
+        self.client.post("/api/auth/logout/")
+        login_ivan = self.client.post(
+            "/api/auth/login/",
+            data=json.dumps({"username": "mechanic_ivan", "password": "Password123!"}),
+            content_type="application/json",
+        )
+        self.assertEqual(login_ivan.status_code, 200)
+        self.assertEqual(login_ivan.json()["user"]["username"], "mechanic_ivan")
+
+        ivan_projects = self.client.get("/api/projects/").json()["projects"]
+        self.assertEqual(len(ivan_projects), 1)
+        self.assertEqual(ivan_projects[0]["name"], "Проект Ивана")
+
+        ivan_sessions = self.client.get("/api/sessions/").json()["sessions"]
+        ivan_session_ids = [s["id"] for s in ivan_sessions]
+        self.assertIn(s1_id, ivan_session_ids)
+        self.assertNotIn(olga_session_ids[0], ivan_session_ids)
 
 

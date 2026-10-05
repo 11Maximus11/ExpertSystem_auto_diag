@@ -116,6 +116,49 @@ def decode_audio_to_waveform_16k(
     return np.clip(waveform, -1.0, 1.0).astype(np.float32)
 
 
+_asr_pipeline = None
+
+
+def get_asr_pipeline():
+    """Ленивая инициализация легковесной модели Whisper для надёжного распознавания русской речи."""
+    global _asr_pipeline
+    if _asr_pipeline is None:
+        try:
+            from transformers import pipeline
+            import torch
+
+            device = "cuda:0" if torch.cuda.is_available() else "cpu"
+            _asr_pipeline = pipeline(
+                "automatic-speech-recognition",
+                model="openai/whisper-tiny",
+                device=device,
+            )
+            logger.info("[Voice STT] Whisper-tiny pipeline успешно инициализирован на %s", device)
+        except Exception as exc:
+            logger.warning("[Voice STT] Не удалось инициализировать Whisper: %s", exc)
+            _asr_pipeline = False
+    return _asr_pipeline if _asr_pipeline is not False else None
+
+
+def transcribe_waveform_16k(waveform: np.ndarray) -> str:
+    """Транскрибирует 16 кГц монофонический аудиосигнал в русский текст через Whisper."""
+    if waveform is None or len(waveform) < 1600:
+        return ""
+    asr = get_asr_pipeline()
+    if not asr:
+        return ""
+    try:
+        res = asr(waveform, generate_kwargs={"language": "russian", "task": "transcribe"})
+        text = (res.get("text") or "").strip()
+        # Исключаем технические артефакты Whisper на шуме микрофона или тишине
+        if not text or text in {"...", "....", "Субтитры", "Субтитры сделал", "Редактор субтитров"} or all(c in " .," for c in text):
+            return ""
+        return text
+    except Exception as exc:
+        logger.warning("[Voice STT] Ошибка транскрибации речи Whisper: %s", exc)
+        return ""
+
+
 def process_voice_input(
     audio_bytes: Optional[bytes],
     filename: str = "voice.webm",
@@ -127,8 +170,9 @@ def process_voice_input(
     """
     Конвейер прямого мультимодального аудиовхода для модели Google Gemma 4 12B:
     декодирует голосовую запись или аудиофайл в 16 кГц float32 массив для нативного
-    модуля `model.embed_audio` (токен `<|audio|>`), сохраняя также текстовую подсказку
-    браузерного SpeechRecognition (если она есть) для гибридного поиска в базе знаний RAG.
+    модуля `model.embed_audio` (токен `<|audio|>`), а также транскрибирует человеческую
+    речь в текст (через браузер или локальный Whisper) для точного формирования вопроса
+    пользователя и поиска в базе знаний RAG.
     """
     hint_text = (browser_transcript or client_transcript or "").strip()
 
@@ -147,8 +191,19 @@ def process_voice_input(
     duration_sec = round(float(len(waveform)) / TARGET_SAMPLE_RATE, 2) if waveform is not None else 0.0
     attached = bool(waveform is not None and len(waveform) > 0)
 
+    # Если браузер не передал распознанный текст (например, нет Google Speech Cloud в браузере),
+    # автоматически распознаем русскую речь из аудиодорожки через Whisper:
+    if not hint_text and waveform is not None and len(waveform) > 0:
+        try:
+            whisper_text = transcribe_waveform_16k(waveform)
+            if whisper_text:
+                hint_text = whisper_text
+                logger.info("[Voice STT] Успешно распознана русская речь: '%s'", hint_text)
+        except Exception as exc:
+            logger.warning("[Voice STT] Ошибка при транскрибации Whisper: %s", exc)
+
     logger.debug(
-        "[Voice Direct Gemma 4] Файл=%s (%d байт) -> декодировано=%s, длительность=%.2f с, подсказка браузера='%s'",
+        "[Voice Direct Gemma 4] Файл=%s (%d байт) -> декодировано=%s, длительность=%.2f с, подсказка='%s'",
         filename,
         len(audio_bytes),
         attached,
@@ -163,5 +218,5 @@ def process_voice_input(
         "audio_attached_to_model": attached,
         "audio_waveform_16k": waveform,
         "duration_sec": duration_sec,
-        "engine": "Gemma 4 12B Native Audio (embed_audio 16kHz)",
+        "engine": "Gemma 4 12B Native Audio (embed_audio 16kHz) + Whisper STT" if hint_text else "Gemma 4 12B Native Audio (embed_audio 16kHz)",
     }

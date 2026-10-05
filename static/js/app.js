@@ -21,6 +21,12 @@
     isRecording: false,
     mediaRecorder: null,
     speechRecognition: null,
+    stopRecordingPromise: null,
+    audioCtx: null,
+    analyserNode: null,
+    spectrogramRafId: null,
+    smoothedBands: new Float32Array(28),
+    smoothedEnergy: 0,
     cameraStream: null,
     arCameraStream: null,
     arBgCameraStream: null,
@@ -563,6 +569,10 @@
   }
 
   async function sendDiagnosticQuery(overrideQuery) {
+    if (state.isRecording || state.stopRecordingPromise) {
+      await stopVoiceRecordingAndWait();
+    }
+
     const queryInput = el('queryInput');
     const vehInput = el('vehicleInfoInput');
     const queryText = (typeof overrideQuery === 'string' ? overrideQuery : queryInput.value).trim();
@@ -901,29 +911,188 @@
   }
 
   // =========================================================================
-  // 7. Голосовой ввод (Прямой нативный аудиовход Gemma 4 16 кГц)
+  // 7. Голосовой ввод (Прямой нативный аудиовход Gemma 4 16 кГц + Спектрограммный пульсатор)
   // =========================================================================
-  async function toggleVoiceRecording() {
-    const btn = el('btnVoiceRecord');
-    if (state.isRecording) {
-      state.isRecording = false;
-      if (btn) btn.classList.remove('recording');
-      if (state.mediaRecorder && state.mediaRecorder.state !== 'inactive') {
+  function setMicRecordingVisualState(active) {
+    const btns = [el('btnVoiceRecord'), el('btnArVoiceTrigger')];
+    const wraps = [el('micButtonWrap'), el('arMicButtonWrap')];
+    btns.forEach((b) => {
+      if (b) b.classList.toggle('recording', active);
+    });
+    wraps.forEach((w) => {
+      if (w) {
+        w.classList.toggle('recording', active);
+        if (!active) w.style.setProperty('--mic-level', '0');
+      }
+    });
+  }
+
+  function startMicSpectrogram(stream) {
+    stopMicSpectrogram();
+    try {
+      const AudioCtx = window.AudioContext || window.webkitAudioContext;
+      if (!AudioCtx) return;
+      const audioCtx = new AudioCtx();
+      const source = audioCtx.createMediaStreamSource(stream);
+      const analyser = audioCtx.createAnalyser();
+      analyser.fftSize = 128;
+      analyser.smoothingTimeConstant = 0.84;
+      source.connect(analyser);
+
+      state.audioCtx = audioCtx;
+      state.analyserNode = analyser;
+      state.smoothedBands.fill(0);
+      state.smoothedEnergy = 0;
+
+      const freqData = new Uint8Array(analyser.frequencyBinCount);
+      const canvases = [el('micSpectrogramCanvas'), el('arMicSpectrogramCanvas')].filter(Boolean);
+      const wraps = [el('micButtonWrap'), el('arMicButtonWrap')].filter(Boolean);
+      const numBars = state.smoothedBands.length;
+      const startTime = performance.now();
+
+      const renderFrame = (now) => {
+        if (!state.isRecording) return;
+        analyser.getByteFrequencyData(freqData);
+        const t = (now - startTime) * 0.001;
+
+        let totalEnergy = 0;
+        for (let i = 0; i < numBars; i++) {
+          const binIdx = Math.min(freqData.length - 1, Math.floor((i / numBars) * (freqData.length * 0.72)) + 1);
+          const rawNorm = freqData[binIdx] / 255.0;
+          // Плавная органическая базовая волна + реакция на спектр голоса
+          const idleWave = 0.12 + 0.07 * Math.sin(t * 3.4 + i * 0.45) + 0.04 * Math.cos(t * 2.1 - i * 0.3);
+          const target = Math.min(1.0, idleWave + Math.pow(rawNorm, 0.85) * 0.92);
+          // Экспоненциальное сглаживание (плавный подъем и мягкое затухание)
+          const lerpFactor = target > state.smoothedBands[i] ? 0.28 : 0.14;
+          state.smoothedBands[i] += (target - state.smoothedBands[i]) * lerpFactor;
+          totalEnergy += state.smoothedBands[i];
+        }
+
+        const avgEnergy = totalEnergy / numBars;
+        state.smoothedEnergy += (avgEnergy - state.smoothedEnergy) * 0.22;
+        const levelStr = state.smoothedEnergy.toFixed(3);
+        wraps.forEach((w) => w.style.setProperty('--mic-level', levelStr));
+
+        canvases.forEach((canvas) => {
+          const ctx = canvas.getContext('2d');
+          if (!ctx) return;
+          const w = canvas.width;
+          const h = canvas.height;
+          const cx = w / 2;
+          const cy = h / 2;
+          ctx.clearRect(0, 0, w, h);
+
+          // 1. Плавное гармоническое кольцо-пульсатор вокруг кнопки микрофона
+          const baseRadius = 23.5;
+          const pulseRadius = baseRadius + 2.5 + state.smoothedEnergy * 9.5;
+          const ringGrad = ctx.createRadialGradient(cx, cy, baseRadius - 2, cx, cy, pulseRadius + 8);
+          ringGrad.addColorStop(0, 'rgba(249, 115, 22, 0.0)');
+          ringGrad.addColorStop(0.55, `rgba(249, 115, 22, ${(0.22 + state.smoothedEnergy * 0.38).toFixed(3)})`);
+          ringGrad.addColorStop(0.85, `rgba(239, 68, 68, ${(0.14 + state.smoothedEnergy * 0.28).toFixed(3)})`);
+          ringGrad.addColorStop(1, 'rgba(56, 189, 248, 0.0)');
+
+          ctx.beginPath();
+          ctx.arc(cx, cy, pulseRadius + 4, 0, Math.PI * 2);
+          ctx.fillStyle = ringGrad;
+          ctx.fill();
+
+          // 2. Радиальные лепестки спектрограммы вокруг микрофончика
+          ctx.lineCap = 'round';
+          ctx.lineWidth = 2.6;
+          const rotationOffset = t * 0.55;
+
+          for (let i = 0; i < numBars; i++) {
+            const angle = (i / numBars) * Math.PI * 2 + rotationOffset;
+            const amp = state.smoothedBands[i];
+            const innerR = baseRadius + 1.0;
+            const barLen = 2.5 + amp * 14.0;
+            const outerR = innerR + barLen;
+
+            const x1 = cx + Math.cos(angle) * innerR;
+            const y1 = cy + Math.sin(angle) * innerR;
+            const x2 = cx + Math.cos(angle) * outerR;
+            const y2 = cy + Math.sin(angle) * outerR;
+
+            const hueMix = i / numBars;
+            const rCol = Math.round(249 - hueMix * 15);
+            const gCol = Math.round(115 + Math.sin(hueMix * Math.PI) * 55);
+            const bCol = Math.round(22 + amp * 165);
+            const alpha = (0.45 + amp * 0.55).toFixed(3);
+
+            ctx.strokeStyle = `rgba(${rCol}, ${gCol}, ${bCol}, ${alpha})`;
+            ctx.beginPath();
+            ctx.moveTo(x1, y1);
+            ctx.lineTo(x2, y2);
+            ctx.stroke();
+          }
+        });
+
+        state.spectrogramRafId = requestAnimationFrame(renderFrame);
+      };
+
+      state.spectrogramRafId = requestAnimationFrame(renderFrame);
+    } catch (e) {
+      console.debug('Не удалось инициализировать спектрограмму Web Audio API:', e);
+    }
+  }
+
+  function stopMicSpectrogram() {
+    if (state.spectrogramRafId) {
+      cancelAnimationFrame(state.spectrogramRafId);
+      state.spectrogramRafId = null;
+    }
+    if (state.audioCtx) {
+      try {
+        state.audioCtx.close();
+      } catch (_) {}
+      state.audioCtx = null;
+      state.analyserNode = null;
+    }
+    [el('micSpectrogramCanvas'), el('arMicSpectrogramCanvas')].forEach((c) => {
+      if (c) {
+        const ctx = c.getContext('2d');
+        ctx?.clearRect(0, 0, c.width, c.height);
+      }
+    });
+  }
+
+  async function stopVoiceRecordingAndWait() {
+    state.isRecording = false;
+    setMicRecordingVisualState(false);
+    stopMicSpectrogram();
+
+    if (state.speechRecognition) {
+      try {
+        state.speechRecognition.stop();
+      } catch (_) {}
+      state.speechRecognition = null;
+    }
+
+    if (state.mediaRecorder && state.mediaRecorder.state !== 'inactive') {
+      try {
         state.mediaRecorder.stop();
-      }
-      if (state.speechRecognition) {
-        try {
-          state.speechRecognition.stop();
-        } catch (e) {}
-      }
+      } catch (_) {}
+    }
+
+    if (state.stopRecordingPromise) {
+      try {
+        await state.stopRecordingPromise;
+      } catch (_) {}
+      state.stopRecordingPromise = null;
+    }
+  }
+
+  async function toggleVoiceRecording() {
+    if (state.isRecording) {
+      await stopVoiceRecordingAndWait();
       return;
     }
 
     state.isRecording = true;
     state.stagedVoiceTranscript = '';
-    if (btn) btn.classList.add('recording');
+    setMicRecordingVisualState(true);
 
-    // Параллельно запускаем браузерный распознаватель для мгновенного предпросмотра
+    // Параллельно запускаем браузерный распознаватель для мгновенного предпросмотра (если поддерживается)
     const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (SpeechRec) {
       try {
@@ -948,22 +1117,44 @@
 
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      startMicSpectrogram(stream);
+
       const chunks = [];
-      const mr = new MediaRecorder(stream);
+      let mimeType = 'audio/webm';
+      if (typeof MediaRecorder.isTypeSupported === 'function') {
+        const preferred = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus', 'audio/mp4'];
+        for (const cand of preferred) {
+          if (MediaRecorder.isTypeSupported(cand)) {
+            mimeType = cand;
+            break;
+          }
+        }
+      }
+
+      const mr = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
       mr.ondataavailable = (ev) => {
         if (ev.data && ev.data.size > 0) chunks.push(ev.data);
       };
-      mr.onstop = () => {
-        stopStream(stream);
-        const blob = new Blob(chunks, { type: 'audio/webm' });
-        state.stagedVoiceBlob = blob;
-        renderStagingBar();
-      };
-      mr.start();
+
+      state.stopRecordingPromise = new Promise((resolve) => {
+        mr.onstop = () => {
+          stopStream(stream);
+          stopMicSpectrogram();
+          if (chunks.length > 0) {
+            const blob = new Blob(chunks, { type: mimeType || 'audio/webm' });
+            state.stagedVoiceBlob = blob;
+            renderStagingBar();
+          }
+          resolve();
+        };
+      });
+
+      mr.start(150);
       state.mediaRecorder = mr;
     } catch (err) {
       state.isRecording = false;
-      if (btn) btn.classList.remove('recording');
+      setMicRecordingVisualState(false);
+      stopMicSpectrogram();
       alert('Микрофон недоступен или доступ запрещён браузером.');
     }
   }

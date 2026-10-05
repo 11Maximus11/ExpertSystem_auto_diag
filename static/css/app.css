@@ -808,13 +808,94 @@ select:focus-visible {
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
+  position: relative;
+  z-index: 2;
+  transition: background-color 0.28s cubic-bezier(0.22, 1, 0.36, 1),
+              border-color 0.28s cubic-bezier(0.22, 1, 0.36, 1),
+              color 0.28s cubic-bezier(0.22, 1, 0.36, 1),
+              box-shadow 0.28s cubic-bezier(0.22, 1, 0.36, 1),
+              transform 0.28s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.mic-button-wrap {
+  position: relative;
+  width: 44px;
+  height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  --mic-level: 0;
+}
+
+.mic-button-wrap .btn-mic {
+  border-radius: 50%;
+}
+
+.mic-spectrogram-ring {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 82px;
+  height: 82px;
+  transform: translate(-50%, -50%) scale(0.75);
+  pointer-events: none;
+  z-index: 1;
+  opacity: 0;
+  transition: opacity 0.38s cubic-bezier(0.22, 1, 0.36, 1),
+              transform 0.38s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.mic-button-wrap.recording .mic-spectrogram-ring {
+  opacity: 1;
+  transform: translate(-50%, -50%) scale(1);
+}
+
+.mic-pulse-aura {
+  position: absolute;
+  inset: -4px;
+  border-radius: 50%;
+  pointer-events: none;
+  z-index: 0;
+  opacity: 0;
+  background: radial-gradient(
+    circle,
+    rgba(249, 115, 22, 0.42) 0%,
+    rgba(239, 68, 68, 0.25) 52%,
+    rgba(56, 189, 248, 0.0) 76%
+  );
+  transform: scale(calc(0.9 + var(--mic-level, 0) * 0.65));
+  transition: opacity 0.36s cubic-bezier(0.22, 1, 0.36, 1),
+              transform 0.12s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.mic-button-wrap.recording .mic-pulse-aura {
+  opacity: 1;
+  animation: micBreathingAura 2.2s ease-in-out infinite;
+}
+
+@keyframes micBreathingAura {
+  0%, 100% {
+    filter: blur(4px);
+  }
+  50% {
+    filter: blur(7px);
+  }
 }
 
 .btn-tool.recording {
-  background: rgba(239, 68, 68, 0.2);
-  border-color: var(--status-crit);
-  color: var(--status-crit);
+  background: radial-gradient(circle at 50% 35%, rgba(249, 115, 22, 0.34), rgba(239, 68, 68, 0.26));
+  border-color: #f97316;
+  color: #fff7ed;
+  box-shadow: 0 0 18px rgba(249, 115, 22, 0.48), inset 0 0 10px rgba(239, 68, 68, 0.35);
+  transform: scale(calc(1.03 + var(--mic-level, 0) * 0.08));
 }
+
+.btn-tool.recording .mic-svg-icon {
+  filter: drop-shadow(0 0 6px rgba(249, 115, 22, 0.85));
+  transition: transform 0.18s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
 
 .composer-textarea {
   flex: 1;

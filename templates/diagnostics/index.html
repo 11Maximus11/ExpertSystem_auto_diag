@@ -189,12 +189,16 @@
               </svg>
             </button>
 
-            <button type="button" class="btn-tool" id="btnVoiceRecord" title="Нативный голосовой ввод в модель Gemma 4 (embed_audio)" aria-label="Голосовой ввод">
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/>
-                <path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="22"/>
-              </svg>
-            </button>
+            <div class="mic-button-wrap" id="micButtonWrap">
+              <span class="mic-pulse-aura" aria-hidden="true"></span>
+              <canvas class="mic-spectrogram-ring" id="micSpectrogramCanvas" width="88" height="88" aria-hidden="true"></canvas>
+              <button type="button" class="btn-tool btn-mic" id="btnVoiceRecord" title="Нативный голосовой ввод в модель Gemma 4 (embed_audio)" aria-label="Голосовой ввод">
+                <svg class="mic-svg-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/>
+                  <path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="22"/>
+                </svg>
+              </button>
+            </div>
           </div>
 
           <textarea id="queryInput" class="composer-textarea" rows="1" placeholder="Опишите симптом, прикрепите фото/код ошибки или запишите голос..." enterkeyhint="send" aria-label="Текст диагностического запроса"></textarea>
@@ -412,11 +416,15 @@
           <button type="button" class="btn-send" id="btnArSnapAndDiagnose" style="flex:1; justify-content:center;">
             Сфоткать узел в ИИ
           </button>
-          <button type="button" class="btn-tool" id="btnArVoiceTrigger" title="Голосовой запрос в AR">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
-            </svg>
-          </button>
+          <div class="mic-button-wrap" id="arMicButtonWrap">
+            <span class="mic-pulse-aura" aria-hidden="true"></span>
+            <canvas class="mic-spectrogram-ring" id="arMicSpectrogramCanvas" width="88" height="88" aria-hidden="true"></canvas>
+            <button type="button" class="btn-tool btn-mic" id="btnArVoiceTrigger" title="Голосовой запрос в AR">
+              <svg class="mic-svg-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+              </svg>
+            </button>
+          </div>
         </div>
       </div>
     </div>

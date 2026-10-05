@@ -376,7 +376,7 @@ def api_ask_expert(request: HttpRequest) -> JsonResponse:
                     "clues": img_analysis.get("visual_clues", []),
                 }
             )
-        elif ext in (".wav", ".mp3", ".ogg", ".webm", ".m4a"):
+        elif ext in (".wav", ".mp3", ".ogg", ".webm", ".m4a", ".flac", ".aac"):
             rel_url = _save_media_bytes(f_bytes, "voice", f_name)
             model_name = (
                 active_settings.airllm_model_id
@@ -397,7 +397,7 @@ def api_ask_expert(request: HttpRequest) -> JsonResponse:
                     "name": f_name,
                     "url": rel_url,
                     "mode": voice_info["mode_label"],
-                    "transcript": voice_info["transcript"],
+                    "transcript": voice_info["transcript"] or f"Прямой аудиовход 16 кГц ({voice_info.get('duration_sec', 0.0):.1f} с)",
                 }
             )
         else:
@@ -439,7 +439,7 @@ def api_ask_expert(request: HttpRequest) -> JsonResponse:
                     "name": "Голосовой запрос",
                     "url": rel_url,
                     "mode": voice_info["mode_label"],
-                    "transcript": voice_info["transcript"],
+                    "transcript": voice_info["transcript"] or f"Прямой аудиовход 16 кГц ({voice_info.get('duration_sec', 0.0):.1f} с)",
                 }
             )
         except Exception:
@@ -463,6 +463,9 @@ def api_ask_expert(request: HttpRequest) -> JsonResponse:
         query = client_transcript
     if not query and attached_codes:
         query = f"Диагностика и план устранения кодов ошибок: {', '.join(attached_codes)}"
+    if not query and voice_info:
+        dur = voice_info.get("duration_sec") or 0.0
+        query = f"Голосовой запрос / аудиозапись ({dur:.1f} с)"
     if not query and image_analyses:
         query = "Визуальная диагностика неисправности автомобиля по прикреплённому фото"
     if not query and doc_analyses:

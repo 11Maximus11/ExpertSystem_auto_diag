@@ -593,7 +593,15 @@ class AirLLMVulkanOrchestrator:
                     )
                 )
 
-        search_q = query.strip() or (" ".join(all_codes) if all_codes else "")
+        is_pure_voice_placeholder = bool(
+            query.strip().startswith("Голосовой запрос / аудиозапись")
+            and not (voice_info and voice_info.get("transcript"))
+        )
+        search_q = (
+            (" ".join(all_codes) if all_codes else "")
+            if is_pure_voice_placeholder
+            else (query.strip() or (" ".join(all_codes) if all_codes else ""))
+        )
         rag_hits = self.rag_engine.diagnose(search_q, top_n=4, dtc_codes=all_codes) if search_q else []
         if rag_hits:
             top_hit = rag_hits[0]
@@ -672,16 +680,26 @@ class AirLLMVulkanOrchestrator:
         doc_analyses: List[Dict[str, Any]],
         voice_info: Optional[Dict[str, Any]] = None,
     ) -> DiagnosticStructuredResponse:
-        # Разговорный запрос
-        if not rag_hits and not dtc_cards and not image_analyses and not doc_analyses and not (voice_info and voice_info.get("audio_attached_to_model")):
+        # Разговорный или голосовой запрос без явно найденных кодов/регламентов
+        if not rag_hits and not dtc_cards and not image_analyses and not doc_analyses:
+            has_audio = bool(voice_info and voice_info.get("audio_attached_to_model"))
             return DiagnosticStructuredResponse(
                 response_type="general",
-                summary_title="ИИдеал Авто (AIdeal Auto) • Консультация диагноста",
+                summary_title=(
+                    "ИИдеал Авто • Голосовой анализ (Gemma 4 Native Audio)"
+                    if has_audio
+                    else "ИИдеал Авто (AIdeal Auto) • Консультация диагноста"
+                ),
                 mentor_reply=(
-                    "Здравствуйте! Я инженерная система автодиагностики ИИдеал Авто. "
-                    "Опишите симптомы поломки (например: *«троит двигатель на холостых»*, "
-                    "*«пинки АКПП»*, *«проваливается педаль тормоза»*), назовите код ошибки OBD-II, "
-                    "запишите голосовое сообщение или прикрепите фото узла / приборной панели."
+                    "Аудиозапись обработана нативным аудиоэнкодером Gemma 4 12B. "
+                    "Уточните марку автомобиля или код ошибки OBD-II для формирования чеклиста ремонта."
+                    if has_audio
+                    else (
+                        "Здравствуйте! Я инженерная система автодиагностики ИИдеал Авто. "
+                        "Опишите симптомы поломки (например: *«троит двигатель на холостых»*, "
+                        "*«пинки АКПП»*, *«проваливается педаль тормоза»*), назовите код ошибки OBD-II, "
+                        "запишите голосовое сообщение или прикрепите фото узла / приборной панели."
+                    )
                 ),
                 faults=[],
                 inventory=[],
@@ -874,12 +892,13 @@ class AirLLMVulkanOrchestrator:
             logger.error("[AirLLM] Не удалось инициализировать модель Gemma 4: %s", exc)
             return None
 
+        has_native_audio = bool(voice_info and voice_info.get("audio_attached_to_model"))
         is_conversational = (
             not rag_hits
             and not dtc_cards
             and not image_analyses
             and not doc_analyses
-            and not (voice_info and voice_info.get("audio_attached_to_model"))
+            and not has_native_audio
         )
 
         if is_conversational:
@@ -892,6 +911,21 @@ class AirLLMVulkanOrchestrator:
             user_prompt_text = query
             if dialog_summary:
                 user_prompt_text = f"[Сжатая выжимка ранней истории: {dialog_summary}]\nВопрос пользователя: {query}"
+        elif has_native_audio and not rag_hits and not dtc_cards:
+            sys_prompt = (
+                "Ты — ИИдеал Авто (AIdeal Auto), практичный инженер-диагност и наставник автосервиса. "
+                "Внимательно прослушай прикреплённую аудиозапись. "
+                "Если пользователь задаёт голосовой вопрос или описывает симптомы — ответь ему напрямую, кратко и по делу, без банальных инструкций. "
+                "Если на записи слышен звук работы двигателя или узла автомобиля — опиши характер звука и возможные неисправности. "
+                "Всегда полностью завершай последнее предложение."
+            )
+            user_prompt_text = (
+                "Прослушай прикреплённую аудиозапись и дай ответ автодиагноста."
+                if query.strip().startswith("Голосовой запрос / аудиозапись")
+                else f"Прослушай прикреплённую аудиозапись. Дополнительно от пользователя: {query}"
+            )
+            if dialog_summary:
+                user_prompt_text = f"[Сжатая выжимка ранней истории: {dialog_summary}]\n{user_prompt_text}"
         else:
             extra_docs_text = "\n".join(
                 f"Документ {d['filename']}: {d.get('raw_excerpt', d.get('text_snippet', ''))[:1200]}"

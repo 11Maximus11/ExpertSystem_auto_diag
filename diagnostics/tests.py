@@ -69,6 +69,14 @@ class AIdealAutoComprehensiveTests(TransactionTestCase):
         self.assertEqual(p0796["code"], "P0796")
         self.assertTrue(bool(p0796.get("telemetry")))
 
+        dtc_resp = self.client.get("/api/dtc/?q=&system=all&limit=80")
+        self.assertEqual(dtc_resp.status_code, 200)
+        dtc_items = dtc_resp.json()["items"]
+        self.assertGreater(len(dtc_items), 30)
+        self.assertIn("symptom", dtc_items[0])
+        self.assertIn("solution", dtc_items[0])
+        self.assertIn("has_telemetry", dtc_items[0])
+
     def test_03_strict_json_schema_and_task_friendly_blocks(self):
         """Проверка строгой JSON-схемы, блоков инвентаря, чекбоксов задач и Function Calling."""
         resp = self.client.post(
@@ -241,6 +249,16 @@ class AIdealAutoComprehensiveTests(TransactionTestCase):
         self.assertTrue(voice_res["audio_attached_to_model"])
         self.assertIsNotNone(voice_res["audio_waveform_16k"])
         self.assertEqual(len(voice_res["audio_waveform_16k"]), sample_rate)
+
+        # Тест отправки чисто голосового запроса через /api/ask/ без текстового поля
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        voice_upload = SimpleUploadedFile("voice_input.wav", raw_wav_bytes, content_type="audio/wav")
+        ask_voice_resp = self.client.post(
+            "/api/ask/",
+            data={"query": "", "attachments": [voice_upload]},
+        )
+        self.assertEqual(ask_voice_resp.status_code, 200)
+        self.assertIn("assistant_message", ask_voice_resp.json())
 
         # Тест document_service с логом ошибок и телеметрией
         log_content = "OBD-II Scan Log: P0300 Random/Multiple Cylinder Misfire, P0796 Pressure Control Solenoid, Engine_Temp=92.5 C".encode("utf-8")

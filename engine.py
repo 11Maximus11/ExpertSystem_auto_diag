@@ -468,6 +468,7 @@ class VehicleExpertEngine:
             sys_ru = SYSTEM_NAMES_RU.get(sys_name, sys_name.capitalize())
             symp = item.get("symptoms", "")
             fix = item.get("fix", "")
+            has_tel = bool(self.telemetry_stats.get(code))
             if code not in catalog:
                 catalog[code] = {
                     "code": code,
@@ -476,14 +477,17 @@ class VehicleExpertEngine:
                     "system_description": SYSTEM_DESCRIPTIONS.get(
                         sys_name, "Автомобильная подсистема"
                     ),
+                    "symptom": symp or "Отклонение параметров узла",
                     "symptoms": [s.strip() for s in symp.split(";") if s.strip()] if symp else ([symp] if symp else []),
                     "symptoms_str": symp,
                     "cause": item.get("cause", ""),
                     "fix": fix,
+                    "solution": fix or "Выполнить инструментальную диагностику узла",
                     "solutions": [fix] if fix else [],
                     "severity": item.get("severity", "warning"),
                     "health_index": item.get("health_index", 65),
                     "kb_cases_count": 1,
+                    "has_telemetry": has_tel,
                     "telemetry": self.telemetry_stats.get(code, {}),
                 }
             else:
@@ -491,6 +495,7 @@ class VehicleExpertEngine:
                 if symp and symp not in catalog[code]["symptoms_str"]:
                     if len(catalog[code]["symptoms_str"]) < 260:
                         catalog[code]["symptoms_str"] += f"; {symp}"
+                        catalog[code]["symptom"] = catalog[code]["symptoms_str"]
                         if symp not in catalog[code]["symptoms"]:
                             catalog[code]["symptoms"].append(symp)
                 if fix and fix not in catalog[code]["solutions"]:
@@ -509,6 +514,7 @@ class VehicleExpertEngine:
                     "system": sys_name,
                     "system_ru": sys_ru,
                     "system_description": SYSTEM_DESCRIPTIONS.get(sys_name, "Автомобильная подсистема"),
+                    "symptom": t_stat["default_symptoms"],
                     "symptoms": [t_stat["default_symptoms"]],
                     "symptoms_str": t_stat["default_symptoms"],
                     "cause": (
@@ -516,10 +522,12 @@ class VehicleExpertEngine:
                         f"Средняя температура {t_stat['avg_engine_temp_c']}°C, сеть {t_stat['avg_battery_voltage_v']}V."
                     ),
                     "fix": fix_text,
+                    "solution": fix_text,
                     "solutions": [fix_text],
                     "severity": "critical" if t_stat["typical_severity"] == "High" else "warning",
                     "health_index": t_stat["avg_health_index"],
                     "kb_cases_count": t_stat["occurrences_in_sample"],
+                    "has_telemetry": True,
                     "telemetry": t_stat,
                 }
 
@@ -545,14 +553,19 @@ class VehicleExpertEngine:
             sol = "Выполнить компьютерную диагностику и проверку разъемов"
         return sym, sol
 
-    def get_all_systems(self) -> List[Dict[str, str]]:
-        """Возвращает список всех распознаваемых автомобильных подсистем с русскими названиями и описаниями."""
-        res: List[Dict[str, str]] = []
+    def get_all_systems(self) -> List[Dict[str, Any]]:
+        """Возвращает список всех распознаваемых автомобильных подсистем с русскими названиями и количеством кодов."""
+        counts: Dict[str, int] = {}
+        for info in self.dtc_catalog.values():
+            s = info.get("system", "")
+            counts[s] = counts.get(s, 0) + 1
+        res: List[Dict[str, Any]] = []
         for sys_id, ru_name in SYSTEM_NAMES_RU.items():
             res.append({
                 "id": sys_id,
-                "name": sys_id,
+                "name": ru_name,
                 "display_name": ru_name,
+                "count": counts.get(sys_id, 0),
                 "description": SYSTEM_DESCRIPTIONS.get(sys_id, "Автомобильная подсистема"),
             })
         return res
@@ -578,9 +591,18 @@ class VehicleExpertEngine:
         overlap = q_tokens & all_kb_vocab
         return len(overlap) == 0 and len(q_tokens) <= 3
 
-    def search_dtc_dictionary(self, query: str = "", system: str = "", limit: int = 50) -> List[Dict[str, Any]]:
-        q = (query or "").strip().lower()
-        sys_filter = (system or "").strip().lower()
+    def search_dtc_dictionary(
+        self,
+        query: str = "",
+        system: str = "",
+        limit: int = 50,
+        search_term: Optional[str] = None,
+        system_filter: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        q = (search_term if search_term is not None else query or "").strip().lower()
+        sys_filter = (system_filter if system_filter is not None else system or "").strip().lower()
+        if sys_filter == "all":
+            sys_filter = ""
         results: List[Dict[str, Any]] = []
 
         for code, info in self.dtc_catalog.items():
@@ -590,7 +612,7 @@ class VehicleExpertEngine:
                 results.append(info)
                 continue
             symp_all = " ".join(info.get("symptoms", [])) if isinstance(info.get("symptoms"), list) else str(info.get("symptoms", ""))
-            haystack = f"{code} {info['system']} {symp_all} {info['cause']} {info['fix']}".lower()
+            haystack = f"{code} {info['system']} {info.get('system_ru', '')} {symp_all} {info['cause']} {info['fix']}".lower()
             if q in haystack:
                 results.append(info)
 
@@ -737,6 +759,8 @@ class VehicleExpertEngine:
         results.sort(key=lambda x: x["score"], reverse=True)
         return results[:top_n]
 
+    search = diagnose
+
     def prepare_llm_context(
         self,
         query: str,
@@ -749,7 +773,7 @@ class VehicleExpertEngine:
         """
         Формирует структурированный контекст базы знаний и памяти для промпта LLM (Google Gemma 4 12B).
         """
-        hits = self.search(query=query, top_n=top_n, dtc_codes=dtc_codes)
+        hits = self.diagnose(query=query, top_n=top_n, dtc_codes=dtc_codes)
         parts: List[str] = []
 
         if global_summary:
@@ -767,7 +791,7 @@ class VehicleExpertEngine:
                     f"{i}. Код: {code} ({sys_name}) | Релевантность: {h.get('score', 0):.3f}\n"
                     f"   Симптомы: {meta.get('symptoms', '')}\n"
                     f"   Причина: {meta.get('cause', meta.get('reason', ''))}\n"
-                    f"   Проверка и ремонт: {meta.get('recommendation', '')}"
+                    f"   Проверка и ремонт: {meta.get('fix', meta.get('recommendation', ''))}"
                 )
             parts.append("\n".join(kb_lines))
 

@@ -1,8 +1,6 @@
 """
-Строгие JSON-схемы ответов экспертной системы (Pydantic v2 + JSON Schema) и
-реестр инструментов для Function Calling (вызова функций моделью).
-Гарантирует, что ответы ИИ всегда приведены к валидному структурированному JSON-виду
-с блоками инвентаря, пошаговыми чекбоксами задач, диагностическими кодами и телеметрией.
+Строгие JSON-схемы ответов экспертной системы ИИдеал Авто (AIdeal Auto) (Pydantic v2 + JSON Schema),
+реестр инструментов для Function Calling и механизм автообрезки ответа модели по последнему предложению.
 """
 
 import json
@@ -10,6 +8,48 @@ import re
 from typing import Any, Dict, List, Literal, Optional
 import jsonschema
 from pydantic import BaseModel, Field
+
+
+DANGLING_WORDS_RU = {
+    "и", "а", "но", "да", "или", "либо", "в", "во", "на", "по", "с", "со", "к", "ко",
+    "от", "до", "из", "за", "при", "для", "без", "над", "под", "через", "после",
+    "что", "чтобы", "как", "если", "когда", "также", "например", "особенно",
+}
+
+
+def truncate_to_last_sentence(text: str) -> str:
+    """
+    Автоматически обрезает ответ модели по последнему завершенному предложению,
+    чтобы ответы никогда не выглядели оборванными на полуслове.
+    """
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return ""
+
+    # Если строка уже заканчивается на знак конца предложения (с возможной закрывающей кавычкой/скобкой)
+    if re.search(r"[.!?…][\"'»)\]]*\s*$", cleaned):
+        return cleaned
+
+    # Ищем последнюю границу завершенного предложения (не внутри десятичной дроби вида 12.6)
+    last_end = -1
+    for m in re.finditer(r"(?<![0-9])([.!?…][\"'»)\]]*)(?=\s|$)", cleaned):
+        last_end = m.end()
+
+    if last_end != -1 and last_end >= min(25, len(cleaned) // 3):
+        return cleaned[:last_end].strip()
+
+    # Если в коротком ответе еще не было ни одной точки, убираем оборванное последнее слово/предлог и ставим точку
+    cleaned = re.sub(r"[,:;—–\-]+\s*$", "", cleaned).strip()
+    words = cleaned.split()
+    if len(words) > 3:
+        # Если ответ оборвался ровно на длинном незаконченном слове или висячем союзе/предлоге
+        while len(words) > 2 and words[-1].lower().strip(".,:;—–-") in DANGLING_WORDS_RU:
+            words.pop()
+        cleaned = " ".join(words).rstrip(",:;—–-")
+
+    if cleaned and not re.search(r"[.!?…][\"'»)\]]*$", cleaned):
+        cleaned += "."
+    return cleaned
 
 
 class ToolCallExecution(BaseModel):
@@ -38,7 +78,7 @@ class DetectedFault(BaseModel):
 
 
 class InventoryItem(BaseModel):
-    """Элемент блока инвентаря (инструмент, запчасть, расходник или СИЗ) с чекбоксом."""
+    """Элемент блока инвентаря (инструмент, запчасть, расходник) с чекбоксом."""
 
     id: str = Field(..., description="Уникальный идентификатор позиции инвентаря (например, inv_1)")
     name: str = Field(..., description="Наименование инструмента, детали или расходника")
@@ -56,14 +96,14 @@ class RepairTaskStep(BaseModel):
 
     step_number: int = Field(..., ge=1, description="Порядковый номер шага")
     title: str = Field(..., description="Краткое название этапа работ")
-    instruction: str = Field(..., description="Подробная пошаговая инструкция как выполнить действие")
+    instruction: str = Field(..., description="Конкретная и понятная инструкция по действию")
     torque_or_spec: str = Field(
         default="",
         description="Эталонный параметр: момент затяжки (Н·м), сопротивление (Ом), давление или напряжение",
     )
     safety_warning: str = Field(
         default="",
-        description="Предупреждение по технике безопасности на данном этапе",
+        description="Важное техническое примечание (только по делу, без банальностей)",
     )
     verification_hint: str = Field(
         default="",
@@ -75,8 +115,7 @@ class RepairTaskStep(BaseModel):
 
 class DiagnosticStructuredResponse(BaseModel):
     """
-    Строгая JSON-схема полного ответа экспертной системы автодиагностики.
-    Используется для GBNF-грамматики llama.cpp, OpenAI Structured Outputs и валидации AirLLM.
+    Строгая JSON-схема полного ответа экспертной системы автодиагностики ИИдеал Авто (AIdeal Auto).
     """
 
     response_type: Literal["diagnosis", "followup", "visual_inspection", "general"] = Field(
@@ -86,7 +125,7 @@ class DiagnosticStructuredResponse(BaseModel):
     summary_title: str = Field(..., description="Краткий заголовок вердикта экспертной системы")
     mentor_reply: str = Field(
         ...,
-        description="Развёрнутый ответ ведущего инженера-диагноста и наставника на русском языке",
+        description="Понятный, краткий и точный ответ автодиагноста на русском языке",
     )
     faults: List[DetectedFault] = Field(
         default_factory=list,
@@ -106,10 +145,10 @@ class DiagnosticStructuredResponse(BaseModel):
     )
     recommendations: List[str] = Field(
         default_factory=list,
-        description="Важные рекомендации по дальнейшей эксплуатации и профилактике",
+        description="Краткие рекомендации по дальнейшей эксплуатации",
     )
     follow_up_question: str = Field(
-        default="Нужна ли дополнительная помощь или детализация по какому-либо шагу ремонта?",
+        default="Подсказать подробнее по какому-то из шагов проверки?",
         description="Вопрос в конце ответа для продолжения диалога",
     )
     tool_calls: List[ToolCallExecution] = Field(
@@ -118,11 +157,9 @@ class DiagnosticStructuredResponse(BaseModel):
     )
 
 
-# JSON Schema для передачи в llama.cpp / OpenAI response_format
 DIAGNOSTIC_JSON_SCHEMA: Dict[str, Any] = DiagnosticStructuredResponse.model_json_schema()
 
 
-# Определения инструментов для Function Calling (OpenAI / Llama.cpp / AirLLM Tool Use)
 DIAGNOSTIC_TOOLS_OPENAI_FORMAT: List[Dict[str, Any]] = [
     {
         "type": "function",
@@ -145,7 +182,7 @@ DIAGNOSTIC_TOOLS_OPENAI_FORMAT: List[Dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "search_knowledge_base",
-            "description": "Выполнить гибридный RAG-поиск по симптомам неисправности автомобиля в локальной базе знаний и телеметрии.",
+            "description": "Выполнить гибридный RAG-поиск (BERT + FAISS + BM25 + CrossEncoder) по симптомам неисправности автомобиля.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -194,11 +231,10 @@ def validate_and_coerce_structured_json(
 ) -> DiagnosticStructuredResponse:
     """
     Извлекает JSON из ответа языковой модели, проверяет его через JSON Schema и Pydantic v2,
-    и приводит к строгому типизированному объекту DiagnosticStructuredResponse.
+    применяет автообрезку по последнему предложению и возвращает валидный DiagnosticStructuredResponse.
     """
-    cleaned = raw_output.strip()
+    cleaned = (raw_output or "").strip()
 
-    # Убираем markdown-обёртку ```json ... ``` если модель её добавила
     fence_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", cleaned, flags=re.DOTALL)
     if fence_match:
         cleaned = fence_match.group(1)
@@ -210,7 +246,6 @@ def validate_and_coerce_structured_json(
 
     try:
         parsed = json.loads(cleaned)
-        # Если модель вернула частичный JSON, дополняем обязательные поля из fallback_response
         if fallback_response is not None and isinstance(parsed, dict):
             fb_dict = fallback_response.model_dump()
             for k, v in fb_dict.items():
@@ -218,18 +253,20 @@ def validate_and_coerce_structured_json(
                     parsed[k] = v
 
         validated = DiagnosticStructuredResponse.model_validate(parsed)
+        validated.mentor_reply = truncate_to_last_sentence(validated.mentor_reply)
         jsonschema.validate(instance=validated.model_dump(), schema=DIAGNOSTIC_JSON_SCHEMA)
         return validated
     except Exception:
         if fallback_response is not None:
-            # Если модель сгенерировала полезный свободный текст, сохраняем его в mentor_reply
-            plain_text = re.sub(r"```.*?```", "", raw_output, flags=re.DOTALL).strip()
-            if plain_text and len(plain_text) > 30 and not plain_text.startswith("{"):
-                fallback_response.mentor_reply = plain_text
+            plain_text = re.sub(r"```.*?```", "", raw_output or "", flags=re.DOTALL).strip()
+            if plain_text and len(plain_text) > 15 and not plain_text.startswith("{"):
+                fallback_response.mentor_reply = truncate_to_last_sentence(plain_text)
+            else:
+                fallback_response.mentor_reply = truncate_to_last_sentence(fallback_response.mentor_reply)
             return fallback_response
 
         return DiagnosticStructuredResponse(
             response_type="followup",
-            summary_title="Ответ эксперта-диагноста",
-            mentor_reply=raw_output.strip() or "Диагностический анализ завершён.",
+            summary_title="Ответ эксперта ИИдеал Авто",
+            mentor_reply=truncate_to_last_sentence(raw_output) or "Диагностический анализ завершён.",
         )

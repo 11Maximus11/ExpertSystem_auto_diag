@@ -1,6 +1,7 @@
 """
-Модели базы данных Django для хранения диалогов, фоновых выжимок контекста,
-междиалоговой памяти, интерактивных чеклистов ремонта, инвентаря и настроек AirLLM / Vulkan.
+Модели базы данных Django для экспертной системы ИИдеал Авто (AIdeal Auto):
+хранение диалогов, фоновых выжимок контекста, междиалоговой памяти,
+интерактивных чеклистов ремонта, инвентаря и настроек AirLLM Gemma 4 12B / Vulkan.
 """
 
 import uuid
@@ -8,22 +9,23 @@ from django.db import models
 
 
 class SystemSettings(models.Model):
-    """Глобальные настройки экспертной системы и управления 8 ГБ видеопамяти."""
+    """
+    Глобальные настройки экспертной системы ИИдеал Авто (AIdeal Auto):
+    AirLLM Google Gemma 4 12B (W4A16) + Adaptive GPU VRAM + прямой нативный аудиовход + междиалоговая память.
+    """
 
     BACKEND_CHOICES = [
-        ("airllm_vulkan", "AirLLM Adaptive GPU + Layer Offload (Qwen 3.5 9B Vision-Language)"),
+        ("airllm_vulkan", "AirLLM Adaptive GPU + Layer Offload (Google Gemma 4 12B Unified Multimodal)"),
     ]
 
     COMPRESSION_CHOICES = [
-        ("4bit", "4-bit NF4 квантование (Оптимально для GPU от 4 до 8+ ГБ VRAM)"),
+        ("4bit", "4-bit W4A16 QAT квантование (Оптимально для GPU от 4 до 8+ ГБ VRAM)"),
         ("8bit", "8-bit квантование"),
         ("none", "BF16/FP16 послойная выгрузка через AirLLM"),
     ]
 
     VOICE_CHOICES = [
-        ("auto", "Авто (Прямое аудио при поддержке модели / иначе GGML Whisper)"),
-        ("direct_audio", "Прямая передача аудиопотока в мультимодальную модель"),
-        ("ggml_whisper", "Локальное распознавание речи GGML (Whisper.cpp / Faster-Whisper)"),
+        ("direct_audio", "Прямая передача аудиопотока в мультимодальную модель Gemma 4 12B (embed_audio)"),
     ]
 
     llm_backend = models.CharField(
@@ -34,7 +36,7 @@ class SystemSettings(models.Model):
     )
     airllm_model_id = models.CharField(
         max_length=160,
-        default="models/Qwen3.5-4B",
+        default="models/gemma-4-12B-it",
         verbose_name="Модель AirLLM (локальный путь или HuggingFace ID)",
     )
     airllm_compression = models.CharField(
@@ -54,12 +56,12 @@ class SystemSettings(models.Model):
         verbose_name="Внутренний конвейер AirLLM",
     )
     vulkan_gpu_layers = models.IntegerField(
-        default=32,
-        verbose_name="Макс. резидентных слоев GPU (авто-баланс VRAM)",
+        default=36,
+        verbose_name="Макс. резидентных слоев GPU (авто-баланс VRAM, 0..48)",
     )
     context_window_tokens = models.IntegerField(
-        default=6144,
-        verbose_name="Размер окна контекста (токенов)",
+        default=32768,
+        verbose_name="Размер окна контекста (токенов, в разы больше длины ответа ~5000 ток.)",
     )
     cross_dialog_memory_enabled = models.BooleanField(
         default=True,
@@ -73,8 +75,8 @@ class SystemSettings(models.Model):
     voice_mode = models.CharField(
         max_length=32,
         choices=VOICE_CHOICES,
-        default="auto",
-        verbose_name="Режим голосового ввода",
+        default="direct_audio",
+        verbose_name="Режим голосового ввода (нативное аудио Gemma 4 12B)",
     )
     strict_json_mode = models.BooleanField(
         default=True,
@@ -86,13 +88,41 @@ class SystemSettings(models.Model):
         verbose_name = "Настройки экспертной системы"
         verbose_name_plural = "Настройки экспертной системы"
 
+    @property
+    def model_name(self) -> str:
+        return self.airllm_model_id
+
+    @property
+    def voice_input_mode(self) -> str:
+        return self.voice_mode
+
+    @property
+    def max_response_tokens(self) -> int:
+        return 5000
+
     @classmethod
     def get_active(cls) -> "SystemSettings":
         obj, _ = cls.objects.get_or_create(pk=1)
-        if obj.context_window_tokens < 6144:
-            obj.context_window_tokens = 6144
-            obj.save(update_fields=["context_window_tokens", "updated_at"])
+        changed = False
+        if not obj.airllm_model_id or "gemma-4" not in obj.airllm_model_id.lower():
+            obj.airllm_model_id = "models/gemma-4-12B-it"
+            obj.llm_backend = "airllm_vulkan"
+            obj.airllm_compression = "4bit"
+            obj.vulkan_gpu_layers = 36
+            changed = True
+        if obj.context_window_tokens < 16384:
+            obj.context_window_tokens = 32768
+            changed = True
+        if obj.voice_mode != "direct_audio":
+            obj.voice_mode = "direct_audio"
+            changed = True
+        if changed:
+            obj.save()
         return obj
+
+    @classmethod
+    def load(cls) -> "SystemSettings":
+        return cls.get_active()
 
 
 class DialogSession(models.Model):
@@ -117,7 +147,7 @@ class DialogSession(models.Model):
     summary = models.TextField(
         blank=True,
         default="",
-        help_text="Краткая выжимка по текущему диалогу для экономии окна контекста",
+        help_text="Краткая выжимка по текущему диалогу для динамической оптимизации окна контекста",
     )
     worker_status = models.CharField(
         max_length=32,
@@ -137,6 +167,14 @@ class DialogSession(models.Model):
         ordering = ["-updated_at"]
         verbose_name = "Диагностическая сессия"
         verbose_name_plural = "Диагностические сессии"
+
+    @property
+    def vehicle_context(self) -> str:
+        return self.vehicle_info
+
+    @vehicle_context.setter
+    def vehicle_context(self, value: str) -> None:
+        self.vehicle_info = value
 
     def __str__(self) -> str:
         return f"{self.title} ({self.id})"

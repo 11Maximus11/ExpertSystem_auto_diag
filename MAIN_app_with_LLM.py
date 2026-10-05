@@ -1,6 +1,6 @@
 """
-Консольный интерфейс экспертной системы AutoDiag Pro AI на базе официально поддерживаемого
-стека AirLLM (Qwen/Qwen3.5-4B, AirLLMQwen3_5) с адаптивным GPU-ускорением и послойным стримингом.
+Консольный интерфейс экспертной системы ИИдеал Авто (AIdeal Auto) на базе
+послойного движка AirLLM (Google Gemma 4 12B W4A16) с адаптивным GPU-ускорением.
 """
 
 import os
@@ -17,10 +17,10 @@ from vulkan_backend import init_vulkan_environment
 def main():
     init_vulkan_environment(verbose=True)
     settings_obj = SystemSettings.get_active()
-    session = DialogSession.objects.create(title="Консольная сессия AirLLM")
+    session = DialogSession.objects.create(title="Консольная сессия AirLLM Gemma 4")
 
     print("\n" + "=" * 60)
-    print(" VEHICLE DIAGNOSTIC EXPERT SYSTEM (AirLLM Qwen/Qwen3.5-4B) ")
+    print(" ИИДЕАЛ АВТО (AIdeal Auto) • AirLLM Google Gemma 4 12B ")
     print("=" * 60)
 
     while True:

@@ -1,5 +1,5 @@
 """
-Совместимый скрипт запуска веб-сервера AutoDiag Pro AI (Django + AirLLM Qwen/Qwen3.5-4B).
+Скрипт запуска веб-сервера ИИдеал Авто (AIdeal Auto) — Django + AirLLM Google Gemma 4 12B.
 """
 
 import os

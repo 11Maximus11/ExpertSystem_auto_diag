@@ -1,7 +1,8 @@
 """
-Сервис обработки прикреплённых пользователем файлов:
+Сервис обработки прикреплённых пользователем файлов в системе ИИдеал Авто (AIdeal Auto):
 - Фотографии поломки / приборной панели / узлов авто (включая кадры с веб-камеры и AR-очков)
-- Технические документы, логи OBD-II сканеров (.txt, .log, .json, .csv, .pdf, .docx)
+- Аудиозаписи (.wav, .mp3, .ogg, .m4a, .flac, .webm, .aac) — передаются напрямую в нативный аудиоэнкодер Gemma 4 12B (embed_audio)
+- Технические документы, логи OBD-II сканеров (.txt, .log, .obd, .json, .csv, .tsv, .pdf, .docx, .xml, .html, .md, .ini, .yaml)
 Все пути сохраняются строго относительно MEDIA_ROOT.
 """
 
@@ -11,49 +12,80 @@ import io
 import json
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List
 
 from PIL import Image, ImageStat
 
 
+AUDIO_EXTENSIONS = {".wav", ".mp3", ".ogg", ".m4a", ".flac", ".webm", ".aac"}
+IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif"}
+
+
 def extract_dtc_codes(text: str) -> List[str]:
     """Извлекает уникальные коды ошибок стандарта OBD-II (P/C/B/Uxxxx) из произвольного текста."""
-    found = re.findall(r"\b([PCBU][0-9A-F]{4})\b", text.upper())
+    found = re.findall(r"\b([PCBU][0-9A-F]{4})\b", (text or "").upper())
     return list(dict.fromkeys(found))
 
 
 def parse_uploaded_document(file_bytes: bytes, filename: str) -> Dict[str, Any]:
     """
     Извлекает текстовое содержимое, коды ошибок и ключевые параметры телеметрии
-    из прикреплённого документа (.txt, .log, .json, .csv, .pdf, .docx).
+    из прикреплённого документа любого поддерживаемого формата:
+    .txt, .log, .obd, .json, .csv, .tsv, .pdf, .docx, .xml, .html, .md, .ini, .yaml,
+    а также декодирует аудиофайлы в 16 кГц float32 массив для прямой подачи в Gemma 4 12B.
     """
-    ext = Path(filename).suffix.lower()
+    ext = Path(filename or "document.txt").suffix.lower()
     extracted_text = ""
+    audio_waveform_16k = None
 
     try:
-        if ext in (".txt", ".log", ".md", ".obd"):
+        if ext in AUDIO_EXTENSIONS:
+            from .voice_service import process_voice_input
+
+            voice_res = process_voice_input(
+                audio_bytes=file_bytes,
+                filename=filename,
+                voice_mode="direct_audio",
+            )
+            audio_waveform_16k = voice_res.get("audio_waveform_16k")
+            dur = voice_res.get("duration_sec", 0.0)
+            extracted_text = (
+                f"[Аудиозапись {filename} ({dur} с) передана напрямую в мультимодальный аудиовход Gemma 4 12B (embed_audio)]"
+                if voice_res.get("audio_attached_to_model")
+                else f"[Аудиофайл {filename}: не удалось декодировать аудиопоток]"
+            )
+        elif ext in {".txt", ".log", ".md", ".obd", ".ini", ".cfg", ".conf", ".yaml", ".yml"}:
             extracted_text = file_bytes.decode("utf-8", errors="replace")
+        elif ext in {".xml", ".html", ".htm", ".rtf"}:
+            raw_str = file_bytes.decode("utf-8", errors="replace")
+            extracted_text = re.sub(r"<[^>]+>", " ", raw_str)
+            extracted_text = re.sub(r"\s+", " ", extracted_text).strip()
         elif ext == ".json":
             data = json.loads(file_bytes.decode("utf-8", errors="replace"))
             extracted_text = json.dumps(data, ensure_ascii=False, indent=2)
-        elif ext == ".csv":
+        elif ext in {".csv", ".tsv"}:
             decoded = file_bytes.decode("utf-8", errors="replace")
-            reader = csv.reader(io.StringIO(decoded))
-            rows = [", ".join(row) for _, row in zip(range(100), reader)]
+            delimiter = "\t" if ext == ".tsv" else ","
+            reader = csv.reader(io.StringIO(decoded), delimiter=delimiter)
+            rows = [", ".join(row) for _, row in zip(range(120), reader)]
             extracted_text = "\n".join(rows)
         elif ext == ".pdf":
             from pypdf import PdfReader
 
             reader = PdfReader(io.BytesIO(file_bytes))
-            pages_text = []
-            for page in reader.pages[:15]:
-                pages_text.append(page.extract_text() or "")
+            pages_text = [page.extract_text() or "" for page in reader.pages[:15]]
             extracted_text = "\n".join(pages_text)
         elif ext == ".docx":
             import docx
 
             doc = docx.Document(io.BytesIO(file_bytes))
-            extracted_text = "\n".join(p.text for p in doc.paragraphs if p.text.strip())
+            paragraphs = [p.text for p in doc.paragraphs if p.text.strip()]
+            for table in doc.tables[:5]:
+                for row in table.rows[:30]:
+                    row_txt = " | ".join(cell.text.strip() for cell in row.cells if cell.text.strip())
+                    if row_txt:
+                        paragraphs.append(row_txt)
+            extracted_text = "\n".join(paragraphs)
         else:
             extracted_text = file_bytes.decode("utf-8", errors="replace")
     except Exception as exc:
@@ -61,7 +93,6 @@ def parse_uploaded_document(file_bytes: bytes, filename: str) -> Dict[str, Any]:
 
     dtc_codes = extract_dtc_codes(extracted_text)
 
-    # Извлекаем числовые параметры вида key=value или key: value
     telemetry_pairs = re.findall(
         r"([a-zA-Zа-яА-Я0-9_\-]+)\s*[=:]\s*([0-9]+(?:\.[0-9]+)?\s*(?:°C|rpm|В|V|кПа|psi|bar|%|мм/с|mm/s|кВт|kW|Нм|Nm)?)",
         extracted_text,
@@ -76,9 +107,13 @@ def parse_uploaded_document(file_bytes: bytes, filename: str) -> Dict[str, Any]:
         "filename": filename,
         "extension": ext,
         "text_snippet": snippet,
+        "raw_excerpt": snippet[:1600],
+        "summary": f"[{filename}] Коды: {', '.join(dtc_codes) if dtc_codes else 'нет'}. {snippet[:500]}",
         "detected_dtc_codes": dtc_codes,
+        "extracted_codes": dtc_codes,
         "key_metrics": key_metrics,
         "char_length": len(extracted_text),
+        "audio_waveform_16k": audio_waveform_16k,
     }
 
 
@@ -86,13 +121,12 @@ def analyze_image_bytes(image_bytes: bytes, filename: str = "capture.jpg") -> Di
     """
     Выполняет предварительный визуально-технический анализ изображения (разрешение, экспозиция,
     цветовые доминанты индикаторов приборной панели / следов перегрева или подтёков)
-    и готовит сжатый data URL base64 для передачи в мультимодальную Vision-модель.
+    и готовит сжатый data URL base64 для прямой передачи в мультимодальную модель Gemma 4 12B (embed_vision).
     """
     try:
         img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
         width, height = img.size
 
-        # Масштабируем до 1024px по длинной стороне для экономии VRAM в Vision-энкодере
         max_dim = 1024
         if max(width, height) > max_dim:
             ratio = max_dim / float(max(width, height))
@@ -105,7 +139,6 @@ def analyze_image_bytes(image_bytes: bytes, filename: str = "capture.jpg") -> Di
         r_std, g_std, b_std = stat.stddev
         brightness = (0.299 * r_mean + 0.587 * g_mean + 0.114 * b_mean) / 255.0
 
-        # Подсчёт доли ярко-желтых/оранжевых (Check Engine / ABS) и ярко-красных (давление масла / тормоза / перегрев) пикселей
         small = resized.resize((128, 128))
         pixels = list(small.getdata())
         amber_pixels = 0
@@ -163,12 +196,21 @@ def analyze_image_bytes(image_bytes: bytes, filename: str = "capture.jpg") -> Di
             "brightness": round(brightness, 2),
             "contrast": round((r_std + g_std + b_std) / 3.0, 1),
             "visual_clues": visual_clues,
+            "visual_summary": "; ".join(visual_clues),
             "data_url": data_url,
+            "data_uri": data_url,
+            "raw_jpeg_bytes": out_buf.getvalue(),
         }
     except Exception as exc:
         return {
             "filename": filename,
             "error": str(exc),
             "visual_clues": ["Изображение прикреплено для визуального осмотра"],
+            "visual_summary": "Изображение прикреплено для визуального осмотра",
             "data_url": "",
+            "data_uri": "",
+            "raw_jpeg_bytes": b"",
         }
+
+
+analyze_diagnostic_image = analyze_image_bytes

@@ -1,9 +1,45 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192 192" width="192" height="192" fill="none">
-  <rect width="192" height="192" rx="38" fill="#090D16"/>
-  <rect x="8" y="8" width="176" height="176" rx="30" stroke="#F97316" stroke-width="3" stroke-opacity="0.55"/>
-  <path d="M52 114H40V86L56 70H82L92 56H122L134 70H152V114H140" stroke="#F97316" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
-  <circle cx="68" cy="118" r="14" fill="#1E293B" stroke="#38BDF8" stroke-width="6"/>
-  <circle cx="126" cy="118" r="14" fill="#1E293B" stroke="#38BDF8" stroke-width="6"/>
-  <path d="M84 90L96 74L104 94L114 82" stroke="#22C55E" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
-  <text x="96" y="158" text-anchor="middle" fill="#F8FAFC" font-family="monospace" font-weight="700" font-size="18" letter-spacing="2">AUTODIAG</text>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192 192" width="192" height="192">
+  <defs>
+    <radialGradient id="bgGrad" cx="50%" cy="45%" r="60%">
+      <stop offset="0%" stop-color="#111b2e"/>
+      <stop offset="100%" stop-color="#060911"/>
+    </radialGradient>
+    <linearGradient id="cyanGlow" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#38bdf8"/>
+      <stop offset="100%" stop-color="#0284c7"/>
+    </linearGradient>
+    <linearGradient id="amberGlow" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#fbbf24"/>
+      <stop offset="100%" stop-color="#ea580c"/>
+    </linearGradient>
+    <linearGradient id="chromeGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#f8fafc"/>
+      <stop offset="50%" stop-color="#94a3b8"/>
+      <stop offset="100%" stop-color="#475569"/>
+    </linearGradient>
+  </defs>
+  <rect x="6" y="6" width="180" height="180" rx="34" fill="url(#bgGrad)" stroke="url(#chromeGrad)" stroke-width="4"/>
+  <circle cx="96" cy="86" r="56" fill="none" stroke="url(#chromeGrad)" stroke-width="7" stroke-dasharray="11 6"/>
+  <circle cx="96" cy="86" r="49" fill="#09101d" stroke="url(#chromeGrad)" stroke-width="2.5"/>
+  <path d="M96 40 A46 46 0 0 0 96 132" fill="none" stroke="url(#cyanGlow)" stroke-width="2.5"/>
+  <path d="M96 40 A46 46 0 0 1 96 132" fill="none" stroke="url(#amberGlow)" stroke-width="2.5"/>
+  <g stroke="#38bdf8" stroke-width="1.8" fill="#09101d">
+    <line x1="96" y1="48" x2="96" y2="68"/>
+    <line x1="74" y1="54" x2="84" y2="70"/>
+    <line x1="60" y1="70" x2="76" y2="78"/>
+    <circle cx="96" cy="48" r="3"/>
+    <circle cx="74" cy="54" r="3"/>
+    <circle cx="60" cy="70" r="3"/>
+  </g>
+  <g stroke="#fbbf24" stroke-width="1.8" fill="#09101d">
+    <line x1="118" y1="54" x2="108" y2="70"/>
+    <line x1="132" y1="70" x2="116" y2="78"/>
+    <circle cx="118" cy="54" r="3"/>
+    <circle cx="132" cy="70" r="3"/>
+  </g>
+  <path d="M54 92 L64 89 L80 75 C89 71 105 71 115 77 L131 83 C136 85 139 89 138 94 L129 96 M80 96 L113 96" fill="url(#chromeGrad)" stroke="#e2e8f0" stroke-width="2" stroke-linejoin="round"/>
+  <circle cx="70" cy="96" r="9" fill="#0b1324" stroke="url(#cyanGlow)" stroke-width="2.5"/>
+  <circle cx="121" cy="96" r="9" fill="#0b1324" stroke="url(#amberGlow)" stroke-width="2.5"/>
+  <text x="96" y="160" text-anchor="middle" font-family="Inter, Segoe UI, Arial, sans-serif" font-weight="800" font-size="17" fill="#f8fafc">AIdeal Auto</text>
+  <text x="96" y="176" text-anchor="middle" font-family="Inter, Segoe UI, Arial, sans-serif" font-weight="700" font-size="11" fill="#38bdf8">ИИдеал Авто</text>
 </svg>

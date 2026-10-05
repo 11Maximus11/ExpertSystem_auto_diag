@@ -79,11 +79,11 @@ def ar_mode_view(request: HttpRequest) -> HttpResponse:
 
 
 def pwa_manifest_view(request: HttpRequest) -> JsonResponse:
-    """Манифест Progressive Web App (PWA) с поддержкой мобильных устройств и AR-очков."""
+    """Манифест Progressive Web App (PWA) для ИИдеал Авто с поддержкой мобильных устройств и AR-очков."""
     manifest = {
-        "name": "AutoDiag Pro AI — Экспертная автодиагностика (Vulkan + AirLLM)",
-        "short_name": "AutoDiag AI",
-        "description": "Локальная экспертная ИИ-система диагностики и ремонта автомобилей с режимом AR-очков RayNeo",
+        "name": "ИИдеал Авто (AIdeal Auto) — Экспертная автодиагностика (Vulkan + AirLLM Gemma 4 12B)",
+        "short_name": "ИИдеал Авто",
+        "description": "Экспертная ИИ-система диагностики и ремонта автомобилей на базе Gemma 4 12B с режимом AR-очков",
         "start_url": "/",
         "scope": "/",
         "display": "standalone",

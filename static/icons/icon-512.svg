@@ -1,9 +1,56 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" fill="none">
-  <rect width="512" height="512" rx="96" fill="#090D16"/>
-  <rect x="24" y="24" width="464" height="464" rx="76" stroke="#F97316" stroke-width="6" stroke-opacity="0.6"/>
-  <path d="M132 304H96V226L142 184H214L242 146H322L356 184H416V304H380" stroke="#F97316" stroke-width="18" stroke-linecap="round" stroke-linejoin="round"/>
-  <circle cx="178" cy="312" r="38" fill="#0F172A" stroke="#38BDF8" stroke-width="16"/>
-  <circle cx="338" cy="312" r="38" fill="#0F172A" stroke="#38BDF8" stroke-width="16"/>
-  <path d="M220 238L252 192L276 248L306 214" stroke="#22C55E" stroke-width="14" stroke-linecap="round" stroke-linejoin="round"/>
-  <text x="256" y="424" text-anchor="middle" fill="#F8FAFC" font-family="monospace" font-weight="700" font-size="44" letter-spacing="6">AUTODIAG AI</text>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <radialGradient id="bgGrad" cx="50%" cy="45%" r="60%">
+      <stop offset="0%" stop-color="#111b2e"/>
+      <stop offset="100%" stop-color="#060911"/>
+    </radialGradient>
+    <linearGradient id="cyanGlow" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#38bdf8"/>
+      <stop offset="100%" stop-color="#0284c7"/>
+    </linearGradient>
+    <linearGradient id="amberGlow" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#fbbf24"/>
+      <stop offset="100%" stop-color="#ea580c"/>
+    </linearGradient>
+    <linearGradient id="chromeGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#f8fafc"/>
+      <stop offset="50%" stop-color="#94a3b8"/>
+      <stop offset="100%" stop-color="#475569"/>
+    </linearGradient>
+  </defs>
+  <rect x="16" y="16" width="480" height="480" rx="88" fill="url(#bgGrad)" stroke="url(#chromeGrad)" stroke-width="10"/>
+  <!-- Outer Gear Ring -->
+  <circle cx="256" cy="224" r="142" fill="none" stroke="url(#chromeGrad)" stroke-width="18" stroke-dasharray="28 16"/>
+  <circle cx="256" cy="224" r="126" fill="#09101d" stroke="url(#chromeGrad)" stroke-width="6"/>
+  <!-- Left Cyan Neural Arc & Nodes -->
+  <path d="M256 104 A120 120 0 0 0 256 344" fill="none" stroke="url(#cyanGlow)" stroke-width="5"/>
+  <g stroke="#38bdf8" stroke-width="3" fill="#09101d">
+    <line x1="256" y1="126" x2="256" y2="178"/>
+    <line x1="200" y1="142" x2="225" y2="185"/>
+    <line x1="164" y1="184" x2="205" y2="205"/>
+    <line x1="196" y1="302" x2="228" y2="258"/>
+    <circle cx="256" cy="126" r="7"/>
+    <circle cx="200" cy="142" r="7"/>
+    <circle cx="164" cy="184" r="7"/>
+    <circle cx="196" cy="302" r="7"/>
+  </g>
+  <!-- Right Amber Neural Arc & Nodes -->
+  <path d="M256 104 A120 120 0 0 1 256 344" fill="none" stroke="url(#amberGlow)" stroke-width="5"/>
+  <g stroke="#fbbf24" stroke-width="3" fill="#09101d">
+    <line x1="312" y1="142" x2="287" y2="185"/>
+    <line x1="348" y1="184" x2="307" y2="205"/>
+    <line x1="316" y1="302" x2="284" y2="258"/>
+    <circle cx="312" cy="142" r="7"/>
+    <circle cx="348" cy="184" r="7"/>
+    <circle cx="316" cy="302" r="7"/>
+  </g>
+  <!-- Stylized Car Silhouette -->
+  <path d="M148 238 L172 232 L212 198 C236 188 278 188 304 202 L346 218 C360 222 368 232 366 244 L344 248 M212 248 L300 248 M148 238 C144 244 148 248 164 248" fill="url(#chromeGrad)" stroke="#e2e8f0" stroke-width="4" stroke-linejoin="round"/>
+  <circle cx="188" cy="248" r="22" fill="#0b1324" stroke="url(#cyanGlow)" stroke-width="6"/>
+  <circle cx="188" cy="248" r="8" fill="#e2e8f0"/>
+  <circle cx="322" cy="248" r="22" fill="#0b1324" stroke="url(#amberGlow)" stroke-width="6"/>
+  <circle cx="322" cy="248" r="8" fill="#e2e8f0"/>
+  <!-- Brand Title -->
+  <text x="256" y="418" text-anchor="middle" font-family="Inter, Segoe UI, Arial, sans-serif" font-weight="800" font-size="44" fill="#f8fafc" letter-spacing="1">AIdeal Auto</text>
+  <text x="256" y="458" text-anchor="middle" font-family="Inter, Segoe UI, Arial, sans-serif" font-weight="700" font-size="28" fill="#38bdf8" letter-spacing="1.5">ИИдеал Авто</text>
 </svg>

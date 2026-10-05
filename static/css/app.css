@@ -123,9 +123,9 @@ select:focus-visible {
 }
 
 .brand-logo {
-  width: 36px;
-  height: 36px;
-  border-radius: 9px;
+  width: 38px;
+  height: 38px;
+  border-radius: 10px;
   background: linear-gradient(135deg, rgba(249, 115, 22, 0.2), rgba(56, 189, 248, 0.15));
   border: 1px solid var(--border-strong);
   display: flex;
@@ -133,6 +133,14 @@ select:focus-visible {
   justify-content: center;
   color: var(--accent-orange);
   flex-shrink: 0;
+  overflow: hidden;
+}
+
+.brand-logo-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: 9px;
 }
 
 .brand-title {
@@ -1016,6 +1024,40 @@ body.ar-glasses-mode .ar-hud-overlay {
   font-size: 0.76rem;
   color: #38bdf8;
   z-index: 140;
+}
+
+.ar-bg-video-stream {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  object-fit: cover;
+  z-index: 105;
+  pointer-events: none;
+}
+
+.ar-submode-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.ar-submode-toggle .btn-attach-code.active {
+  background: var(--accent-orange);
+  color: #ffffff;
+  border-color: var(--accent-orange);
+  font-weight: 700;
+}
+
+.ar-hud-overlay.passthrough-mode {
+  background: transparent !important;
+}
+
+.ar-hud-overlay.passthrough-mode .ar-floating-window {
+  background: rgba(9, 13, 22, 0.84);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  box-shadow: 0 0 28px rgba(0, 0, 0, 0.6);
 }
 
 .ar-floating-window {

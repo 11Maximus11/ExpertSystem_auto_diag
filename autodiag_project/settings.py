@@ -1,7 +1,7 @@
 """
-Настройки Django для экспертной системы автодиагностики AutoDiag Pro AI.
+Настройки Django для экспертной системы автодиагностики ИИдеал Авто (AIdeal Auto).
 Все пути в проекте строго относительные (относительно BASE_DIR).
-Поддерживаются Windows, Linux и Docker, ускорение Vulkan и послойный инференс AirLLM (8 ГБ VRAM).
+Поддерживаются Windows, Linux и Docker, ускорение Vulkan и послойный инференс AirLLM Google Gemma 4 12B.
 """
 
 import os
@@ -13,7 +13,7 @@ load_dotenv(BASE_DIR / ".env")
 
 SECRET_KEY = os.environ.get(
     "DJANGO_SECRET_KEY",
-    "django-insecure-autodiag-vulkan-airllm-expert-system-2026-key",
+    "django-insecure-aideal-auto-vulkan-airllm-gemma4-expert-system-2026-key",
 )
 
 DEBUG = os.environ.get("DJANGO_DEBUG", "1") in ("1", "true", "True", "yes")
@@ -97,12 +97,51 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 KB_DATA_PATH = BASE_DIR / "kb_data.json"
 DIAGNOSTIC_SAMPLE_PATH = BASE_DIR / "VehicleDiagnosticSample.txt"
 MODELS_DIR = BASE_DIR / "models"
-GGUF_DEFAULT_MODEL = MODELS_DIR / os.environ.get("GGUF_MODEL_NAME", "gemma-4-12b-it-Q4_K_M.gguf")
 AIRLLM_SHARDS_DIR = MODELS_DIR / "airllm_shards"
 
 # Настройки Vulkan и AirLLM под 8 ГБ видеопамяти
 VULKAN_ENABLED = os.environ.get("GGML_VULKAN", "1") == "1"
 MAX_VRAM_MB = int(os.environ.get("MAX_VRAM_MB", "8192"))
-DEFAULT_CTX_SIZE = int(os.environ.get("LLM_CTX_SIZE", "2048"))
-AIRLLM_DEFAULT_MODEL = os.environ.get("AIRLLM_MODEL_ID", "Qwen/Qwen2.5-32B-Instruct")
+DEFAULT_CTX_SIZE = int(os.environ.get("LLM_CTX_SIZE", "32768"))
+AIRLLM_DEFAULT_MODEL = os.environ.get("AIRLLM_MODEL_ID", "google/gemma-4-12B-it-qat-w4a16-ct")
 AIRLLM_DEFAULT_COMPRESSION = os.environ.get("AIRLLM_COMPRESSION", "4bit")
+
+# Подробное логирование при DEBUG=True
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {
+        "verbose": {
+            "format": "[{asctime}] [{levelname}] [{name}:{lineno}] {message}",
+            "style": "{",
+        },
+        "simple": {
+            "format": "[{levelname}] {name}: {message}",
+            "style": "{",
+        },
+    },
+    "handlers": {
+        "console": {
+            "level": "DEBUG" if DEBUG else "INFO",
+            "class": "logging.StreamHandler",
+            "formatter": "verbose" if DEBUG else "simple",
+        },
+    },
+    "loggers": {
+        "diagnostics": {
+            "handlers": ["console"],
+            "level": "DEBUG" if DEBUG else "INFO",
+            "propagate": True,
+        },
+        "engine": {
+            "handlers": ["console"],
+            "level": "DEBUG" if DEBUG else "INFO",
+            "propagate": True,
+        },
+        "vulkan_backend": {
+            "handlers": ["console"],
+            "level": "DEBUG" if DEBUG else "INFO",
+            "propagate": True,
+        },
+    },
+}

@@ -2,7 +2,7 @@
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "Django: AutoDiag Pro AI (AirLLM Qwen3.5-4B + Adaptive GPU VRAM)",
+      "name": "Django: AIdeal Auto (AirLLM Gemma 4 12B + Adaptive GPU VRAM)",
       "type": "debugpy",
       "request": "launch",
       "program": "${workspaceFolder}/manage.py",
@@ -22,13 +22,13 @@
         "LLAMA_VULKAN": "1",
         "VULKAN_DEVICE": "0",
         "MAX_VRAM_MB": "8192",
-        "LLM_CTX_SIZE": "6144",
-        "AIRLLM_MODEL_ID": "models/Qwen3.5-4B",
-        "AIRLLM_COMPRESSION": "none"
+        "LLM_CTX_SIZE": "32768",
+        "AIRLLM_MODEL_ID": "google/gemma-4-12B-it-qat-w4a16-ct",
+        "AIRLLM_COMPRESSION": "w4a16"
       }
     },
     {
-      "name": "Django: Тестирование системы (AirLLM + Воркер + JSON)",
+      "name": "Django: Тестирование системы (Gemma 4 + RAG + Worker)",
       "type": "debugpy",
       "request": "launch",
       "program": "${workspaceFolder}/manage.py",
@@ -64,7 +64,7 @@
       }
     },
     {
-      "name": "CLI: Локальный запуск AirLLM Qwen3.5-4B (MAIN_app_with_LLM.py)",
+      "name": "CLI: Локальный запуск AirLLM Gemma 4 12B (MAIN_app_with_LLM.py)",
       "type": "debugpy",
       "request": "launch",
       "program": "${workspaceFolder}/MAIN_app_with_LLM.py",
@@ -75,8 +75,8 @@
         "PYTHONUTF8": "1",
         "GGML_VULKAN": "1",
         "MAX_VRAM_MB": "8192",
-        "LLM_CTX_SIZE": "6144",
-        "AIRLLM_MODEL_ID": "models/Qwen3.5-4B"
+        "LLM_CTX_SIZE": "32768",
+        "AIRLLM_MODEL_ID": "google/gemma-4-12B-it-qat-w4a16-ct"
       }
     }
   ]

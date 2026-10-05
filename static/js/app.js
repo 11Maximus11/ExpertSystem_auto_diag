@@ -1,11 +1,11 @@
 /**
- * AutoDiag Pro AI — Клиентское ядро интерфейса (Mobile-First PWA + Desktop + RayNeo AR HUD)
+ * ИИдеал Авто (AIdeal Auto) — Клиентское ядро интерфейса (Mobile-First PWA + Desktop + RayNeo AR HUD)
  * Поддерживает:
  * - Неблокирующий фоновый воркер выжимки контекста с индикацией сброса при приоритете ответа
  * - Интерактивные чеклисты задач ремонта и блоки инвентаря с синхронизацией состояния
  * - Словарь кодов ошибок DTC (kb_data.json + VehicleDiagnosticSample.txt)
- * - Встроенную камеру, прикрепление фото/документов и голосовой ввод (Direct Audio / GGML Whisper)
- * - Режим AR-очков типа RayNeo (два перетаскиваемых плавающих окна на чисто черном фоне #000000)
+ * - Встроенную камеру, прикрепление фото/документов и прямой нативный аудиовход (Direct Gemma 4 Audio)
+ * - Двойной режим AR-очков (RayNeo Optical #000000 и Камера-фон Video Passthrough)
  */
 
 (function () {
@@ -23,6 +23,8 @@
     speechRecognition: null,
     cameraStream: null,
     arCameraStream: null,
+    arBgCameraStream: null,
+    arSubmode: 'rayneo', // 'rayneo' | 'passthrough'
     cameraFacingMode: 'environment',
     workerPollTimer: null,
     latestAssistantMessage: null,
@@ -470,8 +472,8 @@
           feed.innerHTML = `
             <div class="msg-card msg-assistant" data-welcome-placeholder="1">
               <div class="msg-header">
-                <span class="msg-role-badge">AUTODIAG PRO AI • ГОТОВ К ДИАГНОСТИКЕ</span>
-                <span>QWEN 3.5-VL + AIRLLM GPU</span>
+                <span class="msg-role-badge">ИИДЕАЛ АВТО • ГОТОВ К ДИАГНОСТИКЕ</span>
+                <span>GEMMA 4 12B + AIRLLM GPU</span>
               </div>
               <div class="diagnosis-verdict-title">
                 <span>Интеллектуальный стенд автодиагностики и пошагового ремонта</span>
@@ -512,7 +514,7 @@
     wrapper.className = 'msg-card msg-assistant msg-generating-card msg-card-enter';
     wrapper.innerHTML = `
       <div class="msg-header">
-        <span class="msg-role-badge">AUTODIAG PRO AI • ГЕНЕРАЦИЯ ОТВЕТА (QWEN 3.5-VL + AIRLLM GPU)</span>
+        <span class="msg-role-badge">ИИДЕАЛ АВТО • ГЕНЕРАЦИЯ ОТВЕТА (GEMMA 4 12B + AIRLLM GPU)</span>
         <span class="generating-timer-pill" data-gen-timer>0.0 с</span>
       </div>
       <div class="generating-main-row">
@@ -547,7 +549,7 @@
         if (elapsedSec < 1.5) {
           stageEl.textContent = 'Этап 1/4: Сверка с базой знаний и словарём OBD-II (RAG + Телеметрия)...';
         } else if (elapsedSec < 4.5) {
-          stageEl.textContent = 'Этап 2/4: Анализ контекста в резидентных слоях GPU VRAM (Qwen3.5-4B)...';
+          stageEl.textContent = 'Этап 2/4: Анализ контекста в резидентных слоях GPU VRAM (Gemma 4 12B)...';
         } else if (elapsedSec < 11.0) {
           stageEl.textContent = 'Этап 3/4: Послойный PCIe DMA-стриминг весов AirLLM и синтез ответа...';
         } else {
@@ -899,7 +901,7 @@
   }
 
   // =========================================================================
-  // 7. Голосовой ввод (Прямое аудио или GGML Whisper — Requirement #12)
+  // 7. Голосовой ввод (Прямой нативный аудиовход Gemma 4 16 кГц)
   // =========================================================================
   async function toggleVoiceRecording() {
     const btn = el('btnVoiceRecord');
@@ -1019,7 +1021,35 @@
     });
   }
 
-  async function enterArMode() {
+  async function setArSubmode(mode) {
+    state.arSubmode = mode === 'passthrough' ? 'passthrough' : 'rayneo';
+    const overlay = el('arHudOverlay');
+    const btnRayneo = el('btnArModeRayneo');
+    const btnPassthrough = el('btnArModePassthrough');
+    const bgVideo = el('arBgVideoEl');
+
+    if (btnRayneo) btnRayneo.classList.toggle('active', state.arSubmode === 'rayneo');
+    if (btnPassthrough) btnPassthrough.classList.toggle('active', state.arSubmode === 'passthrough');
+
+    if (state.arSubmode === 'passthrough') {
+      if (overlay) overlay.classList.add('passthrough-mode');
+      if (bgVideo) {
+        bgVideo.style.display = 'block';
+        if (!state.arBgCameraStream) {
+          state.arBgCameraStream = await startCameraStream(bgVideo, state.cameraFacingMode);
+        }
+      }
+    } else {
+      if (overlay) overlay.classList.remove('passthrough-mode');
+      if (bgVideo) {
+        bgVideo.style.display = 'none';
+        stopStream(state.arBgCameraStream);
+        state.arBgCameraStream = null;
+      }
+    }
+  }
+
+  async function enterArMode(submode) {
     document.body.classList.add('ar-glasses-mode');
     try {
       if (!document.fullscreenElement && document.documentElement.requestFullscreen) {
@@ -1028,12 +1058,17 @@
     } catch (_) {}
     const arVideo = el('arCameraVideoEl');
     state.arCameraStream = await startCameraStream(arVideo, state.cameraFacingMode);
+    await setArSubmode(submode || state.arSubmode || 'rayneo');
   }
 
   function exitArMode() {
     document.body.classList.remove('ar-glasses-mode');
     stopStream(state.arCameraStream);
+    stopStream(state.arBgCameraStream);
     state.arCameraStream = null;
+    state.arBgCameraStream = null;
+    const bgVideo = el('arBgVideoEl');
+    if (bgVideo) bgVideo.style.display = 'none';
     try {
       if (document.fullscreenElement && document.exitFullscreen) {
         document.exitFullscreen();
@@ -1159,9 +1194,11 @@
     // Голосовой ввод
     el('btnVoiceRecord')?.addEventListener('click', () => toggleVoiceRecording());
 
-    // Режим AR-очков RayNeo
-    el('btnEnterArMode')?.addEventListener('click', () => enterArMode());
+    // Режим AR-очков (RayNeo Optical / Камера-фон)
+    el('btnEnterArMode')?.addEventListener('click', () => enterArMode('rayneo'));
     el('btnExitArMode')?.addEventListener('click', () => exitArMode());
+    el('btnArModeRayneo')?.addEventListener('click', () => setArSubmode('rayneo'));
+    el('btnArModePassthrough')?.addEventListener('click', () => setArSubmode('passthrough'));
     el('btnArFullscreen')?.addEventListener('click', () => {
       if (document.documentElement.requestFullscreen) {
         document.documentElement.requestFullscreen().catch(() => {});
@@ -1183,7 +1220,7 @@
     el('btnArSnapAndDiagnose')?.addEventListener('click', () => {
       const shot = captureVideoFrame(el('arCameraVideoEl'));
       state.stagedCameraShots.push(shot);
-      sendDiagnosticQuery('Визуальная диагностика узла автомобиля с камеры AR-очков RayNeo');
+      sendDiagnosticQuery('Визуальная диагностика узла автомобиля с камеры AR-очков');
     });
     el('btnArSendQuick')?.addEventListener('click', () => {
       const inp = el('arQuickInput');
@@ -1195,16 +1232,16 @@
     });
     el('btnArVoiceTrigger')?.addEventListener('click', () => toggleVoiceRecording());
 
-    // Сохранение настроек Vulkan / AirLLM / Междиалоговой памяти
+    // Сохранение настроек Vulkan / AirLLM Gemma 4 12B / Междиалоговой памяти
     const saveSettings = async () => {
       const payload = {
         llm_backend: el('settingBackend')?.value || 'airllm_vulkan',
-        airllm_model_id: el('settingAirllmModel')?.value || 'models/Qwen3.5-4B',
-        airllm_compression: el('settingAirllmCompression')?.value || 'none',
-        gguf_model_rel_path: el('settingGgufPath')?.value || 'models/Qwen3.5-4B',
-        vulkan_gpu_layers: Number(el('settingGpuLayers')?.value || -1),
-        context_window_tokens: Number(el('settingCtxTokens')?.value || 6144),
-        voice_mode: el('settingVoiceMode')?.value || 'auto',
+        airllm_model_id: el('settingAirllmModel')?.value || 'google/gemma-4-12B-it-qat-w4a16-ct',
+        airllm_compression: el('settingAirllmCompression')?.value || '4bit',
+        gguf_model_rel_path: el('settingGgufPath')?.value || 'models/airllm_shards',
+        vulkan_gpu_layers: Number(el('settingGpuLayers')?.value || 36),
+        context_window_tokens: Number(el('settingCtxTokens')?.value || 32768),
+        voice_mode: el('settingVoiceMode')?.value || 'direct_audio',
         cross_dialog_memory_enabled: Boolean(el('chkCrossDialogMemory')?.checked),
         global_memory_summary: el('globalSummaryTextarea')?.value || '',
       };

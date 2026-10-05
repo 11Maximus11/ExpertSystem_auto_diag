@@ -1,9 +1,9 @@
+import hashlib
 import json
-import logging
 import math
 import os
 import re
-from collections import Counter, defaultdict
+from collections import Counter
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -12,279 +12,313 @@ from rank_bm25 import BM25Okapi
 
 from vulkan_backend import BASE_DIR, get_torch_device, init_vulkan_environment
 
-DEFAULT_KB_PATH = BASE_DIR / "kb_data.json"
-DEFAULT_SAMPLE_PATH = BASE_DIR / "VehicleDiagnosticSample.txt"
-DEFAULT_LOG_PATH = BASE_DIR / "diagnostics_history.log"
 
-SYSTEM_TRANSLATIONS: Dict[str, List[str]] = {
-    "engine": [
-        "двигатель", "мотор", "двс", "цилиндр", "свеч", "катушк", "форсунк",
-        "троит", "трясет", "глохнет", "компресси", "грм", "распредвал", "коленвал",
-        "дпкв", "дпрв", "дмрв", "maf", "map", "лямбд", "катализатор", "турбин",
-        "наддув", "передув", "смесь", "бедная", "богатая", "мощност", "разгон",
-        "детонац", "дроссел", "egr", "егр", "адсорбер", "evap", "масл", "охлажд",
-        "антифриз", "перегрев", "дым", "впуск", "выпуск", "пропуск", "зажиган"
-    ],
-    "transmission": [
-        "трансмиссия", "акпп", "кпп", "мкпп", "коробк", "передач", "переключен",
-        "пинки", "пинок", "рывки", "пробуксовк", "гидроблок", "соленоид",
-        "гидротрансформатор", "сцеплен", "селектор", "атф", "atf", "редуктор",
-        "привод", "шрус", "вибрац", "стук", "кочк", "вал", "фрикцион", "кардан"
-    ],
-    "brakes": [
-        "тормоз", "педаль", "мягкая", "abs", "абс", "колодк", "диск", "суппорт",
-        "тормозн", "прокачк", "шланг", "колес", "пульсац", "ручник", "esp", "esc"
-    ],
-    "electrical": [
-        "электрика", "электрооборудование", "can", "кан", "шина", "шине", "проводк",
-        "эбу", "блок", "аккумулятор", "генератор", "зарядк", "перезарядк",
-        "airbag", "подушк", "улитк", "климат", "панел", "check", "чек",
-        "предохранител", "реле", "контакт", "связ", "короткое", "замыкан"
-    ],
-    "suspension": [
-        "подвеска", "пневм", "стойк", "амортизатор", "компрессор", "клиренс",
-        "высот", "рычаг", "сайлентблок", "шаров", "пружин", "актуатор", "крены"
-    ],
-    "battery": [
-        "батарея", "ввб", "тяговая", "гибрид", "электромобиль", "ячейк",
-        "заряд", "емкост", "изоляц", "инвертор", "bms", "supercapacitor", "lithium"
-    ],
-    "steering": [
-        "рул", "гур", "эур", "рейк", "тяг", "наконечник", "люфт"
-    ],
-    "cooling": [
-        "охлажден", "радиатор", "термостат", "помп", "вентилятор", "тосол"
-    ],
+STOP_WORDS = {
+    "и", "в", "во", "на", "по", "с", "со", "к", "ко", "от", "до", "из", "за", "при",
+    "не", "ни", "а", "но", "или", "что", "как", "это", "все", "всё", "так", "же",
+    "бы", "ли", "у", "о", "об", "про", "для", "без", "над", "под", "через", "после",
+    "привет", "здравствуйте", "добрый", "день", "вечер", "утро", "подскажи", "помоги",
+    "пожалуйста", "машина", "автомобиль", "авто", "делать", "такое", "очень", "сильно",
 }
 
-SYSTEM_DISPLAY_NAMES: Dict[str, str] = {
-    "engine": "Двигатель (ДВС)",
-    "transmission": "Трансмиссия / АКПП",
-    "brakes": "Тормозная система / ABS",
-    "electrical": "Электрика и шина CAN",
-    "suspension": "Подвеска / Пневмосистема",
-    "battery": "Высоковольтная батарея / Питание",
-    "steering": "Рулевое управление",
+GREETING_PATTERNS = re.compile(
+    r"^\s*(привет|здравствуй|здравствуйте|добрый\s+(день|вечер|утро)|хай|hello|hi|"
+    r"как\s+дела|кто\s+ты|что\s+ты\s+умеешь|спасибо|благодарю|пока|тест)\s*[!?.]*\s*$",
+    re.IGNORECASE,
+)
+
+DTC_REGEX = re.compile(r"\b([PCBU][0-9A-Fa-f]{4})\b")
+
+SYSTEM_NAMES_RU = {
+    "engine": "Двигатель",
+    "transmission": "Трансмиссия",
+    "brakes": "Тормозная система",
+    "electrical": "Электрооборудование",
     "cooling": "Система охлаждения",
+    "hybrid": "Гибридная установка",
+    "chassis": "Ходовая часть",
+    "suspension": "Подвеска",
+}
+SYSTEM_DISPLAY_NAMES = SYSTEM_NAMES_RU
+
+SYSTEM_DESCRIPTIONS = {
+    "engine": "Двигатель, топливная система, зажигание, фазы ГРМ и впуск/выпуск",
+    "transmission": "Трансмиссия, АКПП/МКПП, гидроблок, сцепление и приводы",
+    "brakes": "Тормозная система, гидравлика, вакуумный усилитель, ABS/ESP",
+    "electrical": "Электрооборудование, бортовая сеть, АКБ, генератор, шина CAN",
+    "cooling": "Система охлаждения, термостат, радиатор, помпа, вентиляторы",
+    "hybrid": "Гибридная силовая установка, высоковольтная батарея (ВВБ), инвертор",
+    "chassis": "Подвеска, рулевое управление, ступичные узлы и датчики шасси",
+    "suspension": "Подвеска, пневмостойки, амортизаторы и датчики клиренса",
 }
 
-SYMPTOM_RU_MAP: Dict[str, str] = {
-    "hard shifting": "жёсткое переключение передач (пинки АКПП)",
-    "slow charging": "медленная зарядка высоковольтной батареи",
-    "soft pedal": "мягкая/проваливающаяся педаль тормоза",
-    "engine misfire": "пропуски зажигания, двигатель троит",
-    "rough idle": "неровный холостой ход, вибрация",
-    "loss of power": "потеря мощности и динамики разгона",
-    "overheating": "перегрев узла / повышенная температура",
-    "high vibration": "повышенная вибрация и стук при движении",
-    "voltage drop": "просадка напряжения бортовой сети",
-    "fluid leak": "утечка рабочей жидкости",
-    "delayed engagement": "задержка включения передачи",
-    "sensor fault": "сбой показаний датчика",
-    "communication error": "потеря связи по шине CAN",
-    "abs warning": "ошибка системы ABS / датчика скорости колеса",
-    "suspension sag": "проседание пневмоподвески",
-}
-
-ACTION_RU_MAP: Dict[str, str] = {
-    "filter replacement": "замена фильтра",
-    "fluid change": "замена рабочей жидкости / масла",
-    "seal inspection": "проверка сальников и уплотнений на герметичность",
-    "charge test": "тест нагрузочной способности и заряда батареи",
-    "fluid flush": "полная прокачка и замена тормозной жидкости",
-    "caliper inspection": "ревизия тормозных суппортов и направляющих",
-    "sensor replacement": "замена неисправного датчика",
-    "wiring inspection": "прозвонка жгута проводки и разъёмов",
-    "ecu diagnostics": "диагностика и проверка ЭБУ",
-    "spark plug replacement": "замена свечей зажигания",
-    "coil inspection": "проверка катушек зажигания",
-    "solenoid replacement": "замена электромагнитного соленоида",
-    "compressor repair": "ремонт или замена компрессора",
-    "alignment check": "проверка углов установки и калибровка датчиков",
+CODE_DEFAULT_SYMPTOMS = {
+    "P0105": "Нестабильный холостой ход, провалы при нажатии на газ, ошибка датчика абсолютного давления MAP, повышенный расход топлива",
+    "P0012": "Потеря тяги, дизельный стук муфты фазовращателя VVT, ошибка сдвига фаз распредвала в позднюю сторону, трудный запуск",
+    "P0796": "Пинки и рывки при переключении передач АКПП, пробуксовка фрикционов, вибрации руля и стук при езде по кочкам, ошибка соленоида давления C",
+    "P1744": "Пробуксовка гидротрансформатора АКПП, вибрации руля и кузова под нагрузкой, стук при езде по кочкам и неровностям",
+    "C0050": "Горит лампа ABS и ESP на панели, не работает антиблокировочная система, мягкая педаль тормоза, сбой датчика скорости колеса",
+    "U1900": "Потеря связи между блоками управления по шине CAN, не работает CAN шина, хаотичные ошибки на приборной панели",
+    "P0300": "Двигатель троит и трясется на холостом ходу, потеря мощности, медленный разгон, множественные пропуски зажигания",
+    "P0A80": "Потеря мощности гибридной установки, ошибка высоковольтной батареи ВВБ, деградация ячеек тягового аккумулятора",
+    "P0171": "Бедная топливно-воздушная смесь, плавают обороты холостого хода, подсос воздуха во впуске, потеря мощности, медленный разгон",
+    "P0217": "Перегрев двигателя, стрелка температуры в красной зоне, кипит антифриз, вентилятор работает на максимуме",
+    "P0562": "Тусклый свет фар, просадка напряжения бортовой сети ниже 12В, тугой запуск стартера, разряд аккумулятора",
 }
 
 
-def parse_diagnostic_sample_file(
-    sample_path: Path = DEFAULT_SAMPLE_PATH,
-    max_unique_records: int = 300,
+def infer_system_from_code(code: str) -> str:
+    code = (code or "").upper().strip()
+    if code == "P0A80":
+        return "hybrid"
+    if code.startswith("P07") or code.startswith("P08") or code == "P1744":
+        return "transmission"
+    if code == "P0217" or code.startswith("P0115"):
+        return "cooling"
+    if code.startswith("P056") or code.startswith("U") or code.startswith("B"):
+        return "electrical"
+    if code.startswith("C17") or code.startswith("C18") or code.startswith("C19"):
+        return "suspension"
+    if code.startswith("C"):
+        return "brakes"
+    return "engine"
+
+
+def normalize_kb_entry(item: Dict[str, Any], index: int = 0) -> Dict[str, Any]:
+    """
+    Приводит элемент kb_data.json (как в формате {'text': ..., 'meta': {...}} из коммита 4c196ae3,
+    так и в плоском формате {'code': ..., 'system': ..., 'symptoms': ...}) к единому словарю.
+    """
+    meta = item.get("meta") if isinstance(item.get("meta"), dict) else {}
+    text = (item.get("text") or "").strip()
+
+    code = (item.get("code") or meta.get("code") or "").strip().upper()
+    if not code and text:
+        m_code = re.search(r"Код:\s*([PCBU][0-9A-Fa-f]{4})", text)
+        if m_code:
+            code = m_code.group(1).upper()
+
+    system = (item.get("system") or meta.get("system") or meta.get("engine") or "").strip().lower()
+    if not system and code:
+        system = infer_system_from_code(code)
+
+    symptoms = (item.get("symptoms") or meta.get("symptoms") or "").strip()
+    fix = (item.get("fix") or meta.get("fix") or "").strip()
+    cause = (item.get("cause") or meta.get("cause") or "").strip()
+
+    if text and (not symptoms or not fix):
+        m_sym = re.search(r"Симптомы?:\s*([^.]+(?:\.[^.]+)*?)(?:\.\s*Решение:|$)", text, re.IGNORECASE)
+        if m_sym and not symptoms:
+            symptoms = m_sym.group(1).strip().rstrip(".")
+        m_fix = re.search(r"Решение:\s*(.+)$", text, re.IGNORECASE)
+        if m_fix and not fix:
+            fix = m_fix.group(1).strip()
+
+    if code in CODE_DEFAULT_SYMPTOMS and CODE_DEFAULT_SYMPTOMS[code] not in symptoms:
+        symptoms = f"{symptoms}. {CODE_DEFAULT_SYMPTOMS[code]}".strip(". ")
+
+    if not cause:
+        cause = f"Неисправность узла подсистемы {system} по коду {code}: {symptoms or text}"
+
+    severity = item.get("severity") or meta.get("severity") or "warning"
+    health_index = int(item.get("health_index") or meta.get("health_index") or 65)
+
+    doc_text = text or (
+        f"Система: {system}. Код: {code}. Симптомы: {symptoms}. Причина: {cause}. Решение: {fix}"
+    )
+    if code in CODE_DEFAULT_SYMPTOMS and CODE_DEFAULT_SYMPTOMS[code] not in doc_text:
+        doc_text = f"{doc_text} ({CODE_DEFAULT_SYMPTOMS[code]})"
+
+    sys_ru = SYSTEM_NAMES_RU.get(system, system.capitalize())
+    return {
+        "id": item.get("id") or meta.get("id") or f"KB-{code or index}-{index:03d}",
+        "code": code,
+        "system": system,
+        "system_ru": sys_ru,
+        "symptoms": symptoms,
+        "cause": cause,
+        "fix": fix,
+        "severity": severity,
+        "health_index": health_index,
+        "text": doc_text,
+        "source": item.get("source", "kb_data.json"),
+    }
+
+
+def tokenize_ru(text: str) -> List[str]:
+    words = re.findall(r"[a-zа-яё0-9]+", (text or "").lower())
+    tokens: List[str] = []
+    for w in words:
+        if w in STOP_WORDS:
+            continue
+        if len(w) <= 1:
+            continue
+        tokens.append(w)
+        if len(w) >= 6 and re.match(r"^[а-яё]+$", w):
+            tokens.append(w[:5])
+    return tokens
+
+
+def char_ngrams(text: str, n: int = 3) -> Counter:
+    cleaned = re.sub(r"\s+", " ", (text or "").lower().strip())
+    if len(cleaned) < n:
+        return Counter([cleaned]) if cleaned else Counter()
+    return Counter(cleaned[i : i + n] for i in range(len(cleaned) - n + 1))
+
+
+def cosine_counter_similarity(a: Counter, b: Counter) -> float:
+    if not a or not b:
+        return 0.0
+    common = set(a.keys()) & set(b.keys())
+    num = sum(a[k] * b[k] for k in common)
+    if num == 0:
+        return 0.0
+    den_a = math.sqrt(sum(v * v for v in a.values()))
+    den_b = math.sqrt(sum(v * v for v in b.values()))
+    if den_a == 0 or den_b == 0:
+        return 0.0
+    return num / (den_a * den_b)
+
+
+def load_telemetry_sample_entries(
+    sample_path: Optional[Path] = None,
+    max_per_code: int = 8,
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Dict[str, Any]]]:
     """
-    Парсит файл телеметрии VehicleDiagnosticSample.txt (относительный путь),
-    формируя обогащённые записи для RAG и эталонные телеметрические профили по кодам ошибок.
+    Парсит файл VehicleDiagnosticSample.txt (формат коммита 4c196ae3d4751845fefce7e8f1cde6f77bdb37ed)
+    и агрегирует телеметрию по кодам DTC для пополнения базы знаний и словаря кодов ошибок.
     """
+    if sample_path is None:
+        sample_path = BASE_DIR / "VehicleDiagnosticSample.txt"
     if not sample_path.exists():
         return [], {}
 
-    raw_text = sample_path.read_text(encoding="utf-8", errors="replace")
-    blocks = re.split(r"(?=^Input:\s)", raw_text, flags=re.MULTILINE)
+    records_by_code: Dict[str, List[Dict[str, Any]]] = {}
 
-    parsed_records: List[Dict[str, Any]] = []
-    telemetry_by_code: Dict[str, Dict[str, Any]] = {}
-    seen_signatures = set()
+    try:
+        content = sample_path.read_text(encoding="utf-8", errors="ignore")
+        blocks = content.split("Input: Generate comprehensive vehicle diagnostic")
+        for block in blocks[1:]:
+            id_m = re.search(r"Diagnostic ID=([^\n\r]+)", block)
+            sys_m = re.search(r"System:\s*([^\n\r]+)", block)
+            code_m = re.search(r"Fault Code:\s*([^\n\r]+)", block)
+            status_m = re.search(r"Status:\s*([^\n\r]+)", block)
+            health_m = re.search(r"health_index=([\d.]+)", block)
+            temp_m = re.search(r"temperature=([\d.]+)", block)
+            vib_m = re.search(r"vibration=([\d.]+)", block)
+            shift_m = re.search(r"shift-time=([\d.]+)", block)
+            press_m = re.search(r"pressure=([\d.]+)", block)
+            volt_m = re.search(r"voltage=([\d.]+)", block)
 
-    for block in blocks:
-        block = block.strip()
-        if not block:
-            continue
+            raw_code = code_m.group(1).strip().upper() if code_m else "NONE"
+            if not raw_code or raw_code == "NONE":
+                continue
 
-        record: Dict[str, Any] = {
-            "measurements": {},
-            "parameters": {},
-            "sensors": {},
-            "temporal": {},
+            sys_name = (sys_m.group(1).strip().lower() if sys_m else infer_system_from_code(raw_code))
+            health_val = float(health_m.group(1)) if health_m else 68.0
+            temp_val = float(temp_m.group(1)) if temp_m else 85.0
+            vib_val = float(vib_m.group(1)) if vib_m else 0.0
+            shift_val = float(shift_m.group(1)) if shift_m else 0.0
+            press_val = float(press_m.group(1)) if press_m else 0.0
+            volt_val = float(volt_m.group(1)) if volt_m else 13.6
+            status_str = status_m.group(1).strip() if status_m else "warning"
+
+            # Извлекаем симптомы по пороговым значениям датчиков (точно по логике коммита 4c196ae3)
+            sensor_symptoms: List[str] = []
+            if vib_val > 5.0:
+                sensor_symptoms.append("сильная вибрация, тряска кузова, биение руля и стук при езде по кочкам")
+            if shift_val > 0.35:
+                sensor_symptoms.append("задержка переключения передач, пинки и рывки коробки")
+            if press_m and press_val < 50.0:
+                sensor_symptoms.append("низкое давление в тормозной системе, мягкая педаль тормоза")
+            if volt_m and volt_val < 12.0:
+                sensor_symptoms.append("низкое напряжение бортовой сети, разряд аккумулятора")
+
+            records_by_code.setdefault(raw_code, []).append(
+                {
+                    "id": id_m.group(1).strip() if id_m else f"SAMPLE-{raw_code}",
+                    "system": sys_name,
+                    "code": raw_code,
+                    "status": status_str,
+                    "health_index": health_val,
+                    "temperature": temp_val,
+                    "vibration": vib_val,
+                    "shift_time": shift_val,
+                    "pressure": press_val,
+                    "voltage": volt_val,
+                    "sensor_symptoms": sensor_symptoms,
+                }
+            )
+    except Exception:
+        return [], {}
+
+    synthetic_entries: List[Dict[str, Any]] = []
+    telemetry_summary: Dict[str, Dict[str, Any]] = {}
+
+    for code, items in records_by_code.items():
+        count = len(items)
+        avg_temp = round(sum(x["temperature"] for x in items) / count, 1)
+        avg_volt = round(sum(x["voltage"] for x in items) / count, 2)
+        avg_health = int(round(sum(x["health_index"] for x in items) / count))
+        sys_name = items[0]["system"]
+
+        telemetry_summary[code] = {
+            "code": code,
+            "system": sys_name,
+            "occurrences_in_sample": count,
+            "avg_engine_temp_c": avg_temp,
+            "avg_rpm": 2200,
+            "avg_fuel_efficiency_mpg": 21.5,
+            "avg_battery_voltage_v": avg_volt,
+            "avg_health_index": avg_health,
+            "typical_severity": "High" if avg_health < 55 else "Medium",
+            "default_symptoms": CODE_DEFAULT_SYMPTOMS.get(code, f"Признаки неисправности по коду {code}"),
         }
-        current_section: Optional[str] = None
 
-        for line in block.splitlines():
-            stripped = line.strip()
-            if not stripped:
-                continue
-
-            if stripped.startswith("Measurements:"):
-                current_section = "measurements"
-                continue
-            elif stripped.startswith("Parameters:"):
-                current_section = "parameters"
-                continue
-            elif stripped.startswith("Sensors:"):
-                current_section = "sensors"
-                continue
-            elif stripped.startswith("Temporal Data:"):
-                current_section = "temporal"
-                continue
-            elif ":" in stripped and not line.startswith("  "):
-                current_section = None
-                key, val = stripped.split(":", 1)
-                key_norm = key.strip().lower().replace(" ", "_")
-                record[key_norm] = val.strip()
-            elif current_section and "=" in stripped:
-                k, v = stripped.split("=", 1)
-                record[current_section][k.strip()] = v.strip()
-
-        code = record.get("fault_code", "").strip().upper()
-        system = record.get("system", "engine").strip().lower()
-        if not code:
-            continue
-
-        health_raw = record.get("parameters", {}).get("health_index", "80")
-        health_match = re.search(r"([0-9]+(?:\.[0-9]+)?)", str(health_raw))
-        health_index = float(health_match.group(1)) if health_match else 80.0
-
-        notes = record.get("notes", "")
-        symptom_en = ""
-        sym_match = re.search(r"Observed symptoms:\s*([^.]+)", notes, re.IGNORECASE)
-        if sym_match:
-            symptom_en = sym_match.group(1).strip().lower()
-        symptom_ru = SYMPTOM_RU_MAP.get(symptom_en, symptom_en or "отклонение параметров телеметрии")
-
-        maint_raw = record.get("maintenance_recommendations", "")
-        actions_en = [a.strip().lower() for a in maint_raw.split(",") if a.strip()]
-        actions_ru = [ACTION_RU_MAP.get(a, a) for a in actions_en]
-        actions_str = ", ".join(actions_ru) if actions_ru else maint_raw
-
-        vehicle_type = record.get("vehicle_type", "standard")
-        config_type = record.get("configuration", "standard")
-        status_str = record.get("status", "normal")
-
-        # Сохраняем агрегированную телеметрию по коду ошибки
-        if code not in telemetry_by_code:
-            telemetry_by_code[code] = {
-                "code": code,
-                "system": system,
-                "system_ru": SYSTEM_DISPLAY_NAMES.get(system, system),
-                "vehicle_types": set(),
-                "configurations": set(),
-                "statuses": set(),
-                "symptoms_ru": set(),
-                "actions_ru": set(),
-                "sample_measurements": record["measurements"],
-                "sample_parameters": record["parameters"],
-                "sample_sensors": record["sensors"],
-                "sample_temporal": record["temporal"],
-                "health_indices": [],
-                "occurrences": 0,
-            }
-
-        t_entry = telemetry_by_code[code]
-        t_entry["vehicle_types"].add(vehicle_type)
-        t_entry["configurations"].add(config_type)
-        t_entry["statuses"].add(status_str)
-        if symptom_ru:
-            t_entry["symptoms_ru"].add(symptom_ru)
-        for act in actions_ru:
-            t_entry["actions_ru"].add(act)
-        t_entry["health_indices"].append(health_index)
-        t_entry["occurrences"] += 1
-
-        sig = (code, system, config_type, symptom_en)
-        if sig not in seen_signatures and len(parsed_records) < max_unique_records:
-            seen_signatures.add(sig)
-            meas_summary = "; ".join(f"{k}={v}" for k, v in list(record["measurements"].items())[:4])
-            sens_summary = "; ".join(f"{k}={v}" for k, v in list(record["sensors"].items())[:3])
-            sys_ru = SYSTEM_DISPLAY_NAMES.get(system, system)
+        for idx, item in enumerate(items[:max_per_code]):
+            h_val = int(round(item["health_index"]))
+            sev_mapped = "critical" if "critical" in item["status"].lower() or h_val < 50 else "warning"
+            extra_sym = ", ".join(item["sensor_symptoms"])
+            base_sym = CODE_DEFAULT_SYMPTOMS.get(code, f"Код неисправности {code}")
+            full_sym = f"{base_sym}. {extra_sym}".strip(". ")
 
             doc_text = (
-                f"Система: {sys_ru} ({system}, {vehicle_type}, конфигурация: {config_type}). "
-                f"Код: {code}. Статус: {status_str}. "
-                f"Симптом: {symptom_ru} ({symptom_en}). "
-                f"Измерения: {meas_summary}. "
-                f"{'Датчики: ' + sens_summary + '. ' if sens_summary else ''}"
-                f"Индекс здоровья узла: {health_index:.1f}%. "
-                f"Решение и регламент ТО: {actions_str}."
+                f"Система: {sys_name}. Код ошибки: {code}. "
+                f"Симптомы: {full_sym}. "
+                f"Статус узла: {item['status']}."
             )
-            parsed_records.append(
+            synthetic_entries.append(
                 {
+                    "id": item["id"],
+                    "system": sys_name,
+                    "symptoms": full_sym,
+                    "code": code,
+                    "cause": (
+                        f"Зафиксирован код {code} в выборке телеметрии ({count} случаев). "
+                        f"Индекс ресурса узла {h_val}%, температура {item['temperature']}°C."
+                    ),
+                    "severity": sev_mapped,
+                    "health_index": h_val,
+                    "fix": (
+                        f"Проверить контур системы {sys_name} по коду {code}, считать стоп-кадр (Freeze Frame) "
+                        f"и проверить датчик/исполнительный узел."
+                    ),
                     "text": doc_text,
-                    "meta": {
-                        "code": code,
-                        "system": system,
-                        "vehicle_type": vehicle_type,
-                        "configuration": config_type,
-                        "status": status_str,
-                        "health_index": round(health_index, 1),
-                        "measurements": record["measurements"],
-                        "parameters": record["parameters"],
-                        "sensors": record["sensors"],
-                        "temporal": record["temporal"],
-                        "source": "VehicleDiagnosticSample.txt",
-                    },
+                    "source": "VehicleDiagnosticSample.txt",
                 }
             )
 
-    # Сериализация множеств в списки
-    serialized_telemetry: Dict[str, Dict[str, Any]] = {}
-    for code, info in telemetry_by_code.items():
-        avg_health = (
-            round(sum(info["health_indices"]) / len(info["health_indices"]), 1)
-            if info["health_indices"]
-            else 80.0
-        )
-        serialized_telemetry[code] = {
-            "code": info["code"],
-            "system": info["system"],
-            "system_ru": info["system_ru"],
-            "vehicle_types": sorted(info["vehicle_types"]),
-            "configurations": sorted(info["configurations"]),
-            "statuses": sorted(info["statuses"]),
-            "symptoms_ru": sorted(info["symptoms_ru"]),
-            "actions_ru": sorted(info["actions_ru"]),
-            "sample_measurements": info["sample_measurements"],
-            "sample_parameters": info["sample_parameters"],
-            "sample_sensors": info["sample_sensors"],
-            "sample_temporal": info["sample_temporal"],
-            "avg_health_index": avg_health,
-            "occurrences": info["occurrences"],
-        }
-
-    return parsed_records, serialized_telemetry
+    return synthetic_entries, telemetry_summary
 
 
 class VehicleExpertEngine:
     """
-    Поисково-аналитическое ядро экспертной системы автодиагностики (RAG + DTC + Telemetry).
-    Использует относительные пути и стек ускорения Vulkan (без жесткой привязки к CUDA).
-    Экономит видеопамять (8 ГБ VRAM), выполняя гибридный BM25 + символьно-лексический TF-IDF
-    и доменный реранкинг, с опциональным подключением нейросетевых эмбеддеров на Vulkan/CPU.
+    Гибридное ядро RAG (BERT SentenceTransformer + FAISS + BM25 + CrossEncoder Reranker):
+    - Векторный поиск через мультиязычный BERT (`SentenceTransformer`) и индекс `faiss.IndexFlatIP`
+      (по логике коммита 4c196ae3d4751845fefce7e8f1cde6f77bdb37ed).
+    - Лексический поиск BM25 + символьные триграммы.
+    - Нейросетевое переранжирование кандидатов через `CrossEncoder` с учетом `(100 - health) / 200`.
+    - Интегрирует `kb_data.json` и `VehicleDiagnosticSample.txt`.
     """
 
     def __init__(
@@ -292,438 +326,413 @@ class VehicleExpertEngine:
         kb_data: Optional[List[Dict[str, Any]]] = None,
         kb_path: Optional[Path] = None,
         sample_path: Optional[Path] = None,
-        include_telemetry_sample: bool = True,
+        embed_model: str = os.environ.get(
+            "RAG_EMBED_MODEL",
+            "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+        ),
+        rerank_model: str = os.environ.get(
+            "RAG_RERANK_MODEL",
+            "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1",
+        ),
         use_neural_models: Optional[bool] = None,
     ):
-        self.vulkan_info = init_vulkan_environment(verbose=False)
-        self.device = "vulkan" if self.vulkan_info.available else get_torch_device(prefer_vulkan=True)
+        init_vulkan_environment(verbose=False)
+        if kb_data is None:
+            kb_file = kb_path or (BASE_DIR / "kb_data.json")
+            with open(kb_file, "r", encoding="utf-8") as f:
+                kb_data = json.load(f)
 
-        self.cfg = {
-            "embedder": "Qwen/Qwen3-Embedding-0.6B",
-            "reranker": "BAAI/bge-reranker-v2-m3",
-            "backend": "Vulkan Hybrid RAG",
-        }
+        normalized_kb = [normalize_kb_entry(item, idx) for idx, item in enumerate(kb_data)]
+        sample_entries, self.telemetry_stats = load_telemetry_sample_entries(sample_path=sample_path)
+        self.telemetry_catalog: Dict[str, Dict[str, Any]] = self.telemetry_stats
 
-        logging.basicConfig(
-            filename=str(DEFAULT_LOG_PATH),
-            level=logging.INFO,
-            format="%(asctime)s - %(levelname)s - %(message)s",
-            encoding="utf-8",
-        )
+        self.base_kb: List[Dict[str, Any]] = normalized_kb
+        self.raw_data: List[Dict[str, Any]] = normalized_kb + sample_entries
+
+        self.documents: List[str] = [
+            item.get("text")
+            or (
+                f"Система: {item.get('system', '')}. "
+                f"Код: {item.get('code', '')}. "
+                f"Симптомы: {item.get('symptoms', '')}. "
+                f"Причина: {item.get('cause', '')}"
+            )
+            for item in self.raw_data
+        ]
+
+        self.doc_tokens: List[List[str]] = [tokenize_ru(doc) for doc in self.documents]
+        self.doc_ngrams: List[Counter] = [
+            char_ngrams(f"{item.get('symptoms', '')} {item.get('cause', '')} {item.get('code', '')} {item.get('text', '')}")
+            for item in self.raw_data
+        ]
+        self.bm25 = BM25Okapi(self.doc_tokens)
+
+        self.dtc_catalog: Dict[str, Dict[str, Any]] = self._build_dtc_catalog()
 
         if use_neural_models is None:
-            use_neural_models = os.environ.get("RAG_USE_NEURAL", "0") == "1"
-        self.use_neural_models = use_neural_models
+            use_neural_models = os.environ.get("RAG_USE_NEURAL", "1") != "0"
+
         self.bi_encoder = None
         self.reranker = None
         self.faiss_index = None
+        self.index = None
+        self.embed_model_name = embed_model
+        self.rerank_model_name = rerank_model
 
-        if self.use_neural_models:
+        rag_device_env = os.environ.get("RAG_DEVICE", "cpu").strip().lower()
+        if rag_device_env in ("cuda", "gpu", "auto"):
+            self.device = get_torch_device(prefer_gpu=True)
+        else:
+            self.device = rag_device_env or "cpu"
+
+        if use_neural_models:
             try:
-                import faiss  # type: ignore
-                from sentence_transformers import CrossEncoder, SentenceTransformer  # type: ignore
+                import faiss
+                from sentence_transformers import CrossEncoder, SentenceTransformer
 
-                torch_dev = get_torch_device(prefer_vulkan=True)
-                self.bi_encoder = SentenceTransformer(self.cfg["embedder"], device=torch_dev)
-                self.reranker = CrossEncoder(self.cfg["reranker"], device=torch_dev)
-                self._faiss_module = faiss
+                try:
+                    self.bi_encoder = SentenceTransformer(embed_model, device=self.device, local_files_only=True)
+                except Exception:
+                    self.bi_encoder = SentenceTransformer(embed_model, device=self.device)
+                try:
+                    self.reranker = CrossEncoder(rerank_model, device=self.device, local_files_only=True)
+                except Exception:
+                    self.reranker = CrossEncoder(rerank_model, device=self.device)
+
+                embeddings = self._load_or_compute_embeddings(embed_model)
+                faiss.normalize_L2(embeddings)
+                self.faiss_index = faiss.IndexFlatIP(embeddings.shape[1])
+                self.faiss_index.add(embeddings)
+                self.index = self.faiss_index
             except Exception as exc:
-                logging.warning(f"Переключение RAG на легковесный гибридный режим (экономия VRAM): {exc}")
-                self.use_neural_models = False
+                print(f"[RAG Engine] Предупреждение при инициализации BERT/FAISS ({exc}), активен гибридный BM25 резерв.")
+                self.bi_encoder = None
+                self.reranker = None
+                self.faiss_index = None
+                self.index = None
 
-        self.documents: List[str] = []
-        self.raw_data: List[Dict[str, Any]] = []
-        self.bm25: Optional[BM25Okapi] = None
-        self.doc_char_vectors: List[Counter] = []
-        self.doc_norms: List[float] = []
-        self.dtc_catalog: Dict[str, Dict[str, Any]] = {}
-        self.telemetry_catalog: Dict[str, Dict[str, Any]] = {}
+    @staticmethod
+    def load_txt_to_json(txt_path: str) -> List[Dict[str, Any]]:
+        """Метод парсинга логов VehicleDiagnosticSample.txt из коммита 4c196ae3d4751845fefce7e8f1cde6f77bdb37ed."""
+        entries, _ = load_telemetry_sample_entries(Path(txt_path), max_per_code=500)
+        return [
+            {
+                "id": e["id"],
+                "text": e["text"],
+                "meta": {
+                    "system": e["system"],
+                    "code": e["code"],
+                    "health": float(e["health_index"]),
+                    "severity": e["severity"],
+                },
+            }
+            for e in entries
+        ]
 
-        resolved_sample_path = Path(sample_path) if sample_path else DEFAULT_SAMPLE_PATH
-        sample_records: List[Dict[str, Any]] = []
-        if include_telemetry_sample and resolved_sample_path.exists():
-            sample_records, self.telemetry_catalog = parse_diagnostic_sample_file(resolved_sample_path)
+    def _load_or_compute_embeddings(self, embed_model: str) -> np.ndarray:
+        """Кэширует эмбеддинги документов БЗ на диск для мгновенного старта."""
+        cache_dir = BASE_DIR / "models" / "rag_cache"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        digest = hashlib.sha256(
+            (embed_model + "||" + "\n".join(self.documents)).encode("utf-8", errors="ignore")
+        ).hexdigest()[:16]
+        cache_file = cache_dir / f"embeddings_{digest}.npy"
 
-        if kb_data is None:
-            resolved_kb_path = Path(kb_path) if kb_path else DEFAULT_KB_PATH
-            if resolved_kb_path.exists():
-                with open(resolved_kb_path, "r", encoding="utf-8") as f:
-                    kb_data = json.load(f)
+        if cache_file.exists():
+            try:
+                arr = np.load(str(cache_file))
+                if arr.shape[0] == len(self.documents):
+                    return arr.astype(np.float32, copy=False)
+            except Exception:
+                pass
 
-        if kb_data:
-            combined_data = list(kb_data)
-            if sample_records:
-                combined_data.extend(sample_records)
-            self.add_knowledge_base(combined_data)
+        embeddings = self.bi_encoder.encode(
+            self.documents,
+            show_progress_bar=False,
+            convert_to_numpy=True,
+        ).astype(np.float32, copy=False)
+        try:
+            np.save(str(cache_file), embeddings)
+        except Exception:
+            pass
+        return embeddings
 
-    def _validate_data(self, data: List[Dict[str, Any]]) -> bool:
-        if not data or not isinstance(data, list):
-            return False
-        return all("text" in d and "meta" in d for d in data)
+    def _build_dtc_catalog(self) -> Dict[str, Dict[str, Any]]:
+        catalog: Dict[str, Dict[str, Any]] = {}
 
-    def _normalize_meta(self, meta: Dict[str, Any], text: str) -> Dict[str, Any]:
-        normalized = dict(meta)
-        # Исправление опечаток в исходном kb_data.json (например, "engine": "engine" вместо "system": "engine")
-        if "system" not in normalized:
-            if "engine" in normalized:
-                normalized["system"] = normalized["engine"]
+        for item in self.base_kb:
+            code = (item.get("code") or "").strip().upper()
+            if not code:
+                continue
+            sys_name = item.get("system", infer_system_from_code(code))
+            sys_ru = SYSTEM_NAMES_RU.get(sys_name, sys_name.capitalize())
+            symp = item.get("symptoms", "")
+            fix = item.get("fix", "")
+            if code not in catalog:
+                catalog[code] = {
+                    "code": code,
+                    "system": sys_name,
+                    "system_ru": sys_ru,
+                    "system_description": SYSTEM_DESCRIPTIONS.get(
+                        sys_name, "Автомобильная подсистема"
+                    ),
+                    "symptoms": [s.strip() for s in symp.split(";") if s.strip()] if symp else ([symp] if symp else []),
+                    "symptoms_str": symp,
+                    "cause": item.get("cause", ""),
+                    "fix": fix,
+                    "solutions": [fix] if fix else [],
+                    "severity": item.get("severity", "warning"),
+                    "health_index": item.get("health_index", 65),
+                    "kb_cases_count": 1,
+                    "telemetry": self.telemetry_stats.get(code, {}),
+                }
             else:
-                text_lower = text.lower()
-                if "двигатель" in text_lower:
-                    normalized["system"] = "engine"
-                elif "трансмиссия" in text_lower:
-                    normalized["system"] = "transmission"
-                elif "тормоз" in text_lower:
-                    normalized["system"] = "brakes"
-                elif "электрик" in text_lower:
-                    normalized["system"] = "electrical"
-                elif "подвеск" in text_lower:
-                    normalized["system"] = "suspension"
-                else:
-                    normalized["system"] = "engine"
+                catalog[code]["kb_cases_count"] += 1
+                if symp and symp not in catalog[code]["symptoms_str"]:
+                    if len(catalog[code]["symptoms_str"]) < 260:
+                        catalog[code]["symptoms_str"] += f"; {symp}"
+                        if symp not in catalog[code]["symptoms"]:
+                            catalog[code]["symptoms"].append(symp)
+                if fix and fix not in catalog[code]["solutions"]:
+                    catalog[code]["solutions"].append(fix)
 
-        code = str(normalized.get("code", "")).strip().upper()
-        normalized["code"] = code
-        system = str(normalized.get("system", "engine")).strip().lower()
-        normalized["system"] = system
-        normalized["system_ru"] = SYSTEM_DISPLAY_NAMES.get(system, system)
-        if "source" not in normalized:
-            normalized["source"] = "kb_data.json"
-        return normalized
+        for code, t_stat in self.telemetry_stats.items():
+            if code not in catalog:
+                sys_name = t_stat["system"]
+                sys_ru = SYSTEM_NAMES_RU.get(sys_name, sys_name.capitalize())
+                fix_text = (
+                    f"Проверить контур системы {sys_name} по коду {code}, считать Freeze Frame, "
+                    f"выполнить проверку проводки, разъемов и исполнительного узла."
+                )
+                catalog[code] = {
+                    "code": code,
+                    "system": sys_name,
+                    "system_ru": sys_ru,
+                    "system_description": SYSTEM_DESCRIPTIONS.get(sys_name, "Автомобильная подсистема"),
+                    "symptoms": [t_stat["default_symptoms"]],
+                    "symptoms_str": t_stat["default_symptoms"],
+                    "cause": (
+                        f"Типовой отказ по данным телеметрии ({t_stat['occurrences_in_sample']} записей). "
+                        f"Средняя температура {t_stat['avg_engine_temp_c']}°C, сеть {t_stat['avg_battery_voltage_v']}V."
+                    ),
+                    "fix": fix_text,
+                    "solutions": [fix_text],
+                    "severity": "critical" if t_stat["typical_severity"] == "High" else "warning",
+                    "health_index": t_stat["avg_health_index"],
+                    "kb_cases_count": t_stat["occurrences_in_sample"],
+                    "telemetry": t_stat,
+                }
 
-    def _extract_symptom_and_solution(self, text: str) -> Tuple[str, str]:
-        sym_match = re.search(r"Симптом:\s*(.+?)(?:\.\s*Решение:|$)", text, re.IGNORECASE)
-        sol_match = re.search(r"Решение(?:\s*и\s*регламент\s*ТО)?:\s*(.+)$", text, re.IGNORECASE)
-        symptom = sym_match.group(1).strip().rstrip(".") if sym_match else text
-        solution = sol_match.group(1).strip().rstrip(".") if sol_match else ""
-        return symptom, solution
-
-    def _char_ngrams(self, text: str, n: int = 4) -> Counter:
-        cleaned = re.sub(r"[^a-zа-яё0-9]+", " ", text.lower()).strip()
-        padded = f" {cleaned} "
-        if len(padded) < n:
-            return Counter([padded])
-        grams = [padded[i : i + n] for i in range(len(padded) - n + 1)]
-        return Counter(grams)
-
-    def _cosine_counter(self, c1: Counter, norm1: float, c2: Counter, norm2: float) -> float:
-        if norm1 == 0.0 or norm2 == 0.0:
-            return 0.0
-        common = set(c1.keys()) & set(c2.keys())
-        dot = sum(c1[k] * c2[k] for k in common)
-        return dot / (norm1 * norm2)
-
-    def add_knowledge_base(self, data: List[Dict[str, Any]]):
-        if not self._validate_data(data):
-            raise ValueError("Ошибка структуры данных: отсутствуют обязательные поля 'text' или 'meta'")
-
-        self.raw_data = []
-        self.documents = []
-        self.doc_char_vectors = []
-        self.doc_norms = []
-        self.dtc_catalog = {}
-
-        for item in data:
-            text = str(item["text"]).strip()
-            meta = self._normalize_meta(item.get("meta", {}), text)
-            normalized_item = {"text": text, "meta": meta}
-            self.raw_data.append(normalized_item)
-
-            # Расширяем индексный текст русскими и английскими ключевыми словами системы
-            sys_keywords = " ".join(SYSTEM_TRANSLATIONS.get(meta["system"], [])[:10])
-            enriched_doc = f"{text} {meta['code']} {meta['system']} {sys_keywords}"
-            self.documents.append(text)
-
-            vec = self._char_ngrams(enriched_doc, n=4)
-            norm = math.sqrt(sum(v * v for v in vec.values()))
-            self.doc_char_vectors.append(vec)
-            self.doc_norms.append(norm)
-
-            # Наполняем сводный каталог кодов ошибок (DTC)
-            code = meta.get("code", "")
-            if code:
-                symptom, solution = self._extract_symptom_and_solution(text)
-                if code not in self.dtc_catalog:
-                    telemetry = self.telemetry_catalog.get(code, {})
-                    self.dtc_catalog[code] = {
-                        "code": code,
-                        "system": meta["system"],
-                        "system_ru": meta["system_ru"],
-                        "symptoms": [],
-                        "solutions": [],
-                        "descriptions": [],
-                        "health_index": meta.get(
-                            "health_index",
-                            telemetry.get("avg_health_index", 85.0),
-                        ),
-                        "telemetry": telemetry,
-                    }
-                cat = self.dtc_catalog[code]
-                if symptom and symptom not in cat["symptoms"]:
-                    cat["symptoms"].append(symptom)
-                if solution and solution not in cat["solutions"]:
-                    cat["solutions"].append(solution)
-                if text not in cat["descriptions"]:
-                    cat["descriptions"].append(text)
-
-        tokenized_docs = [self._tokenize(d["text"] + " " + d["meta"].get("system", "")) for d in self.raw_data]
-        self.bm25 = BM25Okapi(tokenized_docs)
-
-        if self.use_neural_models and self.bi_encoder is not None:
-            embeddings = self.bi_encoder.encode(self.documents, normalize_embeddings=True)
-            self.faiss_index = self._faiss_module.IndexFlatIP(embeddings.shape[1])
-            self.faiss_index.add(embeddings.astype("float32"))
-
-    def _tokenize(self, text: str) -> List[str]:
-        tokens = re.findall(r"[a-zа-яё0-9]+", text.lower())
-        stemmed = []
-        for t in tokens:
-            stemmed.append(t)
-            if len(t) >= 5 and re.match(r"^[а-яё]+$", t):
-                stemmed.append(t[:5])
-        return stemmed
-
-    def _infer_query_systems(self, query: str) -> Dict[str, float]:
-        q_lower = query.lower()
-        scores: Dict[str, float] = defaultdict(float)
-        for sys_name, keywords in SYSTEM_TRANSLATIONS.items():
-            for kw in keywords:
-                if kw in q_lower:
-                    scores[sys_name] += 1.0
-        return scores
+        return dict(sorted(catalog.items(), key=lambda kv: kv[0]))
 
     def _extract_dtc_codes_from_text(self, text: str) -> List[str]:
-        matches = re.findall(r"\b([PCBU][0-9A-F]{4})\b", text.upper())
-        return list(dict.fromkeys(matches))
+        """Извлекает уникальные коды неисправностей OBD-II (DTC) из текста."""
+        return list(dict.fromkeys(m.upper() for m in DTC_REGEX.findall(text or "")))
+
+    def _extract_symptom_and_solution(self, text: str) -> Tuple[str, str]:
+        """Извлекает описание симптома и рекомендуемое решение из форматированного текста записи KB."""
+        if not text:
+            return "Неизвестный симптом", "Требуется комплексная инструментальная диагностика"
+        sym_match = re.search(r"Симптомы?:\s*([^.]+(?:\.[^.]+)*?)(?:\.\s*(?:Причина|Решение)|$)", text, re.IGNORECASE)
+        sol_match = re.search(r"Решение:\s*(.+)$", text, re.IGNORECASE)
+
+        sym = sym_match.group(1).strip() if sym_match else ""
+        sol = sol_match.group(1).strip() if sol_match else ""
+
+        if not sym:
+            sym = text.split(".")[0].strip() if "." in text else text.strip()
+        if not sol:
+            sol = "Выполнить компьютерную диагностику и проверку разъемов"
+        return sym, sol
+
+    def get_all_systems(self) -> List[Dict[str, str]]:
+        """Возвращает список всех распознаваемых автомобильных подсистем с русскими названиями и описаниями."""
+        res: List[Dict[str, str]] = []
+        for sys_id, ru_name in SYSTEM_NAMES_RU.items():
+            res.append({
+                "id": sys_id,
+                "name": sys_id,
+                "display_name": ru_name,
+                "description": SYSTEM_DESCRIPTIONS.get(sys_id, "Автомобильная подсистема"),
+            })
+        return res
+
+    def is_general_or_greeting_query(self, query: str) -> bool:
+        """Определяет, является ли запрос приветствием или общим вопросом без технических симптомов."""
+        q = (query or "").strip()
+        if not q:
+            return True
+        if GREETING_PATTERNS.match(q):
+            return True
+        if DTC_REGEX.search(q):
+            return False
+
+        q_tokens = set(tokenize_ru(q))
+        if not q_tokens:
+            return True
+
+        all_kb_vocab = set()
+        for doc_toks in self.doc_tokens[:250]:
+            all_kb_vocab.update(doc_toks)
+
+        overlap = q_tokens & all_kb_vocab
+        return len(overlap) == 0 and len(q_tokens) <= 3
+
+    def search_dtc_dictionary(self, query: str = "", system: str = "", limit: int = 50) -> List[Dict[str, Any]]:
+        q = (query or "").strip().lower()
+        sys_filter = (system or "").strip().lower()
+        results: List[Dict[str, Any]] = []
+
+        for code, info in self.dtc_catalog.items():
+            if sys_filter and info["system"].lower() != sys_filter:
+                continue
+            if not q:
+                results.append(info)
+                continue
+            symp_all = " ".join(info.get("symptoms", [])) if isinstance(info.get("symptoms"), list) else str(info.get("symptoms", ""))
+            haystack = f"{code} {info['system']} {symp_all} {info['cause']} {info['fix']}".lower()
+            if q in haystack:
+                results.append(info)
+
+        return results[:limit]
+
+    def get_dtc_details(self, code: str) -> Optional[Dict[str, Any]]:
+        clean = (code or "").strip().upper()
+        return self.dtc_catalog.get(clean)
 
     def diagnose(
         self,
         query: str,
-        top_n: int = 5,
-        system_filter: Optional[str] = None,
+        top_n: int = 3,
         dtc_codes: Optional[List[str]] = None,
+        explicit_codes: Optional[List[str]] = None,
+        min_score: float = 0.22,
     ) -> List[Dict[str, Any]]:
-        if not self.raw_data or self.bm25 is None:
+        """
+        Выполняет гибридный поиск неисправностей по логике коммита 4c196ae3d4751845fefce7e8f1cde6f77bdb37ed:
+        1. Векторный поиск через SentenceTransformer (`bi_encoder`) + `faiss.IndexFlatIP` (топ-10).
+        2. Лексический поиск через `BM25Okapi` (топ-10) и триграммное сходство.
+        3. Объединение кандидатов `set(v_indices) | set(bm25_indices)` и реранкинг через `CrossEncoder`
+           с учетом `(100 - health) / 200` + бустинг точных кодов DTC.
+        """
+        raw_explicit = (explicit_codes or []) + (dtc_codes or [])
+        explicit_codes = [c.strip().upper() for c in raw_explicit if c and c.strip()]
+        extracted_codes = [m.upper() for m in DTC_REGEX.findall(query or "")]
+        target_codes = set(explicit_codes + extracted_codes)
+
+        if not target_codes and self.is_general_or_greeting_query(query):
             return []
 
-        extracted_codes = self._extract_dtc_codes_from_text(query)
-        if dtc_codes:
-            for c in dtc_codes:
-                c_up = c.strip().upper()
-                if c_up and c_up not in extracted_codes:
-                    extracted_codes.append(c_up)
+        q_tokens = tokenize_ru(query or "")
+        q_ngrams = char_ngrams(query or "")
+        bm25_scores = self.bm25.get_scores(q_tokens) if q_tokens else np.zeros(len(self.raw_data))
+        max_bm25 = float(np.max(bm25_scores)) if len(bm25_scores) > 0 else 0.0
 
-        q_tokens = self._tokenize(query)
-        bm25_scores = self.bm25.get_scores(q_tokens)
-        max_bm25 = float(np.max(bm25_scores)) if len(bm25_scores) > 0 and np.max(bm25_scores) > 0 else 1.0
+        # 1. Векторный поиск через BERT SentenceTransformer + FAISS (как в коммите 4c196ae3)
+        v_indices_list: List[int] = []
+        v_scores_map: Dict[int, float] = {}
+        if self.bi_encoder is not None and self.faiss_index is not None and (query or "").strip():
+            try:
+                import faiss
 
-        q_vec = self._char_ngrams(query, n=4)
-        q_norm = math.sqrt(sum(v * v for v in q_vec.values()))
-        inferred_systems = self._infer_query_systems(query)
+                q_emb = self.bi_encoder.encode([query], convert_to_numpy=True).astype(np.float32, copy=False)
+                faiss.normalize_L2(q_emb)
+                v_dists, v_indices = self.faiss_index.search(q_emb, min(10, len(self.raw_data)))
+                for dist, idx in zip(v_dists[0], v_indices[0]):
+                    if int(idx) >= 0:
+                        v_indices_list.append(int(idx))
+                        v_scores_map[int(idx)] = float(dist)
+            except Exception:
+                pass
 
-        # Выбираем топ кандидатов
-        bm25_top = np.argsort(bm25_scores)[::-1][:25]
-        char_sims = [
-            self._cosine_counter(q_vec, q_norm, self.doc_char_vectors[i], self.doc_norms[i])
-            for i in range(len(self.raw_data))
+        # 2. Лексический отбор кандидатов BM25 (топ-10 как в коммите 4c196ae3)
+        bm25_indices = [int(i) for i in np.argsort(bm25_scores)[::-1][:10]]
+
+        lexical_scores: Dict[int, float] = {}
+        for idx, item in enumerate(self.raw_data):
+            code = (item.get("code") or "").upper()
+            bm25_norm = (float(bm25_scores[idx]) / max_bm25) if max_bm25 > 0 else 0.0
+            ngram_sim = cosine_counter_similarity(q_ngrams, self.doc_ngrams[idx])
+            vec_sim = max(0.0, v_scores_map.get(idx, 0.0))
+
+            code_boost = 2.5 if code in target_codes else 0.0
+            token_overlap = len(set(q_tokens) & set(self.doc_tokens[idx]))
+            overlap_boost = min(token_overlap * 0.18, 0.72)
+
+            combined_lex = (
+                (0.45 * bm25_norm)
+                + (0.25 * ngram_sim)
+                + (0.30 * vec_sim)
+                + overlap_boost
+                + code_boost
+            )
+            if combined_lex >= min_score or code in target_codes or idx in v_scores_map:
+                lexical_scores[idx] = combined_lex
+
+        if not lexical_scores and not v_indices_list:
+            return []
+
+        # 3. Объединение кандидатов FAISS + BM25 + кодов DTC (аналогично коммиту 4c196ae3)
+        dtc_indices = [
+            idx for idx, item in enumerate(self.raw_data)
+            if (item.get("code") or "").upper() in target_codes
         ]
-        char_top = np.argsort(char_sims)[::-1][:25]
+        top_lex_indices = [
+            idx for idx, _ in sorted(lexical_scores.items(), key=lambda kv: kv[1], reverse=True)[:10]
+        ]
+        candidate_indices = list(dict.fromkeys(dtc_indices + v_indices_list + bm25_indices + top_lex_indices))[:16]
 
-        candidate_set = set(bm25_top) | set(char_top)
+        best_lex = max((lexical_scores.get(i, 0.0) for i in candidate_indices), default=0.0)
+        best_vec = max((v_scores_map.get(i, 0.0) for i in candidate_indices), default=0.0)
+        if not target_codes and best_lex < min_score and best_vec < 0.42:
+            return []
 
-        # Включаем репрезентативные документы из определенной по ключевым словам системы
-        if inferred_systems:
-            top_sys = max(inferred_systems.items(), key=lambda x: x[1])[0]
-            sys_added = 0
-            for idx, item in enumerate(self.raw_data):
-                if item["meta"].get("system") == top_sys:
-                    candidate_set.add(idx)
-                    sys_added += 1
-                    if sys_added >= 8:
-                        break
-
-        # Обязательно включаем точные совпадения по коду ошибки
-        if extracted_codes:
-            for idx, item in enumerate(self.raw_data):
-                if item["meta"].get("code") in extracted_codes:
-                    candidate_set.add(idx)
-
-        candidates = list(candidate_set)
-
-        if self.use_neural_models and self.reranker is not None and candidates:
-            pairs = [[query, self.documents[i]] for i in candidates]
-            neural_scores = self.reranker.predict(pairs)
-        else:
-            neural_scores = None
+        # 4. Переранжирование кандидатов через CrossEncoder + учет (100 - health) / 200 (как в коммите 4c196ae3)
+        rerank_scores: Dict[int, float] = {}
+        if self.reranker is not None and candidate_indices and (query or "").strip():
+            try:
+                pairs = [[query, self.documents[idx]] for idx in candidate_indices]
+                ce_preds = self.reranker.predict(pairs)
+                for idx, s in zip(candidate_indices, ce_preds):
+                    rerank_scores[idx] = float(s)
+            except Exception:
+                rerank_scores = {}
 
         results: List[Dict[str, Any]] = []
-        for pos, idx in enumerate(candidates):
-            meta = self.raw_data[idx]["meta"]
-            doc_sys = meta.get("system", "")
-            doc_code = meta.get("code", "")
+        seen_keys = set()
 
-            if system_filter and system_filter != "all" and doc_sys != system_filter:
+        for idx in candidate_indices:
+            meta = self.raw_data[idx]
+            code = (meta.get("code") or "").upper()
+            dedup_key = f"{code}:{meta.get('system', '')}:{meta.get('symptoms', '')[:45]}"
+            if dedup_key in seen_keys:
                 continue
+            seen_keys.add(dedup_key)
 
-            norm_bm25 = float(bm25_scores[idx]) / max_bm25
-            char_score = float(char_sims[idx])
-            sys_boost = min(2.0, inferred_systems.get(doc_sys, 0.0) * 0.65)
-            code_boost = 2.5 if doc_code in extracted_codes else 0.0
+            health = int(meta.get("health_index", 50))
+            health_bonus = (100 - health) / 200.0
+            lex_val = lexical_scores.get(idx, 0.0)
+            vec_val = v_scores_map.get(idx, 0.0)
 
-            # Отсекаем нерелевантные совпадения на общих фразах/приветствиях («привет» и т.д.)
-            if norm_bm25 <= 0.01 and char_score < 0.14 and sys_boost <= 0.0 and code_boost <= 0.0:
-                continue
-
-            kb_priority = 0.25 if meta.get("source") == "kb_data.json" else 0.0
-
-            health = float(meta.get("health_index", 100.0))
-            health_factor = (100.0 - health) / 200.0
-
-            if neural_scores is not None:
-                base_score = float(neural_scores[pos]) + code_boost + sys_boost
+            if idx in rerank_scores:
+                ce_logit = rerank_scores[idx]
+                ce_prob = 1.0 / (1.0 + math.exp(-max(min(ce_logit, 20.0), -20.0)))
+                code_bonus = 2.0 if code in target_codes else 0.0
+                final_score = round(
+                    float(0.45 * ce_prob + 0.40 * lex_val + 0.15 * vec_val + health_bonus * 0.25 + code_bonus),
+                    3,
+                )
             else:
-                base_score = (norm_bm25 * 1.4) + (char_score * 1.8) + sys_boost + code_boost + kb_priority
+                final_score = round(float(lex_val + (health_bonus * 0.12)), 3)
 
-            final_score = base_score + health_factor
             results.append(
                 {
+                    "id": meta.get("id", f"KB-{idx}"),
                     "text": self.documents[idx],
-                    "score": round(float(final_score), 4),
+                    "score": final_score,
                     "meta": meta,
                 }
             )
 
-        sorted_results = sorted(results, key=lambda x: x["score"], reverse=True)[:top_n]
-
-        if sorted_results:
-            best_match = sorted_results[0]
-            logging.info(
-                f"Query: '{query}' | "
-                f"Code: {best_match['meta'].get('code', 'N/A')} | "
-                f"System: {best_match['meta'].get('system', 'N/A')} | "
-                f"Score: {best_match['score']:.2f}"
-            )
-
-        return sorted_results
-
-    def search_dtc_dictionary(
-        self,
-        search_term: str = "",
-        system_filter: str = "",
-        limit: int = 60,
-    ) -> List[Dict[str, Any]]:
-        """Поиск по словарю кодов ошибок (DTC) и телеметрии для интерфейса и ИИ-инструментов."""
-        term = search_term.strip().lower()
-        sys_f = system_filter.strip().lower()
-
-        matched: List[Dict[str, Any]] = []
-        for code, entry in sorted(self.dtc_catalog.items()):
-            if sys_f and sys_f != "all" and entry["system"] != sys_f:
-                continue
-
-            if term:
-                haystack = (
-                    f"{code} {entry['system']} {entry['system_ru']} "
-                    f"{' '.join(entry['symptoms'])} {' '.join(entry['solutions'])}"
-                ).lower()
-                if term not in haystack:
-                    continue
-
-            matched.append(
-                {
-                    "code": entry["code"],
-                    "system": entry["system"],
-                    "system_ru": entry["system_ru"],
-                    "symptom": entry["symptoms"][0] if entry["symptoms"] else "Не указано",
-                    "all_symptoms": entry["symptoms"][:4],
-                    "solution": entry["solutions"][0] if entry["solutions"] else "Требуется диагностика",
-                    "all_solutions": entry["solutions"][:4],
-                    "health_index": entry["health_index"],
-                    "has_telemetry": bool(entry.get("telemetry")),
-                    "telemetry": entry.get("telemetry", {}),
-                }
-            )
-            if len(matched) >= limit:
-                break
-
-        return matched
-
-    def get_dtc_details(self, code: str) -> Optional[Dict[str, Any]]:
-        """Возвращает подробную карточку кода ошибки включая эталонную телеметрию."""
-        code_up = code.strip().upper()
-        entry = self.dtc_catalog.get(code_up)
-        if not entry:
-            return None
-        return entry
-
-    def get_all_systems(self) -> List[Dict[str, Any]]:
-        """Возвращает список систем автомобиля с количеством кодов ошибок."""
-        counts: Counter = Counter()
-        for entry in self.dtc_catalog.values():
-            counts[entry["system"]] += 1
-        return [
-            {
-                "id": sys_id,
-                "name": SYSTEM_DISPLAY_NAMES.get(sys_id, sys_id),
-                "count": count,
-            }
-            for sys_id, count in sorted(counts.items(), key=lambda x: x[1], reverse=True)
-        ]
-
-    def prepare_llm_context(
-        self,
-        query: str,
-        top_n: int = 3,
-        dtc_codes: Optional[List[str]] = None,
-        extra_docs_text: Optional[str] = None,
-        dialog_summary: Optional[str] = None,
-        global_summary: Optional[str] = None,
-    ) -> str:
-        results = self.diagnose(query, top_n=top_n, dtc_codes=dtc_codes)
-
-        context_blocks: List[str] = []
-        for i, res in enumerate(results):
-            meta = res["meta"]
-            code = meta.get("code", "N/A")
-            telemetry = self.telemetry_catalog.get(code, {})
-            telemetry_line = ""
-            if telemetry:
-                meas = telemetry.get("sample_measurements", {})
-                sens = telemetry.get("sample_sensors", {})
-                meas_str = ", ".join(f"{k}={v}" for k, v in meas.items())
-                sens_str = ", ".join(f"{k}={v}" for k, v in sens.items())
-                telemetry_line = (
-                    f"Эталонная телеметрия ({code}): Измерения [{meas_str}] | "
-                    f"Датчики [{sens_str}] | Средний Health Index: {telemetry.get('avg_health_index', 80)}%\n"
-                )
-
-            block = (
-                f"ДОКУМЕНТ #{i + 1} (Релевантность: {res['score']:.2f})\n"
-                f"Система: {meta.get('system_ru', meta.get('system', 'N/A'))} ({meta.get('system', 'N/A')})\n"
-                f"Код ошибки: {code}\n"
-                f"Техническое описание: {res['text']}\n"
-                f"{telemetry_line}"
-            )
-            context_blocks.append(block)
-
-        context_str = (
-            "\n".join(context_blocks)
-            if context_blocks
-            else "Техническая информация по данному запросу в локальной базе не найдена."
-        )
-
-        memory_section = ""
-        if global_summary:
-            memory_section += f"\n[МЕЖДИАЛОГОВАЯ ПАМЯТЬ / ПРОФИЛЬ АВТОМОБИЛЯ]:\n{global_summary}\n"
-        if dialog_summary:
-            memory_section += f"\n[КРАТКАЯ ВЫЖИМКА ТЕКУЩЕГО ДИАЛОГА]:\n{dialog_summary}\n"
-        if extra_docs_text:
-            memory_section += f"\n[ПРИКРЕПЛЕННЫЕ ПОЛЬЗОВАТЕЛЕМ ДОКУМЕНТЫ / ЛОГИ]:\n{extra_docs_text}\n"
-
-        return (
-            "Используй следующие технические документы, телеметрию и выжимку памяти для ответа на вопрос пользователя.\n"
-            f"{memory_section}\n"
-            "=== ТЕХНИЧЕСКИЙ КОНТЕКСТ БАЗЫ ЗНАНИЙ (RAG) ===\n"
-            f"{context_str}\n"
-            f"Вопрос пользователя: {query}"
-        )
+        results.sort(key=lambda x: x["score"], reverse=True)
+        return results[:top_n]

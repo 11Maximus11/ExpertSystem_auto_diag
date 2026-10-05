@@ -1,184 +1,167 @@
 """
-Сервис голосового ввода (Requirement #12):
-- Если активная модель поддерживает прямой мультимодальный аудиоввод (Gemma-4 Omni / OpenAI input_audio),
-  формирует прямой аудио-пакет без промежуточной потери интонации и шумов мотора.
-- Если модель не поддерживает прямое аудио (или выбран режим GGML), выполняет локальное
-  распознавание речи через GGML (whisper.cpp / pywhispercpp / faster-whisper).
+Сервис прямого мультимодального аудиовхода для Google Gemma 4 12B
+(Gemma4UnifiedForConditionalGeneration + Gemma4UnifiedProcessor).
+
+Модель Gemma 4 12B имеет встроенный аудиоэнкодер (model.embed_audio) и напрямую
+принимает 16 кГц монофонический сигнал (float32 waveform) через токен <|audio|>.
+Внешний Whisper полностью исключен из конвейера.
 """
 
-import base64
-import os
-import shutil
-import subprocess
-import tempfile
+from __future__ import annotations
+
+import io
+import logging
+import wave
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from vulkan_backend import BASE_DIR
+import numpy as np
 
-MODELS_DIR = BASE_DIR / "models"
+logger = logging.getLogger("diagnostics.voice")
 
-
-def model_supports_direct_audio(model_name: str, backend: str) -> bool:
-    """
-    Проверяет, поддерживает ли выбранная модель прямой ввод аудио-потока.
-    Модели семейства Gemma-4-Omni / Qwen2-Audio / GPT-4o-Audio принимают аудио напрямую.
-    """
-    name_lower = (model_name or "").lower()
-    direct_keywords = ("omni", "audio", "gemma-4", "qwen2-audio", "ultravox")
-    return any(kw in name_lower for kw in direct_keywords)
+TARGET_SAMPLE_RATE = 16000
+MAX_AUDIO_SECONDS = 45.0
 
 
-def transcribe_with_ggml(audio_bytes: bytes, filename: str = "voice.wav") -> Dict[str, Any]:
-    """
-    Распознавание речи с использованием локального GGML-стека (pywhispercpp / whisper-cli / faster-whisper).
-    Использует относительные пути к моделям в ./models/.
-    """
-    suffix = Path(filename).suffix or ".wav"
-    ggml_candidates = list(MODELS_DIR.glob("ggml-*.bin")) + list(MODELS_DIR.glob("*whisper*.bin"))
-    ggml_model_path = ggml_candidates[0] if ggml_candidates else (MODELS_DIR / "ggml-base.bin")
-
-    # 1. Пробуем pywhispercpp (Python-биндинг к whisper.cpp GGML)
+def _decode_wav_bytes_16k(audio_bytes: bytes) -> Optional[np.ndarray]:
+    """Резервный декодер стандартных PCM WAV-файлов в float32 [-1.0, 1.0] 16 кГц моно."""
     try:
-        from pywhispercpp.model import Model as WhisperGGMLModel  # type: ignore
+        with wave.open(io.BytesIO(audio_bytes), "rb") as wf:
+            n_channels = wf.getnchannels()
+            sampwidth = wf.getsampwidth()
+            framerate = wf.getframerate()
+            n_frames = wf.getnframes()
+            raw = wf.readframes(n_frames)
 
-        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
-            tmp.write(audio_bytes)
-            tmp_path = tmp.name
-        try:
-            model_arg = str(ggml_model_path) if ggml_model_path.exists() else "base"
-            w_model = WhisperGGMLModel(model_arg, n_threads=4)
-            segments = w_model.transcribe(tmp_path, language="ru")
-            text = " ".join(seg.text.strip() for seg in segments).strip()
-            if text:
-                return {
-                    "success": True,
-                    "engine": "pywhispercpp (GGML)",
-                    "text": text,
-                }
-        finally:
-            if os.path.exists(tmp_path):
-                os.remove(tmp_path)
+        if sampwidth == 2:
+            audio = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
+        elif sampwidth == 1:
+            audio = (np.frombuffer(raw, dtype=np.uint8).astype(np.float32) - 128.0) / 128.0
+        elif sampwidth == 4:
+            audio = np.frombuffer(raw, dtype=np.int32).astype(np.float32) / 2147483648.0
+        else:
+            return None
+
+        if n_channels > 1:
+            audio = audio.reshape(-1, n_channels).mean(axis=1)
+
+        if framerate != TARGET_SAMPLE_RATE and len(audio) > 0:
+            duration = len(audio) / float(framerate)
+            target_len = max(1, int(duration * TARGET_SAMPLE_RATE))
+            x_old = np.linspace(0.0, 1.0, num=len(audio))
+            x_new = np.linspace(0.0, 1.0, num=target_len)
+            audio = np.interp(x_new, x_old, audio).astype(np.float32)
+
+        return audio.astype(np.float32)
     except Exception:
-        pass
+        return None
 
-    # 2. Пробуем консольный бинарник whisper-cli / main из ./llama/ или системного PATH с моделью GGML
-    whisper_bins = [
-        BASE_DIR / "llama" / ("whisper-cli.exe" if os.name == "nt" else "whisper-cli"),
-        BASE_DIR / "llama" / ("main.exe" if os.name == "nt" else "main"),
-    ]
-    which_whisper = shutil.which("whisper-cli") or shutil.which("whisper-cpp")
-    if which_whisper:
-        whisper_bins.append(Path(which_whisper))
 
-    for bin_path in whisper_bins:
-        if bin_path.exists() and ggml_model_path.exists():
-            with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
-                tmp.write(audio_bytes)
-                tmp_path = tmp.name
-            try:
-                proc = subprocess.run(
-                    [
-                        str(bin_path),
-                        "-m",
-                        str(ggml_model_path),
-                        "-f",
-                        tmp_path,
-                        "-l",
-                        "ru",
-                        "-nt",
-                    ],
-                    capture_output=True,
-                    text=True,
-                    timeout=30,
-                    encoding="utf-8",
-                    errors="replace",
-                )
-                if proc.returncode == 0 and proc.stdout.strip():
-                    return {
-                        "success": True,
-                        "engine": f"whisper.cpp GGML ({ggml_model_path.name})",
-                        "text": proc.stdout.strip(),
-                    }
-            except Exception:
-                pass
-            finally:
-                if os.path.exists(tmp_path):
-                    os.remove(tmp_path)
+def decode_audio_to_waveform_16k(
+    audio_bytes: bytes,
+    filename: str = "voice.webm",
+    max_seconds: float = MAX_AUDIO_SECONDS,
+) -> Optional[np.ndarray]:
+    """
+    Декодирует аудио любого поддерживаемого формата (.webm, .wav, .mp3, .ogg, .m4a, .flac, .aac)
+    в монофонический массив float32 с частотой дискретизации 16 000 Гц для прямой подачи
+    в Gemma4UnifiedProcessor (audio=[waveform], sampling_rate=16000).
+    """
+    if not audio_bytes:
+        return None
 
-    # 3. Пробуем faster-whisper (CTranslate2 / GGML-совместимый локальный движок)
+    waveform: Optional[np.ndarray] = None
+
+    # 1. Быстрое декодирование через PyAV (FFmpeg-биндинги в памяти без внешних процессов)
     try:
-        from faster_whisper import WhisperModel  # type: ignore
+        import av
 
-        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
-            tmp.write(audio_bytes)
-            tmp_path = tmp.name
-        try:
-            fw_model = WhisperModel("base", device="cpu", compute_type="int8")
-            segments, _ = fw_model.transcribe(tmp_path, language="ru")
-            text = " ".join(s.text.strip() for s in segments).strip()
-            if text:
-                return {
-                    "success": True,
-                    "engine": "faster-whisper (int8 local)",
-                    "text": text,
-                }
-        finally:
-            if os.path.exists(tmp_path):
-                os.remove(tmp_path)
-    except Exception:
-        pass
+        container = av.open(io.BytesIO(audio_bytes))
+        audio_stream = next((s for s in container.streams if s.type == "audio"), None)
+        if audio_stream is not None:
+            resampler = av.AudioResampler(format="fltp", layout="mono", rate=TARGET_SAMPLE_RATE)
+            chunks = []
+            for frame in container.decode(audio_stream):
+                resampled_frames = resampler.resample(frame)
+                if not isinstance(resampled_frames, list):
+                    resampled_frames = [resampled_frames] if resampled_frames is not None else []
+                for rf in resampled_frames:
+                    arr = rf.to_ndarray()
+                    if arr.ndim > 1:
+                        arr = arr.mean(axis=0)
+                    chunks.append(arr.astype(np.float32))
+            if chunks:
+                waveform = np.concatenate(chunks, axis=0)
+        container.close()
+    except Exception as exc:
+        logger.debug("PyAV не смог декодировать %s (%s), пробуем WAV-парсер.", filename, exc)
 
-    return {
-        "success": False,
-        "engine": "GGML Whisper (ожидание весов ggml-base.bin в ./models/)",
-        "text": "",
-    }
+    # 2. Резерв: встроенный модуль wave (для несжатых WAV PCM)
+    if waveform is None or len(waveform) == 0:
+        waveform = _decode_wav_bytes_16k(audio_bytes)
+
+    if waveform is None or len(waveform) == 0:
+        logger.warning("Не удалось декодировать аудиофайл %s (%d байт) в PCM 16kHz.", filename, len(audio_bytes))
+        return None
+
+    max_samples = int(max_seconds * TARGET_SAMPLE_RATE)
+    if len(waveform) > max_samples:
+        waveform = waveform[:max_samples]
+
+    # Нормализация пиков при слишком тихой записи
+    peak = float(np.max(np.abs(waveform))) if len(waveform) > 0 else 0.0
+    if 0.005 < peak < 0.25:
+        waveform = (waveform / peak * 0.65).astype(np.float32)
+
+    return np.clip(waveform, -1.0, 1.0).astype(np.float32)
 
 
 def process_voice_input(
-    audio_bytes: bytes,
-    filename: str,
-    voice_mode: str,
-    model_name: str,
-    backend: str,
+    audio_bytes: Optional[bytes],
+    filename: str = "voice.webm",
+    voice_mode: str = "direct_audio",
+    browser_transcript: str = "",
     client_transcript: str = "",
+    **kwargs: Any,
 ) -> Dict[str, Any]:
     """
-    Обрабатывает голосовой ввод пользователя:
-    - При поддержке прямого аудио возвращает base64 пакет `input_audio` для модели.
-    - При режиме GGML (или отсутствии прямой поддержки аудио у текстовой модели) запускает GGML распознавание.
+    Конвейер прямого мультимодального аудиовхода для модели Google Gemma 4 12B:
+    декодирует голосовую запись или аудиофайл в 16 кГц float32 массив для нативного
+    модуля `model.embed_audio` (токен `<|audio|>`), сохраняя также текстовую подсказку
+    браузерного SpeechRecognition (если она есть) для гибридного поиска в базе знаний RAG.
     """
-    supports_direct = model_supports_direct_audio(model_name, backend)
-    use_direct = voice_mode == "direct_audio" or (voice_mode == "auto" and supports_direct)
+    hint_text = (browser_transcript or client_transcript or "").strip()
 
-    audio_b64 = base64.b64encode(audio_bytes).decode("utf-8")
-    ext = (Path(filename).suffix or ".wav").lstrip(".").lower()
-    if ext not in ("wav", "mp3", "ogg", "webm"):
-        ext = "wav"
-
-    ggml_result = transcribe_with_ggml(audio_bytes, filename=filename)
-    recognized_text = ggml_result.get("text") or client_transcript.strip()
-
-    if use_direct:
+    if not audio_bytes:
         return {
             "mode_used": "direct_audio",
-            "mode_label": f"Прямой аудиоввод в модель ({model_name})",
-            "audio_payload": {
-                "type": "input_audio",
-                "input_audio": {
-                    "data": audio_b64,
-                    "format": ext,
-                },
-            },
-            "transcript": recognized_text or "[Аудиозапись передана напрямую в мультимодальную модель]",
-            "ggml_engine": ggml_result.get("engine", "Direct Multimodal Audio"),
+            "mode_label": "Прямой аудиовход Gemma 4 12B (embed_audio)",
+            "transcript": hint_text,
+            "audio_attached_to_model": False,
+            "audio_waveform_16k": None,
+            "duration_sec": 0.0,
+            "engine": "Browser SpeechRecognition" if hint_text else "none",
         }
 
+    waveform = decode_audio_to_waveform_16k(audio_bytes, filename=filename)
+    duration_sec = round(float(len(waveform)) / TARGET_SAMPLE_RATE, 2) if waveform is not None else 0.0
+    attached = bool(waveform is not None and len(waveform) > 0)
+
+    logger.debug(
+        "[Voice Direct Gemma 4] Файл=%s (%d байт) -> декодировано=%s, длительность=%.2f с, подсказка браузера='%s'",
+        filename,
+        len(audio_bytes),
+        attached,
+        duration_sec,
+        hint_text[:80],
+    )
+
     return {
-        "mode_used": "ggml_whisper",
-        "mode_label": f"Распознавание речи GGML ({ggml_result.get('engine', 'GGML Whisper')})",
-        "audio_payload": None,
-        "transcript": recognized_text or "[Голосовое сообщение получено]",
-        "ggml_engine": ggml_result.get("engine", "GGML Whisper"),
+        "mode_used": "direct_audio",
+        "mode_label": f"Нативное аудио Gemma 4 12B ({duration_sec} с)",
+        "transcript": hint_text,
+        "audio_attached_to_model": attached,
+        "audio_waveform_16k": waveform,
+        "duration_sec": duration_sec,
+        "engine": "Gemma 4 12B Native Audio (embed_audio 16kHz)",
     }

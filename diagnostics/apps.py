@@ -10,7 +10,7 @@ class DiagnosticsConfig(AppConfig):
 
     def ready(self):
         """
-        При старте веб-сервиса автоматически предзагружает модель AirLLM (Qwen/Qwen3.5-4B)
+        При старте веб-сервиса автоматически предзагружает модель AirLLM (Google Gemma 4 12B)
         в видеопамять GPU (VRAM), чтобы первый запрос обрабатывался сразу без задержки на инициализацию.
         """
         if os.environ.get("AUTODIAG_FAST_TEST") == "1" or os.environ.get("SKIP_AIRLLM_PRELOAD") == "1":

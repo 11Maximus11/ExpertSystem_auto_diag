@@ -9,8 +9,8 @@
   <meta name="color-scheme" content="dark light" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-  <meta name="description" content="Экспертная ИИ-система автодиагностики и ремонта автомобилей на базе Vulkan и AirLLM с поддержкой AR-очков RayNeo" />
-  <title>AutoDiag Pro AI — Экспертная система автодиагностики (Vulkan + AirLLM)</title>
+  <meta name="description" content="ИИдеал Авто (AIdeal Auto) — Экспертная система автодиагностики на базе AirLLM Google Gemma 4 12B с режимом AR-очков RayNeo" />
+  <title>ИИдеал Авто (AIdeal Auto) — Экспертная система автодиагностики (Gemma 4 12B)</title>
 
   <link rel="manifest" href="/manifest.json" />
   <link rel="icon" type="image/svg+xml" href="{% static 'icons/icon-192.svg' %}" />
@@ -28,44 +28,40 @@
   <header class="app-header">
     <div class="brand-group">
       <div class="brand-logo" aria-hidden="true">
-        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M14 16H9m10 0h3v-3.15a1 1 0 0 0-.84-.99L16 11l-2.7-3.6a1 1 0 0 0-.8-.4H5.24a2 2 0 0 0-1.8 1.1l-.8 1.63A6 6 0 0 0 2 12.42V16h2"/>
-          <circle cx="6.5" cy="16.5" r="2.5"/>
-          <circle cx="16.5" cy="16.5" r="2.5"/>
-        </svg>
+        <img src="{% static 'images/aideal_logo.jpg' %}" alt="Логотип ИИдеал Авто" class="brand-logo-img" onerror="this.onerror=null; this.src='{% static 'icons/icon-192.svg' %}';" />
       </div>
       <div>
         <div class="brand-title">
-          AUTODIAG PRO AI
-          <span class="badge-vulkan">VULKAN {{ hw_telemetry.vulkan.api_version }}</span>
+          ИИДЕАЛ АВТО <span style="font-size:0.82rem; opacity:0.85; font-weight:500;">(AIdeal Auto)</span>
+          <span class="badge-vulkan">Gemma 4 12B</span>
         </div>
       </div>
     </div>
 
     <div class="header-telemetry" aria-label="Статус оборудования и контекста">
-      <div class="telemetry-pill" title="Устройство ускорения Vulkan">
+      <div class="telemetry-pill" title="Устройство ускорения GPU / Vulkan">
         <span class="status-dot" id="vulkanDot"></span>
         <span id="gpuNameDisplay">{{ hw_telemetry.vulkan.device_name }} ({{ hw_telemetry.vulkan.vram_free_mb }}/{{ hw_telemetry.vulkan.vram_total_mb }} МБ VRAM)</span>
       </div>
-      <div class="telemetry-pill" title="Режим послойной выгрузки AirLLM и локальной модели">
+      <div class="telemetry-pill" title="Режим послойного запуска AirLLM Gemma 4 12B">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/>
         </svg>
-        <span id="backendDisplayBadge">AirLLM {{ active_settings.airllm_compression }} + Vulkan</span>
+        <span id="backendDisplayBadge">AirLLM W4A16 + GPU DMA</span>
       </div>
       <div class="telemetry-pill" id="headerWorkerPill" title="Статус фонового воркера выжимки контекста">
         <span class="status-dot" id="headerWorkerDot"></span>
-        <span id="headerWorkerText">Воркер контекста: Готов</span>
+        <span id="headerWorkerText">Память: Готова</span>
       </div>
     </div>
 
     <div class="header-actions">
-      <button type="button" class="btn-ar-launch" id="btnEnterArMode" title="Переключить в режим для AR-очков типа RayNeo (чисто черный прозрачный фон и плавающие окна)">
+      <button type="button" class="btn-ar-launch" id="btnEnterArMode" title="Переключить в режим для AR-очков (RayNeo Optical / Камера-фон)">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <path d="M2 10a4 4 0 0 1 4-4h12a4 4 0 0 1 4 4v3a4 4 0 0 1-4 4h-2.5l-1.5-2h-4l-1.5 2H6a4 4 0 0 1-4-4v-3Z"/>
           <path d="M6 10h.01"/><path d="M18 10h.01"/>
         </svg>
-        <span>AR RayNeo HUD</span>
+        <span>AR HUD</span>
       </button>
 
       <button type="button" class="btn-icon-top" id="btnToggleTheme" aria-label="Переключить тему оформления" title="Светлая / Тёмная тема">
@@ -77,15 +73,15 @@
   </header>
 
   <!-- ====================================================================
-       ОСНОВНОЙ РАБОЧИЙ СТЕНД (3 ПАНЕЛИ НА ПК / АДАПТИВНЫЕ ВКЛАДКИ НА МОБИЛЬНОМ)
+       ОСНОВНОЙ РАБОЧИЙ СТЕНД
        ==================================================================== -->
   <main class="workbench-grid">
 
-    <!-- 1. ЛЕВАЯ ПАНЕЛЬ: СЕССИИ ДИАЛОГОВ И ФОНОВЫЙ ВОРКЕР ВЫЖИМКИ КОНТЕКСТА -->
+    <!-- 1. ЛЕВАЯ ПАНЕЛЬ: СЕССИИ ДИАЛОГОВ И ДИНАМИЧЕСКИЙ ВОРКЕР ПАМЯТИ -->
     <aside class="panel-sidebar" id="panelSidebar" aria-label="Диалоги и память контекста">
       <div class="panel-section-header">
         <span>Журнал диагностик</span>
-        <span style="font-family: var(--font-mono); font-size: 0.72rem; color: var(--text-muted);">CTX {{ active_settings.context_window_tokens }}</span>
+        <span style="font-family: var(--font-mono); font-size: 0.72rem; color: var(--text-muted);">Окно {{ active_settings.context_window_tokens }} ток.</span>
       </div>
 
       <div class="scrollable-y">
@@ -112,24 +108,24 @@
           {% endfor %}
         </div>
 
-        <!-- Карточка фонового воркера выжимки контекста (Requirement #3) -->
+        <!-- Карточка динамического фонового воркера выжимки контекста -->
         <div class="context-worker-card">
           <div class="worker-header-row">
             <span style="font-size: 0.8rem; font-weight: 700;">Фоновый воркер памяти</span>
             <span class="worker-badge" id="sidebarWorkerBadge">Синхронизирован</span>
           </div>
           <p style="font-size: 0.72rem; color: var(--text-muted); margin-bottom: 6px;">
-            Сжимает контекст после каждого ответа под 8 ГБ VRAM. При новом вопросе старый воркер мгновенно сбрасывается без ожидания.
+            Динамически оптимизирует контекст под свободный объем окна (модель помнит последние 5 вопросов и 5 ответов ИИ).
           </p>
 
           <label for="dialogSummaryTextarea" style="display:block; font-size:0.73rem; font-weight:600; margin-bottom:4px; color:var(--text-secondary);">
-            Краткая выжимка текущего диалога:
+            Выжимка ранней истории диалога:
           </label>
-          <textarea id="dialogSummaryTextarea" class="summary-box" rows="4" style="width:100%; resize:vertical;" placeholder="Выжимка сформируется автоматически после первого сообщения...">{{ current_session.summary }}</textarea>
+          <textarea id="dialogSummaryTextarea" class="summary-box" rows="4" style="width:100%; resize:vertical;" placeholder="Выжимка сформируется автоматически после первых сообщений...">{{ current_session.summary }}</textarea>
 
           <div class="toggle-row">
             <label for="chkCrossDialogMemory" style="cursor:pointer; flex:1;">
-              Междиалоговая память (общая выжимка между сессиями)
+              Междиалоговая память (между сессиями)
             </label>
             <input type="checkbox" id="chkCrossDialogMemory" class="custom-checkbox" {% if active_settings.cross_dialog_memory_enabled %}checked{% endif %} />
           </div>
@@ -144,7 +140,7 @@
       </div>
     </aside>
 
-    <!-- 2. ЦЕНТРАЛЬНАЯ ПАНЕЛЬ: ДИАЛОГ С ЭКСПЕРТНОЙ СИСТЕМОЙ И ДОК ВВОДА -->
+    <!-- 2. ЦЕНТРАЛЬНАЯ ПАНЕЛЬ: ДИАЛОГ С ЭКСПЕРТОМ И ДОК ВВОДА -->
     <section class="panel-main" id="panelMain" aria-label="Рабочая область диагностики">
       <div class="vehicle-bar">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color:var(--accent-orange); flex-shrink:0;">
@@ -162,38 +158,38 @@
 
       <!-- Лента сообщений и карточек ремонта -->
       <div class="chat-feed" id="chatFeed" role="log" aria-live="polite">
-        <!-- Заполняется динамически через JS при инициализации сессии -->
+        <!-- Заполняется динамически через JS -->
       </div>
 
-      <!-- Нижний док мультимодального ввода (Под пальцами / Thumb-Zone) -->
+      <!-- Нижний док мультимодального ввода -->
       <div class="composer-dock">
         <div class="staging-bar" id="stagingBar" aria-label="Прикрепленные материалы и коды ошибок"></div>
 
-        <input type="file" id="hiddenFileInput" multiple accept="image/*,.txt,.log,.json,.csv,.pdf,.docx,.wav,.mp3,.ogg,.webm" style="display:none;" />
+        <input type="file" id="hiddenFileInput" multiple accept="image/*,.txt,.log,.obd,.json,.csv,.tsv,.pdf,.docx,.xml,.html,.md,.ini,.yaml,.wav,.mp3,.ogg,.webm,.m4a,.flac" style="display:none;" />
 
         <div class="composer-row">
           <div class="composer-tools">
-            <button type="button" class="btn-tool" id="btnOpenCamera" title="Открыть камеру прямо в интерфейсе и сделать фото поломки" aria-label="Открыть камеру">
+            <button type="button" class="btn-tool" id="btnOpenCamera" title="Сделать снимок камерой" aria-label="Открыть камеру">
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/>
                 <circle cx="12" cy="13" r="3"/>
               </svg>
             </button>
 
-            <button type="button" class="btn-tool" id="btnAttachFile" title="Прикрепить фото поломки, лог OBD-II или технический документ (.pdf, .docx, .txt, .json)" aria-label="Прикрепить файл">
+            <button type="button" class="btn-tool" id="btnAttachFile" title="Прикрепить файл (фото, лог .obd/.log/.txt, .pdf, .docx, аудиозапись)" aria-label="Прикрепить файл">
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/>
               </svg>
             </button>
 
-            <button type="button" class="btn-tool" id="btnFocusDtcTab" title="Выбрать код ошибки из словаря БД (P/C/B/U)" aria-label="Словарь кодов ошибок">
+            <button type="button" class="btn-tool" id="btnFocusDtcTab" title="Выбрать код ошибки из словаря DTC (P/C/B/U)" aria-label="Словарь кодов ошибок">
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1 0-5H20"/>
                 <path d="M9 7h6"/><path d="M9 11h6"/>
               </svg>
             </button>
 
-            <button type="button" class="btn-tool" id="btnVoiceRecord" title="Голосовой ввод (прямое аудио в модель или распознавание GGML Whisper)" aria-label="Голосовой ввод">
+            <button type="button" class="btn-tool" id="btnVoiceRecord" title="Нативный голосовой ввод в модель Gemma 4 (embed_audio)" aria-label="Голосовой ввод">
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/>
                 <path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="22"/>
@@ -201,7 +197,7 @@
             </button>
           </div>
 
-          <textarea id="queryInput" class="composer-textarea" rows="1" placeholder="Опишите симптом, прикрепите фото/код ошибки или нажмите микрофон..." enterkeyhint="send" aria-label="Текст диагностического запроса"></textarea>
+          <textarea id="queryInput" class="composer-textarea" rows="1" placeholder="Опишите симптом, прикрепите фото/код ошибки или запишите голос..." enterkeyhint="send" aria-label="Текст диагностического запроса"></textarea>
 
           <button type="button" class="btn-send" id="btnSendQuery" aria-label="Отправить запрос эксперту">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
@@ -213,7 +209,7 @@
       </div>
     </section>
 
-    <!-- 3. ПРАВАЯ ПАНЕЛЬ: АКТИВНЫЙ ЧЕКЛИСТ РЕМОНТА / СЛОВАРЬ КОДОВ DTC / ЯДРО VULKAN & AIRLLM -->
+    <!-- 3. ПРАВАЯ ПАНЕЛЬ: ЧЕКЛИСТ / СЛОВАРЬ DTC / ЯДРО GEMMA 4 & AIRLLM -->
     <aside class="panel-inspector" id="panelInspector" aria-label="Инспектор ремонта, словарь ошибок и настройки ИИ">
       <div class="inspector-tabs" role="tablist">
         <button type="button" class="inspector-tab-btn active" data-inspector-tab="paneChecklist" role="tab" aria-selected="true">
@@ -223,20 +219,20 @@
           Словарь DTC ({{ hw_telemetry.rag.total_dtc_codes }})
         </button>
         <button type="button" class="inspector-tab-btn" data-inspector-tab="paneSettings" role="tab" aria-selected="false">
-          Vulkan &amp; AirLLM
+          Gemma 4 &amp; Vulkan
         </button>
       </div>
 
-      <!-- Вкладка 1: Сводный оперативный чеклист и инвентарь текущего ремонта -->
+      <!-- Вкладка 1: Сводный чеклист -->
       <div class="inspector-pane active" id="paneChecklist" role="tabpanel">
         <div class="scrollable-y" id="inspectorChecklistContent">
           <div style="text-align:center; padding: 28px 12px; color: var(--text-muted); font-size: 0.84rem;">
-            Задайте вопрос или выберите код ошибки, чтобы сформировать пошаговый план ремонта и чеклист необходимого инструментария.
+            Задайте вопрос или укажите код ошибки, чтобы сформировать пошаговый план ремонта и перечень инструмента.
           </div>
         </div>
       </div>
 
-      <!-- Вкладка 2: Словарь кодов ошибок (DTC) и эталонная телеметрия из БД проекта -->
+      <!-- Вкладка 2: Словарь DTC -->
       <div class="inspector-pane" id="paneDtc" role="tabpanel">
         <div class="dtc-search-box">
           <input type="search" id="dtcSearchInput" class="dtc-input" placeholder="Поиск по коду (P0300, C0050) или симптому..." aria-label="Поиск по словарю кодов ошибок" />
@@ -252,73 +248,56 @@
         </div>
       </div>
 
-      <!-- Вкладка 3: Настройки ускорения Vulkan, AirLLM (8 ГБ VRAM) и голосового ввода -->
+      <!-- Вкладка 3: Настройки Gemma 4, AirLLM и окна контекста -->
       <div class="inspector-pane" id="paneSettings" role="tabpanel">
         <div class="scrollable-y">
           <div style="margin-bottom: 12px;">
             <label for="settingBackend" style="display:block; font-size:0.78rem; font-weight:600; margin-bottom:4px;">
-              Бэкенд ИИ и аппаратного ускорения:
+              Бэкенд инференса:
             </label>
             <select id="settingBackend" class="settings-select">
-              <option value="airllm_vulkan" {% if active_settings.llm_backend == "airllm_vulkan" %}selected{% endif %}>AirLLM Layer-wise + Adaptive GPU VRAM (Qwen3.5-VL)</option>
-              <option value="hybrid_auto" {% if active_settings.llm_backend == "hybrid_auto" %}selected{% endif %}>Авто-Гибрид (AirLLM Qwen3.5 + Экспертный RAG)</option>
+              <option value="airllm_vulkan" selected>AirLLM Gemma 4 12B Unified + GPU VRAM DMA</option>
             </select>
           </div>
 
           <div style="margin-bottom: 12px;">
             <label for="settingAirllmModel" style="display:block; font-size:0.78rem; font-weight:600; margin-bottom:4px;">
-              Мультимодальная модель AirLLM (`AirLLMQwen3_5`):
+              Модель Google Gemma 4 12B (AirLLM):
             </label>
-            <input type="text" id="settingAirllmModel" class="settings-input" value="{{ active_settings.airllm_model_id }}" list="airllmModelsPreset" />
-            <datalist id="airllmModelsPreset">
-              <option value="models/Qwen3.5-4B"></option>
-              <option value="Qwen/Qwen3.5-4B"></option>
-              <option value="Qwen/Qwen3.5-9B"></option>
-              <option value="Qwen/Qwen3.8-27B"></option>
-            </datalist>
+            <input type="text" id="settingAirllmModel" class="settings-input" value="{{ active_settings.airllm_model_id }}" />
           </div>
 
           <div style="margin-bottom: 12px;">
             <label for="settingAirllmCompression" style="display:block; font-size:0.78rem; font-weight:600; margin-bottom:4px;">
-              Режим загрузки слоев AirLLM (под любую VRAM):
+              Формат квантования слоев:
             </label>
             <select id="settingAirllmCompression" class="settings-select">
-              <option value="none" {% if active_settings.airllm_compression == "none" %}selected{% endif %}>Нативный BFloat16 (Максимум слоев в VRAM + стриминг)</option>
-              <option value="4bit" {% if active_settings.airllm_compression == "4bit" %}selected{% endif %}>4-bit (Блок-компрессия BitsAndBytes NF4)</option>
-              <option value="8bit" {% if active_settings.airllm_compression == "8bit" %}selected{% endif %}>8-bit (Блок-компрессия BitsAndBytes Int8)</option>
+              <option value="4bit" {% if active_settings.airllm_compression == "4bit" %}selected{% endif %}>4-bit W4A16 QAT (Рекомендуется для 8 ГБ VRAM)</option>
+              <option value="none" {% if active_settings.airllm_compression == "none" %}selected{% endif %}>BFloat16 / Без квантования</option>
             </select>
-          </div>
-
-          <div style="margin-bottom: 12px;">
-            <label for="settingGgufPath" style="display:block; font-size:0.78rem; font-weight:600; margin-bottom:4px;">
-              Относительный путь к локальному чекпоинту модели:
-            </label>
-            <input type="text" id="settingGgufPath" class="settings-input" value="{{ active_settings.gguf_model_rel_path }}" />
           </div>
 
           <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 12px;">
             <div>
               <label for="settingGpuLayers" style="display:block; font-size:0.75rem; font-weight:600; margin-bottom:4px;">
-                Слои в GPU (-1 = макс):
+                Слоев в GPU (0..48):
               </label>
-              <input type="number" id="settingGpuLayers" class="settings-input" value="{{ active_settings.vulkan_gpu_layers }}" min="-1" max="120" />
+              <input type="number" id="settingGpuLayers" class="settings-input" value="{{ active_settings.vulkan_gpu_layers }}" min="0" max="48" />
             </div>
             <div>
               <label for="settingCtxTokens" style="display:block; font-size:0.75rem; font-weight:600; margin-bottom:4px;">
                 Окно контекста:
               </label>
-              <input type="number" id="settingCtxTokens" class="settings-input" value="{{ active_settings.context_window_tokens }}" step="256" min="512" max="16384" />
+              <input type="number" id="settingCtxTokens" class="settings-input" value="{{ active_settings.context_window_tokens }}" step="1024" min="16384" max="65536" />
             </div>
           </div>
 
           <div style="margin-bottom: 12px;">
             <label for="settingVoiceMode" style="display:block; font-size:0.78rem; font-weight:600; margin-bottom:4px;">
-              Режим голосового ввода:
+              Голосовой вход:
             </label>
             <select id="settingVoiceMode" class="settings-select">
-              <option value="auto" {% if active_settings.voice_mode == "auto" %}selected{% endif %}>Авто (Прямое аудио / GGML Whisper)</option>
-              <option value="direct_audio" {% if active_settings.voice_mode == "direct_audio" %}selected{% endif %}>Прямое аудио в мультимодальную модель</option>
-              <option value="ggml_whisper" {% if active_settings.voice_mode == "ggml_whisper" %}selected{% endif %}>Локальное распознавание GGML Whisper</option>
+              <option value="direct_audio" selected>Прямой мультимодальный вход Gemma 4 (embed_audio)</option>
             </select>
           </div>
 
@@ -331,8 +310,9 @@
             <div>GPU: {{ hw_telemetry.vulkan.device_name }}</div>
             <div>API: Vulkan {{ hw_telemetry.vulkan.api_version }} + PyTorch CUDA</div>
             <div>VRAM: {{ hw_telemetry.vulkan.vram_free_mb }} / {{ hw_telemetry.vulkan.vram_total_mb }} МБ</div>
-            <div>Шарды AirLLM: {{ hw_telemetry.airllm.shards_count }} слоев (Qwen3.5-4B VL)</div>
-            <div>Документов в RAG: {{ hw_telemetry.rag.total_documents }} (кодов: {{ hw_telemetry.rag.total_dtc_codes }})</div>
+            <div>Шарды AirLLM: {{ hw_telemetry.airllm.shards_count }} слоев (Gemma 4 12B)</div>
+            <div>Окно контекста: {{ hw_telemetry.context_window }} токенов (ответ до ~{{ hw_telemetry.max_response_tokens }})</div>
+            <div>RAG-документов: {{ hw_telemetry.rag.total_documents }} (кодов: {{ hw_telemetry.rag.total_dtc_codes }})</div>
           </div>
         </div>
       </div>
@@ -340,7 +320,7 @@
   </main>
 
   <!-- ====================================================================
-       НИЖНЯЯ НАВИГАЦИЯ ДЛЯ СМАРТФОНОВ (THUMB-ZONE MOBILE-FIRST)
+       НИЖНЯЯ НАВИГАЦИЯ ДЛЯ СМАРТФОНОВ
        ==================================================================== -->
   <nav class="mobile-bottom-nav" aria-label="Мобильная навигация">
     <button type="button" class="mobile-nav-btn active" data-mobile-view="chat">
@@ -370,7 +350,7 @@
   </nav>
 
   <!-- ====================================================================
-       МОДАЛЬНОЕ ОКНО ВСТРОЕННОЙ КАМЕРЫ (Requirement #6)
+       МОДАЛЬНОЕ ОКНО КАМЕРЫ
        ==================================================================== -->
   <div class="modal-backdrop" id="cameraModal" role="dialog" aria-modal="true" aria-labelledby="cameraModalTitle">
     <div class="camera-modal-card">
@@ -401,19 +381,23 @@
   </div>
 
   <!-- ====================================================================
-       РЕЖИМ ДЛЯ AR-ОЧКОВ ТИПА RAYNEO (Requirement #7)
-       Чисто черный фон (#000000) гарантирует прозрачность на оптических дисплеях очков
-       Два свободно перетаскиваемых плавающих окна: 1) Камера, 2) Ответы и Чеклист
+       РЕЖИМ ДЛЯ AR-ОЧКОВ (2 ПОДРЕЖИМА: 1. RAYNEO OPTICAL #000000, 2. КАМЕРА-ФОН)
        ==================================================================== -->
-  <div class="ar-hud-overlay" id="arHudOverlay" aria-label="Интерфейс дополненной реальности для AR-очков RayNeo">
+  <div class="ar-hud-overlay" id="arHudOverlay" aria-label="Интерфейс дополненной реальности для AR-очков">
+    <!-- Полноэкранный фон видеопотока для подрежима "Камера-фон (Passthrough)" -->
+    <video id="arBgVideoEl" class="ar-bg-video-stream" autoplay playsinline muted style="display:none;"></video>
+
     <div class="ar-top-status">
-      <span>RAYNEO AR HUD • ОПТИЧЕСКИЙ ЧЕРНЫЙ ФОН (#000000)</span>
+      <div class="ar-submode-toggle" aria-label="Подрежим AR">
+        <button type="button" class="btn-attach-code active" id="btnArModeRayneo" title="Прозрачный чистый черный фон для оптических очков RayNeo">🕶️ RayNeo Optical (#000000)</button>
+        <button type="button" class="btn-attach-code" id="btnArModePassthrough" title="Трансляция видео с камеры на весь экран как фон для обычных очков/смартфона">📹 Камера-фон (Passthrough)</button>
+      </div>
       <button type="button" class="btn-attach-code" id="btnArResetLayout">Сброс окон</button>
       <button type="button" class="btn-attach-code" id="btnArFullscreen">Полный экран</button>
       <button type="button" class="btn-attach-code" id="btnExitArMode" style="border-color:var(--status-crit); color:#fca5a5;">Выйти из AR</button>
     </div>
 
-    <!-- Плавающее окно #1: Камера и захват изображения узла -->
+    <!-- Плавающее окно #1: Камера и визир узла -->
     <div class="ar-floating-window" id="arWindowCamera">
       <div class="ar-window-dragbar" data-drag-window="arWindowCamera">
         <span>[AR ОКНО 1] КАМЕРА И ВИЗИР УЗЛА</span>
@@ -437,7 +421,7 @@
       </div>
     </div>
 
-    <!-- Плавающее окно #2: Ответы ИИ, Инвентарь и Пошаговый чеклист ремонта -->
+    <!-- Плавающее окно #2: Ответы ИИ и Чеклист -->
     <div class="ar-floating-window" id="arWindowAssistant">
       <div class="ar-window-dragbar" data-drag-window="arWindowAssistant">
         <span>[AR ОКНО 2] ОТВЕТЫ ИИ И ЧЕКЛИСТ РЕМОНТА</span>
@@ -446,11 +430,11 @@
       <div class="ar-window-content">
         <div id="arAssistantFeed" style="margin-bottom: 12px;">
           <div style="color: var(--text-secondary); font-size: 0.85rem;">
-            Наведите камеру на узел автомобиля или введите симптом ниже. Все чекбоксы шагов ремонта синхронизированы с основной сессией.
+            Наведите визир на узел авто или введите вопрос. Чеклисты синхронизированы с сессией.
           </div>
         </div>
         <div style="display:flex; gap:8px;">
-          <input type="text" id="arQuickInput" class="dtc-input" placeholder="Быстрый вопрос или код ошибки в AR..." />
+          <input type="text" id="arQuickInput" class="dtc-input" placeholder="Быстрый вопрос или код DTC в AR..." />
           <button type="button" class="btn-send" id="btnArSendQuick">Отправить</button>
         </div>
       </div>

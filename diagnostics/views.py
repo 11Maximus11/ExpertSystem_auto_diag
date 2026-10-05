@@ -11,6 +11,7 @@
 import base64
 import json
 import logging
+import mimetypes
 import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -58,20 +59,63 @@ def _ensure_default_session(user=None) -> DialogSession:
     return session
 
 
+def _bytes_to_base64_data_uri(
+    raw_bytes: bytes, filename: str, fallback_mime: str = "application/octet-stream"
+) -> Tuple[str, str, str]:
+    """
+    Кодирует бинарные данные в data: URI base64 для хранения в БД без сохранения файлов на диск сервера.
+    Возвращает (data_uri, b64_str, mime_type).
+    """
+    safe_name = filename or "file.bin"
+    mime, _ = mimetypes.guess_type(safe_name)
+    if not mime:
+        ext = Path(safe_name).suffix.lower()
+        if ext in {".webm", ".ogg"}:
+            mime = "audio/webm"
+        elif ext in {".wav"}:
+            mime = "audio/wav"
+        elif ext in {".mp3"}:
+            mime = "audio/mpeg"
+        elif ext in {".m4a"}:
+            mime = "audio/mp4"
+        elif ext in {".jpg", ".jpeg"}:
+            mime = "image/jpeg"
+        elif ext in {".png"}:
+            mime = "image/png"
+        elif ext in {".webp"}:
+            mime = "image/webp"
+        elif ext in {".gif"}:
+            mime = "image/gif"
+        elif ext in {".pdf"}:
+            mime = "application/pdf"
+        elif ext in {".txt", ".log", ".obd", ".ini", ".cfg", ".md"}:
+            mime = "text/plain"
+        elif ext in {".csv", ".tsv"}:
+            mime = "text/csv"
+        elif ext in {".json"}:
+            mime = "application/json"
+        elif ext in {".docx"}:
+            mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        elif ext in {".xlsx"}:
+            mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        else:
+            mime = fallback_mime
+    b64_str = base64.b64encode(raw_bytes).decode("utf-8")
+    data_uri = f"data:{mime};base64,{b64_str}"
+    return data_uri, b64_str, mime
+
+
 def _save_media_file(raw_bytes: bytes, subdir: str, filename: str) -> Tuple[str, str]:
-    """Сохраняет вложение по пути внутри MEDIA_ROOT и возвращает (web_url, absolute_file_path)."""
-    safe_ext = Path(filename).suffix.lower() or ".bin"
-    unique_name = f"{uuid.uuid4().hex[:12]}{safe_ext}"
-    rel_dir = Path(subdir)
-    abs_dir = Path(settings.MEDIA_ROOT) / rel_dir
-    abs_dir.mkdir(parents=True, exist_ok=True)
-    abs_file = abs_dir / unique_name
-    abs_file.write_bytes(raw_bytes)
-    return f"{settings.MEDIA_URL}{subdir}/{unique_name}", str(abs_file)
+    """
+    Сохраняет вложение напрямую в base64 data URI для хранения в SQLite БД.
+    Файлы на диск сервера НЕ сохраняются.
+    """
+    data_uri, _, _ = _bytes_to_base64_data_uri(raw_bytes, filename)
+    return data_uri, ""
 
 
 def _save_media_bytes(raw_bytes: bytes, subdir: str, filename: str) -> str:
-    """Сохраняет вложение по относительному пути внутри MEDIA_ROOT и возвращает относительный URL."""
+    """Возвращает base64 Data URI для хранения вложения."""
     url, _ = _save_media_file(raw_bytes, subdir, filename)
     return url
 
@@ -565,14 +609,17 @@ def api_ask_expert(request: HttpRequest) -> JsonResponse:
         try:
             img_bytes = base64.b64decode(raw_b64)
             fname = f"camera_shot_{idx + 1}.jpg"
-            rel_url, abs_path = _save_media_file(img_bytes, "photos", fname)
-            img_analysis = analyze_image_bytes(img_bytes, filename=fname, abs_path=abs_path)
+            img_analysis = analyze_image_bytes(img_bytes, filename=fname)
             image_analyses.append(img_analysis)
+            data_url = img_analysis.get("data_url") or f"data:image/jpeg;base64,{raw_b64}"
             saved_attachments.append(
                 {
                     "type": "image",
                     "name": "Снимок камеры",
-                    "url": rel_url,
+                    "url": data_url,
+                    "base64": raw_b64,
+                    "mime_type": "image/jpeg",
+                    "size_bytes": len(img_bytes),
                     "clues": img_analysis.get("visual_clues", []),
                 }
             )
@@ -587,19 +634,26 @@ def api_ask_expert(request: HttpRequest) -> JsonResponse:
         content_type = getattr(up_file, "content_type", "") or ""
 
         if ext in IMAGE_EXTENSIONS or content_type.startswith("image/"):
-            rel_url, abs_path = _save_media_file(f_bytes, "photos", f_name)
-            img_analysis = analyze_image_bytes(f_bytes, filename=f_name, abs_path=abs_path)
+            img_analysis = analyze_image_bytes(f_bytes, filename=f_name)
             image_analyses.append(img_analysis)
+            data_url = img_analysis.get("data_url")
+            if not data_url:
+                data_url, b64, mime = _bytes_to_base64_data_uri(f_bytes, f_name, fallback_mime="image/jpeg")
+            else:
+                b64 = data_url.split(",", 1)[-1] if "," in data_url else base64.b64encode(f_bytes).decode("utf-8")
+                mime = "image/jpeg"
             saved_attachments.append(
                 {
                     "type": "image",
                     "name": f_name,
-                    "url": rel_url,
+                    "url": data_url,
+                    "base64": b64,
+                    "mime_type": mime,
+                    "size_bytes": len(f_bytes),
                     "clues": img_analysis.get("visual_clues", []),
                 }
             )
         elif ext in AUDIO_EXTENSIONS or content_type.startswith("audio/"):
-            rel_url, abs_path = _save_media_file(f_bytes, "voice", f_name)
             model_name = (
                 active_settings.airllm_model_id
                 if active_settings.llm_backend == "airllm_vulkan"
@@ -613,24 +667,31 @@ def api_ask_expert(request: HttpRequest) -> JsonResponse:
                 backend=active_settings.llm_backend,
                 client_transcript=client_transcript,
             )
+            data_url, b64, mime = _bytes_to_base64_data_uri(f_bytes, f_name, fallback_mime="audio/webm")
             saved_attachments.append(
                 {
                     "type": "audio",
                     "name": f_name,
-                    "url": rel_url,
+                    "url": data_url,
+                    "base64": b64,
+                    "mime_type": mime,
+                    "size_bytes": len(f_bytes),
                     "mode": voice_info["mode_label"],
                     "transcript": voice_info["transcript"] or f"Прямой аудиовход 16 кГц ({voice_info.get('duration_sec', 0.0):.1f} с)",
                 }
             )
         else:
-            rel_url, abs_path = _save_media_file(f_bytes, "docs", f_name)
             doc_analysis = parse_uploaded_document(f_bytes, filename=f_name)
             doc_analyses.append(doc_analysis)
+            data_url, b64, mime = _bytes_to_base64_data_uri(f_bytes, f_name, fallback_mime="application/octet-stream")
             saved_attachments.append(
                 {
                     "type": "document",
                     "name": f_name,
-                    "url": rel_url,
+                    "url": data_url,
+                    "base64": b64,
+                    "mime_type": mime,
+                    "size_bytes": len(f_bytes),
                     "detected_codes": doc_analysis.get("detected_dtc_codes", []),
                     "metrics": doc_analysis.get("key_metrics", []),
                 }
@@ -641,7 +702,7 @@ def api_ask_expert(request: HttpRequest) -> JsonResponse:
         raw_vb64 = voice_b64.split(",", 1)[-1] if "," in voice_b64 else voice_b64
         try:
             v_bytes = base64.b64decode(raw_vb64)
-            rel_url, _ = _save_media_file(v_bytes, "voice", "voice_query.webm")
+            data_url = voice_b64 if voice_b64.startswith("data:") else f"data:audio/webm;base64,{raw_vb64}"
             model_name = (
                 active_settings.airllm_model_id
                 if active_settings.llm_backend == "airllm_vulkan"
@@ -659,7 +720,10 @@ def api_ask_expert(request: HttpRequest) -> JsonResponse:
                 {
                     "type": "audio",
                     "name": "Голосовой запрос",
-                    "url": rel_url,
+                    "url": data_url,
+                    "base64": raw_vb64,
+                    "mime_type": "audio/webm",
+                    "size_bytes": len(v_bytes),
                     "mode": voice_info["mode_label"],
                     "transcript": voice_info["transcript"] or f"Прямой аудиовход 16 кГц ({voice_info.get('duration_sec', 0.0):.1f} с)",
                 }

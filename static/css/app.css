@@ -845,6 +845,28 @@ select:focus-visible {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  color: var(--text-primary);
+  text-decoration: none;
+  transition: all var(--transition-fast);
+}
+
+.attachment-doc-link:hover {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+  text-decoration: underline;
+}
+
+.attachment-audio-wrapper {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-width: 280px;
+}
+
+.attachment-audio-player {
+  height: 30px;
+  width: 100%;
+  border-radius: 6px;
 }
 
 /* Структурированные блоки ответа эксперта (Task-Friendly) */

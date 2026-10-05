@@ -261,7 +261,13 @@ class AIdealAutoComprehensiveTests(TransactionTestCase):
             data={"query": "", "attachments": [voice_upload]},
         )
         self.assertEqual(ask_voice_resp.status_code, 200)
-        self.assertIn("assistant_message", ask_voice_resp.json())
+        resp_json = ask_voice_resp.json()
+        self.assertIn("assistant_message", resp_json)
+        # Проверяем, что вложение сохранено в БД в виде base64 data URI без записи файла на диск сервера
+        user_atts = resp_json.get("user_message", {}).get("attachments", [])
+        self.assertGreater(len(user_atts), 0)
+        self.assertTrue(user_atts[0]["url"].startswith("data:"))
+        self.assertIn("base64", user_atts[0])
 
         # Тест document_service с логом ошибок и телеметрией
         log_content = "OBD-II Scan Log: P0300 Random/Multiple Cylinder Misfire, P0796 Pressure Control Solenoid, Engine_Temp=92.5 C".encode("utf-8")

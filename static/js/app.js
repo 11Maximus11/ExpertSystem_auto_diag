@@ -516,9 +516,16 @@
           attachmentsHtml += `<img src="${escapeHtml(att.url)}" alt="${escapeHtml(att.name || 'Фото поломки')}" class="attachment-thumb" />`;
         } else if (att.type === 'audio') {
           const modeLabel = att.mode && !att.mode.toLowerCase().includes('ggml') ? att.mode : 'Gemma 4 Native Audio';
-          attachmentsHtml += `<span class="attachment-doc-chip">Аудио (${escapeHtml(modeLabel)}): ${escapeHtml(att.transcript || '')}</span>`;
+          attachmentsHtml += `<div class="attachment-audio-wrapper">
+            <span class="attachment-doc-chip">🎙️ Аудио (${escapeHtml(modeLabel)}): ${escapeHtml(att.transcript || '')}</span>
+            ${att.url ? `<audio controls src="${escapeHtml(att.url)}" class="attachment-audio-player" preload="none"></audio>` : ''}
+          </div>`;
         } else {
-          attachmentsHtml += `<span class="attachment-doc-chip">Документ: ${escapeHtml(att.name || 'Файл')}</span>`;
+          if (att.url) {
+            attachmentsHtml += `<a href="${escapeHtml(att.url)}" download="${escapeHtml(att.name || 'document')}" class="attachment-doc-chip attachment-doc-link" target="_blank" rel="noopener">📄 ${escapeHtml(att.name || 'Документ')}</a>`;
+          } else {
+            attachmentsHtml += `<span class="attachment-doc-chip">📄 Документ: ${escapeHtml(att.name || 'Файл')}</span>`;
+          }
         }
       });
       attachmentsHtml += `</div>`;

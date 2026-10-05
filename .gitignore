@@ -19,9 +19,11 @@ __pycache__/
 *.py[cod]
 *$py.class
 
-# Django и база данных
+# Django и база данных (рабочая БД db.sqlite3 исключена, чистая эталонная копия db_clean.sqlite3 включена)
 db.sqlite3
 db.sqlite3-journal
+*.sqlite3
+!db_clean.sqlite3
 /media/
 /staticfiles/
 .env

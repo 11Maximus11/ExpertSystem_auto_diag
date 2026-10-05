@@ -62,10 +62,20 @@ WSGI_APPLICATION = "autodiag_project.wsgi.application"
 ASGI_APPLICATION = "autodiag_project.asgi.application"
 
 # База данных SQLite (относительный путь)
+# При первом развёртывании автоматически копируется эталонная чистая БД db_clean.sqlite3
+DEFAULT_DB_PATH = BASE_DIR / "db.sqlite3"
+CLEAN_DB_PATH = BASE_DIR / "db_clean.sqlite3"
+if not DEFAULT_DB_PATH.exists() and CLEAN_DB_PATH.exists():
+    import shutil
+    try:
+        shutil.copyfile(CLEAN_DB_PATH, DEFAULT_DB_PATH)
+    except Exception:
+        pass
+
 DATABASES = {
     "default": {
         "ENGINE": "django.db.backends.sqlite3",
-        "NAME": BASE_DIR / "db.sqlite3",
+        "NAME": DEFAULT_DB_PATH,
         "OPTIONS": {
             "timeout": 20,
         },

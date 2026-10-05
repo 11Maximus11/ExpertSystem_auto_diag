@@ -11,7 +11,9 @@
 5. Автообрезка ответа по последнему завершенному предложению (`truncate_to_last_sentence`).
 """
 
+import base64
 import gc
+import io
 import json
 import logging
 import os
@@ -638,6 +640,23 @@ class AirLLMVulkanOrchestrator:
                 )
             )
 
+        for doc in doc_analyses:
+            executed_calls.append(
+                ToolCallExecution(
+                    tool_name="parse_uploaded_document",
+                    arguments={
+                        "filename": doc.get("filename", "document.txt"),
+                        "extension": doc.get("extension", ""),
+                    },
+                    result_summary=(
+                        f"Обработан документ {doc.get('filename')}. "
+                        f"Кодов DTC: {len(doc.get('detected_dtc_codes', []))}, "
+                        f"параметров телеметрии: {len(doc.get('key_metrics', []))}."
+                    ),
+                    status="success",
+                )
+            )
+
         if voice_info and voice_info.get("audio_attached_to_model"):
             dur = voice_info.get("duration_sec", 0.0)
             executed_calls.append(
@@ -845,11 +864,12 @@ class AirLLMVulkanOrchestrator:
                     f"(Health Index: {t_info.get('avg_health_index')}%)."
                 )
 
-        summary_title = (
-            f"Диагностика {primary_code}: {faults[0].title}"
-            if faults
-            else f"Разбор неисправности: {primary_system_ru}"
-        )
+        if image_analyses and not dtc_cards:
+            summary_title = f"Визуальный осмотр: {image_analyses[0].get('filename', 'фотография узла')}"
+        elif faults:
+            summary_title = f"Диагностика {primary_code}: {faults[0].title}"
+        else:
+            summary_title = f"Разбор неисправности: {primary_system_ru}"
 
         return DiagnosticStructuredResponse(
             response_type="visual_inspection" if image_analyses and not dtc_cards else "diagnosis",
@@ -892,16 +912,81 @@ class AirLLMVulkanOrchestrator:
             logger.error("[AirLLM] Не удалось инициализировать модель Gemma 4: %s", exc)
             return None
 
-        has_native_audio = bool(voice_info and voice_info.get("audio_attached_to_model"))
+        # 1. Предварительно извлекаем изображения (Vision) из фото и вложенных документов
+        pil_images: List[Image.Image] = []
+        for img_info in image_analyses:
+            pil_img = None
+            raw_jpeg = img_info.get("raw_jpeg_bytes")
+            abs_p = img_info.get("abs_path")
+            data_url = img_info.get("data_url") or img_info.get("data_uri") or ""
+            try:
+                if raw_jpeg:
+                    pil_img = Image.open(io.BytesIO(raw_jpeg)).convert("RGB")
+                elif abs_p and Path(abs_p).exists():
+                    pil_img = Image.open(abs_p).convert("RGB")
+                elif "base64," in data_url:
+                    b64_part = data_url.split("base64,", 1)[-1]
+                    pil_img = Image.open(io.BytesIO(base64.b64decode(b64_part))).convert("RGB")
+                if pil_img is not None:
+                    pil_img.thumbnail((768, 768))
+                    pil_images.append(pil_img)
+            except Exception as img_exc:
+                logger.warning("[AirLLM Vision] Ошибка декодирования фото %s: %s", img_info.get("filename"), img_exc)
+
+        for doc in doc_analyses:
+            for emb_bytes in doc.get("embedded_images_bytes", []):
+                if len(pil_images) >= 4:
+                    break
+                try:
+                    pil_img = Image.open(io.BytesIO(emb_bytes)).convert("RGB")
+                    pil_img.thumbnail((768, 768))
+                    pil_images.append(pil_img)
+                except Exception:
+                    pass
+
+        # 2. Нативное аудио (Gemma 4 embed_audio)
+        audio_waveform_16k: Optional[np.ndarray] = None
+        if voice_info and voice_info.get("audio_attached_to_model"):
+            wf = voice_info.get("audio_waveform_16k")
+            if wf is not None and len(wf) > 0:
+                audio_waveform_16k = wf
+        if audio_waveform_16k is None:
+            for doc in doc_analyses:
+                wf = doc.get("audio_waveform_16k")
+                if wf is not None and len(wf) > 0:
+                    audio_waveform_16k = wf
+                    break
+
+        has_images = bool(pil_images)
+        has_native_audio = bool(audio_waveform_16k is not None)
         is_conversational = (
             not rag_hits
             and not dtc_cards
-            and not image_analyses
+            and not has_images
             and not doc_analyses
             and not has_native_audio
         )
 
-        if is_conversational:
+        if has_images:
+            sys_prompt = (
+                "Ты — ИИдеал Авто (AIdeal Auto), практичный эксперт автодиагностики и автоэлектрик. "
+                "К запросу пользователя ПРИКРЕПЛЕНА ФОТОГРАФИЯ (передана напрямую в твой визуальный вход Gemma 4 Vision). "
+                "Внимательно изучи изображение! НИ В КОЕМ СЛУЧАЕ НЕ ПРОСИ пользователя прислать фото, оно уже перед тобой. "
+                "1) Опиши, что конкретно видно на фотографии (состояние проводки, жгутов, разъемов, деталей, повреждения); "
+                "2) Объясни физическую причину проблемы и почему автомобиль не заводится или работает с перебоями; "
+                "3) Дай четкий практический план ремонта (восстановление жгута, пайка/обжим пинов, термоусадка, прозвонка мультиметром) без банальных советов. "
+                "Пиши профессионально, ёмко и понятно, всегда полностью завершай мысль и последнее предложение."
+            )
+            extra_notes = []
+            if dtc_cards:
+                extra_notes.append("Коды DTC: " + ", ".join(dtc_cards.keys()))
+            if doc_analyses:
+                extra_notes.append("Вложенный документ: " + doc_analyses[0].get("filename", ""))
+            notes_str = f" [Дополнительные данные: {'; '.join(extra_notes)}]" if extra_notes else ""
+            user_prompt_text = f"Изучи прикреплённое фото узла/проводки автомобиля и дай заключение автодиагноста.{notes_str}\nВопрос мастера: {query}"
+            if dialog_summary:
+                user_prompt_text = f"[Сжатая выжимка ранней истории: {dialog_summary}]\n{user_prompt_text}"
+        elif is_conversational:
             sys_prompt = (
                 "Ты — ИИдеал Авто (AIdeal Auto), практичный инженер-диагност и наставник автосервиса. "
                 "Пиши понятным, живым и профессиональным языком, кратко и по делу, без банальных инструкций "
@@ -976,33 +1061,14 @@ class AirLLMVulkanOrchestrator:
 
         # Формируем текущее сообщение пользователя с нативными мультимодальными вложениями
         user_content_items: List[Dict[str, Any]] = []
-        pil_images: List[Image.Image] = []
-        audio_waveform_16k: Optional[np.ndarray] = None
 
         # 1. Фотографии (Vision)
-        for img_info in image_analyses:
-            abs_p = img_info.get("abs_path")
-            if abs_p and Path(abs_p).exists():
-                try:
-                    pil_img = Image.open(abs_p).convert("RGB")
-                    pil_img.thumbnail((768, 768))
-                    pil_images.append(pil_img)
-                    user_content_items.append({"type": "image", "image": pil_img})
-                except Exception:
-                    pass
+        for pil_img in pil_images:
+            user_content_items.append({"type": "image", "image": pil_img})
 
         # 2. Нативное аудио (Gemma 4 embed_audio)
-        if voice_info and voice_info.get("audio_attached_to_model"):
-            wf = voice_info.get("audio_waveform_16k")
-            if wf is not None and len(wf) > 0:
-                audio_waveform_16k = wf
-                user_content_items.append({"type": "audio", "audio": audio_waveform_16k})
-
-        for doc in doc_analyses:
-            wf = doc.get("audio_waveform_16k")
-            if wf is not None and len(wf) > 0 and audio_waveform_16k is None:
-                audio_waveform_16k = wf
-                user_content_items.append({"type": "audio", "audio": audio_waveform_16k})
+        if audio_waveform_16k is not None and len(audio_waveform_16k) > 0:
+            user_content_items.append({"type": "audio", "audio": audio_waveform_16k})
 
         user_content_items.append({"type": "text", "text": user_prompt_text})
         chat_messages.append({"role": "user", "content": user_content_items})

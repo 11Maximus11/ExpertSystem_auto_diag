@@ -3,7 +3,7 @@
 Обеспечивают работу:
 - Основного Mobile-First / Desktop интерфейса и PWA (manifest.json, sw.js)
 - Специального режима для AR-очков типа RayNeo (плавающие окна + чисто черный фон #000000)
-- Мультимодального ввода (текст, фото с камеры/галереи, документы, коды ошибок DTC, голос GGML/Direct)
+- Мультимодального ввода (текст, фото с камеры/галереи, документы, коды ошибок DTC, голос Gemma 4 Native Audio / Direct)
 - Неблокирующего фонового воркера выжимки контекста с принудительным сбросом при новом запросе
 - Интерактивных чекбоксов задач ремонта и инвентаря
 """
@@ -12,7 +12,7 @@ import base64
 import json
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, Tuple
 
 from django.conf import settings
 from django.http import HttpRequest, HttpResponse, JsonResponse
@@ -22,7 +22,13 @@ from django.views.decorators.http import require_http_methods
 
 from .airllm_vulkan_service import orchestrator
 from .context_worker import context_worker_manager
-from .document_service import analyze_image_bytes, extract_dtc_codes, parse_uploaded_document
+from .document_service import (
+    AUDIO_EXTENSIONS,
+    IMAGE_EXTENSIONS,
+    analyze_image_bytes,
+    extract_dtc_codes,
+    parse_uploaded_document,
+)
 from .models import ChatMessage, DialogSession, SystemSettings
 from .voice_service import process_voice_input
 
@@ -38,8 +44,8 @@ def _ensure_default_session() -> DialogSession:
     return session
 
 
-def _save_media_bytes(raw_bytes: bytes, subdir: str, filename: str) -> str:
-    """Сохраняет вложение по относительному пути внутри MEDIA_ROOT и возвращает относительный URL."""
+def _save_media_file(raw_bytes: bytes, subdir: str, filename: str) -> Tuple[str, str]:
+    """Сохраняет вложение по пути внутри MEDIA_ROOT и возвращает (web_url, absolute_file_path)."""
     safe_ext = Path(filename).suffix.lower() or ".bin"
     unique_name = f"{uuid.uuid4().hex[:12]}{safe_ext}"
     rel_dir = Path(subdir)
@@ -47,7 +53,30 @@ def _save_media_bytes(raw_bytes: bytes, subdir: str, filename: str) -> str:
     abs_dir.mkdir(parents=True, exist_ok=True)
     abs_file = abs_dir / unique_name
     abs_file.write_bytes(raw_bytes)
-    return f"{settings.MEDIA_URL}{subdir}/{unique_name}"
+    return f"{settings.MEDIA_URL}{subdir}/{unique_name}", str(abs_file)
+
+
+def _save_media_bytes(raw_bytes: bytes, subdir: str, filename: str) -> str:
+    """Сохраняет вложение по относительному пути внутри MEDIA_ROOT и возвращает относительный URL."""
+    url, _ = _save_media_file(raw_bytes, subdir, filename)
+    return url
+
+
+def _sanitize_attachment(att: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(att, dict):
+        return att
+    att = dict(att)
+    if "mode" in att:
+        mode_val = str(att["mode"])
+        if "ggml" in mode_val.lower():
+            att["mode"] = "Gemma 4 Native Audio"
+    return att
+
+
+def _sanitize_attachments(attachments: List[Any]) -> List[Any]:
+    if not isinstance(attachments, list):
+        return attachments or []
+    return [_sanitize_attachment(a) for a in attachments]
 
 
 def index_view(request: HttpRequest) -> HttpResponse:
@@ -216,7 +245,7 @@ def api_session_detail(request: HttpRequest, session_id: uuid.UUID) -> JsonRespo
             "role": m.role,
             "content": m.content,
             "structured_data": m.structured_data,
-            "attachments": m.attachments,
+            "attachments": _sanitize_attachments(m.attachments),
             "dtc_codes": m.dtc_codes,
             "created_at": m.created_at.strftime("%H:%M"),
         }
@@ -311,8 +340,10 @@ def api_ask_expert(request: HttpRequest) -> JsonResponse:
             ]
         except Exception:
             dtc_codes_raw = []
-        camera_b64_str = request.POST.get("camera_image_b64", "")
-        camera_b64_list = [camera_b64_str] if camera_b64_str else []
+        camera_b64_list = request.POST.getlist("camera_image_b64")
+        if not camera_b64_list:
+            camera_b64_str = request.POST.get("camera_image_b64", "")
+            camera_b64_list = [camera_b64_str] if camera_b64_str else []
         voice_b64 = request.POST.get("voice_b64", "")
         client_transcript = request.POST.get("voice_transcript", "").strip()
         uploaded_files = request.FILES.getlist("attachments")
@@ -344,8 +375,8 @@ def api_ask_expert(request: HttpRequest) -> JsonResponse:
         try:
             img_bytes = base64.b64decode(raw_b64)
             fname = f"camera_shot_{idx + 1}.jpg"
-            rel_url = _save_media_bytes(img_bytes, "photos", fname)
-            img_analysis = analyze_image_bytes(img_bytes, filename=fname)
+            rel_url, abs_path = _save_media_file(img_bytes, "photos", fname)
+            img_analysis = analyze_image_bytes(img_bytes, filename=fname, abs_path=abs_path)
             image_analyses.append(img_analysis)
             saved_attachments.append(
                 {
@@ -363,10 +394,11 @@ def api_ask_expert(request: HttpRequest) -> JsonResponse:
         f_bytes = up_file.read()
         f_name = up_file.name
         ext = Path(f_name).suffix.lower()
+        content_type = getattr(up_file, "content_type", "") or ""
 
-        if ext in (".jpg", ".jpeg", ".png", ".bmp", ".webp"):
-            rel_url = _save_media_bytes(f_bytes, "photos", f_name)
-            img_analysis = analyze_image_bytes(f_bytes, filename=f_name)
+        if ext in IMAGE_EXTENSIONS or content_type.startswith("image/"):
+            rel_url, abs_path = _save_media_file(f_bytes, "photos", f_name)
+            img_analysis = analyze_image_bytes(f_bytes, filename=f_name, abs_path=abs_path)
             image_analyses.append(img_analysis)
             saved_attachments.append(
                 {
@@ -376,8 +408,8 @@ def api_ask_expert(request: HttpRequest) -> JsonResponse:
                     "clues": img_analysis.get("visual_clues", []),
                 }
             )
-        elif ext in (".wav", ".mp3", ".ogg", ".webm", ".m4a", ".flac", ".aac"):
-            rel_url = _save_media_bytes(f_bytes, "voice", f_name)
+        elif ext in AUDIO_EXTENSIONS or content_type.startswith("audio/"):
+            rel_url, abs_path = _save_media_file(f_bytes, "voice", f_name)
             model_name = (
                 active_settings.airllm_model_id
                 if active_settings.llm_backend == "airllm_vulkan"
@@ -401,7 +433,7 @@ def api_ask_expert(request: HttpRequest) -> JsonResponse:
                 }
             )
         else:
-            rel_url = _save_media_bytes(f_bytes, "docs", f_name)
+            rel_url, abs_path = _save_media_file(f_bytes, "docs", f_name)
             doc_analysis = parse_uploaded_document(f_bytes, filename=f_name)
             doc_analyses.append(doc_analysis)
             saved_attachments.append(
@@ -419,7 +451,7 @@ def api_ask_expert(request: HttpRequest) -> JsonResponse:
         raw_vb64 = voice_b64.split(",", 1)[-1] if "," in voice_b64 else voice_b64
         try:
             v_bytes = base64.b64decode(raw_vb64)
-            rel_url = _save_media_bytes(v_bytes, "voice", "voice_query.webm")
+            rel_url, _ = _save_media_file(v_bytes, "voice", "voice_query.webm")
             model_name = (
                 active_settings.airllm_model_id
                 if active_settings.llm_backend == "airllm_vulkan"
@@ -526,7 +558,7 @@ def api_ask_expert(request: HttpRequest) -> JsonResponse:
                 "id": user_msg.id,
                 "role": "user",
                 "content": user_msg.content,
-                "attachments": user_msg.attachments,
+                "attachments": _sanitize_attachments(user_msg.attachments),
                 "dtc_codes": user_msg.dtc_codes,
                 "created_at": user_msg.created_at.strftime("%H:%M"),
             },
@@ -687,5 +719,114 @@ def api_system_settings(request: HttpRequest) -> JsonResponse:
                 "strict_json_mode": active.strict_json_mode,
             },
             "hardware": hw_telemetry,
+        }
+    )
+
+
+# =========================================================================
+# REST API: Удаление сообщений и очистка контекста LLM (Requirement #5)
+# =========================================================================
+@csrf_exempt
+@require_http_methods(["POST"])
+def api_delete_messages(request: HttpRequest) -> JsonResponse:
+    """
+    Удаляет выбранные сообщения (пользователя и/или модели) из базы данных
+    и немедленно исключает их из контекста LLM.
+    При delete_all=True полностью очищает историю сессии и сбрасывает summary диалога.
+    """
+    try:
+        payload = json.loads(request.body.decode("utf-8") or "{}")
+    except Exception:
+        payload = {}
+
+    session_id = payload.get("session_id") or request.POST.get("session_id")
+    message_ids = payload.get("message_ids") or request.POST.getlist("message_ids")
+    if isinstance(message_ids, str):
+        message_ids = [int(m.strip()) for m in message_ids.split(",") if m.strip().isdigit()]
+    elif isinstance(message_ids, list):
+        message_ids = [int(m) for m in message_ids if str(m).isdigit()]
+    else:
+        message_ids = []
+
+    delete_all = bool(payload.get("delete_all") or request.POST.get("delete_all") in ("1", "true", "True"))
+
+    session = None
+    if session_id:
+        session = DialogSession.objects.filter(pk=session_id).first()
+    elif message_ids:
+        first_msg = ChatMessage.objects.filter(id__in=message_ids).select_related("session").first()
+        if first_msg:
+            session = first_msg.session
+
+    if not session:
+        return JsonResponse({"error": "Сессия не найдена"}, status=404)
+
+    # Принудительно останавливаем фоновый воркер суммаризации, чтобы исключить конфликты
+    context_worker_manager.preempt_if_running(str(session.id))
+
+    deleted_count = 0
+    if delete_all:
+        deleted_count = session.messages.count()
+        session.messages.all().delete()
+        session.summary = ""
+        session.attached_dtc_codes = []
+        session.worker_status = "idle"
+        session.save(update_fields=["summary", "attached_dtc_codes", "worker_status", "updated_at"])
+    elif message_ids:
+        qs = session.messages.filter(id__in=message_ids)
+        deleted_count = qs.count()
+        qs.delete()
+
+        remaining_count = session.messages.count()
+        if remaining_count == 0:
+            session.summary = ""
+            session.attached_dtc_codes = []
+            session.worker_status = "idle"
+            session.save(update_fields=["summary", "attached_dtc_codes", "worker_status", "updated_at"])
+        else:
+            # Немедленно запускаем пересчет выжимки контекста по оставшимся сообщениям
+            context_worker_manager.start_background_update(str(session.id))
+
+    return JsonResponse(
+        {
+            "success": True,
+            "session_id": str(session.id),
+            "deleted_count": deleted_count,
+            "remaining_count": session.messages.count(),
+            "summary": session.summary,
+            "session_summary": session.summary,
+        }
+    )
+
+
+@csrf_exempt
+@require_http_methods(["DELETE", "POST"])
+def api_delete_single_message(request: HttpRequest, message_id: int) -> JsonResponse:
+    """Удаляет одиночное сообщение по ID и немедленно пересчитывает контекст сессии."""
+    msg = ChatMessage.objects.filter(pk=message_id).select_related("session").first()
+    if not msg:
+        return JsonResponse({"error": "Сообщение не найдено"}, status=404)
+
+    session = msg.session
+    context_worker_manager.preempt_if_running(str(session.id))
+    msg.delete()
+
+    remaining_count = session.messages.count()
+    if remaining_count == 0:
+        session.summary = ""
+        session.attached_dtc_codes = []
+        session.worker_status = "idle"
+        session.save(update_fields=["summary", "attached_dtc_codes", "worker_status", "updated_at"])
+    else:
+        context_worker_manager.start_background_update(str(session.id))
+
+    return JsonResponse(
+        {
+            "success": True,
+            "deleted_id": message_id,
+            "session_id": str(session.id),
+            "remaining_count": remaining_count,
+            "summary": session.summary,
+            "session_summary": session.summary,
         }
     )

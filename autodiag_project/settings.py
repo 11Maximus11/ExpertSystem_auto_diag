@@ -100,7 +100,7 @@ MODELS_DIR = BASE_DIR / "models"
 AIRLLM_SHARDS_DIR = MODELS_DIR / "airllm_shards"
 
 # Настройки Vulkan и AirLLM под 8 ГБ видеопамяти
-VULKAN_ENABLED = os.environ.get("GGML_VULKAN", "1") == "1"
+VULKAN_ENABLED = os.environ.get("VULKAN_ACCELERATION", os.environ.get("GGML_VULKAN", "1")) == "1"
 MAX_VRAM_MB = int(os.environ.get("MAX_VRAM_MB", "8192"))
 DEFAULT_CTX_SIZE = int(os.environ.get("LLM_CTX_SIZE", "32768"))
 AIRLLM_DEFAULT_MODEL = os.environ.get("AIRLLM_MODEL_ID", "google/gemma-4-12B-it-qat-w4a16-ct")

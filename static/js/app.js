@@ -288,7 +288,7 @@
     wrapper.className = `msg-card ${msg.role === 'user' ? 'msg-user' : 'msg-assistant'}`;
     wrapper.dataset.messageId = msg.id;
 
-    const roleTitle = msg.role === 'user' ? 'ЗАПРОС МАСТЕРА / ВОДИТЕЛЯ' : 'AUTODIAG PRO AI • ВЕДУЩИЙ ДИАГНОСТ';
+    const roleTitle = msg.role === 'user' ? 'ЗАПРОС МАСТЕРА / ВОДИТЕЛЯ' : 'ИИдеал Авто • Экспертная диагностика';
     const dtcHtml =
       Array.isArray(msg.dtc_codes) && msg.dtc_codes.length
         ? `<div class="dtc-badge-row">${msg.dtc_codes.map((c) => `<span class="dtc-pill">${escapeHtml(c)}</span>`).join('')}</div>`
@@ -301,7 +301,8 @@
         if (att.type === 'image' && att.url) {
           attachmentsHtml += `<img src="${escapeHtml(att.url)}" alt="${escapeHtml(att.name || 'Фото поломки')}" class="attachment-thumb" />`;
         } else if (att.type === 'audio') {
-          attachmentsHtml += `<span class="attachment-doc-chip">Аудио (${escapeHtml(att.mode || 'GGML')}): ${escapeHtml(att.transcript || '')}</span>`;
+          const modeLabel = att.mode && !att.mode.toLowerCase().includes('ggml') ? att.mode : 'Gemma 4 Native Audio';
+          attachmentsHtml += `<span class="attachment-doc-chip">Аудио (${escapeHtml(modeLabel)}): ${escapeHtml(att.transcript || '')}</span>`;
         } else {
           attachmentsHtml += `<span class="attachment-doc-chip">Документ: ${escapeHtml(att.name || 'Файл')}</span>`;
         }
@@ -312,10 +313,27 @@
     const bodyHtml =
       msg.role === 'assistant' ? buildStructuredCardHtml(msg) : `<div>${formatMarkdownLite(msg.content)}</div>`;
 
+    const isTemp = String(msg.id).startsWith('temp-');
+    const actionsHtml = isTemp
+      ? `<span>${escapeHtml(msg.created_at || '')}</span>`
+      : `
+        <div class="msg-card-actions">
+          <span>${escapeHtml(msg.created_at || '')}</span>
+          <label class="msg-select-label" title="Выбрать для удаления">
+            <input type="checkbox" class="msg-select-cb" data-msg-id="${msg.id}" />
+          </label>
+          <button type="button" class="btn-msg-delete" data-msg-id="${msg.id}" title="Удалить из чата и памяти ИИ">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+            </svg>
+          </button>
+        </div>
+      `;
+
     wrapper.innerHTML = `
       <div class="msg-header">
         <span class="msg-role-badge">${roleTitle}</span>
-        <span>${escapeHtml(msg.created_at || '')}</span>
+        ${actionsHtml}
       </div>
       ${bodyHtml}
       ${attachmentsHtml}
@@ -452,6 +470,142 @@
     }
   }
 
+  function renderEmptyState(feed) {
+    if (!feed) return;
+    feed.innerHTML = `
+      <div class="msg-card msg-assistant" data-welcome-placeholder="1">
+        <div class="msg-header">
+          <span class="msg-role-badge">ИИДЕАЛ АВТО • ГОТОВ К ДИАГНОСТИКЕ</span>
+          <span>GEMMA 4 12B + AIRLLM GPU</span>
+        </div>
+        <div class="diagnosis-verdict-title">
+          <span>Интеллектуальный стенд автодиагностики и пошагового ремонта</span>
+        </div>
+        <p style="font-size:0.88rem; color:var(--text-secondary);">
+          Опишите симптом своими словами, выберите код ошибки OBD-II из словаря БД, прикрепите лог сканера,
+          запишите голосовой вопрос или сфотографируйте неисправный узел прямо через встроенную камеру / очки RayNeo AR.
+        </p>
+      </div>
+    `;
+    updateSelectionToolbar();
+  }
+
+  function updateSelectionToolbar() {
+    const toolbar = el('chatSelectionToolbar');
+    const chkSelectAll = el('chkSelectAllMessages');
+    const counterBadge = el('selectedMessagesCount');
+    const btnDelete = el('btnDeleteSelectedMessages');
+    if (!toolbar) return;
+
+    const checkboxes = Array.from(document.querySelectorAll('.msg-select-cb'));
+    const totalCount = checkboxes.length;
+    const checkedBoxes = checkboxes.filter((cb) => cb.checked);
+    const checkedCount = checkedBoxes.length;
+
+    if (counterBadge) {
+      counterBadge.textContent = `${checkedCount} / ${totalCount}`;
+    }
+    if (chkSelectAll) {
+      chkSelectAll.checked = totalCount > 0 && checkedCount === totalCount;
+      chkSelectAll.indeterminate = checkedCount > 0 && checkedCount < totalCount;
+    }
+    if (btnDelete) {
+      btnDelete.disabled = checkedCount === 0;
+    }
+  }
+
+  async function deleteSingleMessage(msgId, cardEl) {
+    if (!msgId) return;
+    if (!confirm('Удалить это сообщение из чата и рабочей памяти ИИ?')) return;
+
+    try {
+      const resp = await fetch(`/api/messages/${msgId}/delete/`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      });
+      if (resp.ok) {
+        const data = await resp.json();
+        cardEl?.remove();
+        updateSelectionToolbar();
+
+        const feed = el('chatFeed');
+        if (feed && !feed.querySelector('.msg-card:not([data-welcome-placeholder])')) {
+          renderEmptyState(feed);
+        }
+
+        if (data.session_summary !== undefined) {
+          updateWorkerUi(null, data.session_summary, null, false);
+        }
+      } else {
+        alert('Не удалось удалить сообщение.');
+      }
+    } catch (err) {
+      console.error('Ошибка удаления сообщения:', err);
+    }
+  }
+
+  async function deleteSelectedMessages() {
+    const checkedBoxes = Array.from(document.querySelectorAll('.msg-select-cb:checked'));
+    if (!checkedBoxes.length) return;
+    const ids = checkedBoxes.map((cb) => Number(cb.dataset.msgId)).filter(Boolean);
+    if (!confirm(`Удалить выбранные сообщения (${ids.length} шт.) из чата и контекста модели?`)) return;
+
+    try {
+      const resp = await fetch('/api/messages/delete/', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session_id: state.currentSessionId, message_ids: ids }),
+      });
+      if (resp.ok) {
+        const data = await resp.json();
+        ids.forEach((id) => {
+          document.querySelectorAll(`.msg-card[data-message-id="${id}"]`).forEach((el) => el.remove());
+        });
+        updateSelectionToolbar();
+
+        const feed = el('chatFeed');
+        if (feed && !feed.querySelector('.msg-card:not([data-welcome-placeholder])')) {
+          renderEmptyState(feed);
+        }
+
+        if (data.session_summary !== undefined) {
+          updateWorkerUi(null, data.session_summary, null, false);
+        }
+      } else {
+        alert('Не удалось удалить выбранные сообщения.');
+      }
+    } catch (err) {
+      console.error('Ошибка массового удаления сообщений:', err);
+    }
+  }
+
+  async function clearAllMessages() {
+    if (!state.currentSessionId) return;
+    if (!confirm('Полностью очистить всю историю текущего чата и сбросить память модели?')) return;
+
+    try {
+      const resp = await fetch('/api/messages/delete/', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session_id: state.currentSessionId, delete_all: true }),
+      });
+      if (resp.ok) {
+        const data = await resp.json();
+        const feed = el('chatFeed');
+        if (feed) {
+          renderEmptyState(feed);
+        }
+        if (data.session_summary !== undefined) {
+          updateWorkerUi(null, data.session_summary, null, false);
+        }
+      } else {
+        alert('Не удалось очистить чат.');
+      }
+    } catch (err) {
+      console.error('Ошибка очистки чата:', err);
+    }
+  }
+
   async function loadSession(sessionId) {
     if (!sessionId) return;
     state.currentSessionId = sessionId;
@@ -475,21 +629,7 @@
         feed.innerHTML = '';
         const messages = data.messages || [];
         if (messages.length === 0) {
-          feed.innerHTML = `
-            <div class="msg-card msg-assistant" data-welcome-placeholder="1">
-              <div class="msg-header">
-                <span class="msg-role-badge">ИИДЕАЛ АВТО • ГОТОВ К ДИАГНОСТИКЕ</span>
-                <span>GEMMA 4 12B + AIRLLM GPU</span>
-              </div>
-              <div class="diagnosis-verdict-title">
-                <span>Интеллектуальный стенд автодиагностики и пошагового ремонта</span>
-              </div>
-              <p style="font-size:0.88rem; color:var(--text-secondary);">
-                Опишите симптом своими словами, выберите код ошибки OBD-II из словаря БД, прикрепите лог сканера,
-                запишите голосовой вопрос или сфотографируйте неисправный узел прямо через встроенную камеру / очки RayNeo AR.
-              </p>
-            </div>
-          `;
+          renderEmptyState(feed);
         } else {
           let lastAssistant = null;
           messages.forEach((m) => {
@@ -501,6 +641,7 @@
             updateInspectorAndArFromAssistant(lastAssistant);
           }
           feed.scrollTop = feed.scrollHeight;
+          updateSelectionToolbar();
         }
       }
 
@@ -613,9 +754,9 @@
     formData.append('vehicle_info', vehInput ? vehInput.value.trim() : '');
     formData.append('dtc_codes', JSON.stringify(codesSnapshot));
 
-    if (shotsSnapshot.length > 0) {
-      formData.append('camera_image_b64', shotsSnapshot[0]);
-    }
+    shotsSnapshot.forEach((shot) => {
+      formData.append('camera_image_b64', shot);
+    });
     filesSnapshot.forEach((file) => {
       formData.append('attachments', file);
     });
@@ -659,7 +800,7 @@
     if (voiceBlobSnapshot) {
       optimisticAttachments.push({
         type: 'audio',
-        mode: 'GGML/Audio',
+        mode: 'Gemma 4 Native Audio',
         transcript: voiceTranscriptSnapshot || 'Голосовой запрос',
       });
     }
@@ -753,6 +894,7 @@
           updateInspectorAndArFromAssistant(data.assistant_message);
         }
         feed.scrollTop = feed.scrollHeight;
+        updateSelectionToolbar();
       }
 
       // Запускаем опрос фонового воркера, который обновляет краткую выжимку
@@ -1491,6 +1633,48 @@
           document.querySelector('[data-inspector-tab="paneDtc"]')?.click();
         }
       });
+    });
+
+    // Закрытие мобильных выезжающих панелей
+    document.querySelectorAll('.js-close-mobile-drawer').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        el('panelSidebar')?.classList.remove('mobile-active');
+        el('panelInspector')?.classList.remove('mobile-active');
+        document.querySelectorAll('[data-mobile-view]').forEach((b) => b.classList.remove('active'));
+      });
+    });
+
+    // Делегирование удаления отдельного сообщения и чекбоксов в ленте чата
+    const chatFeedEl = el('chatFeed');
+    chatFeedEl?.addEventListener('click', (e) => {
+      const delBtn = e.target.closest('.btn-msg-delete');
+      if (delBtn) {
+        const msgId = delBtn.dataset.msgId;
+        const card = delBtn.closest('.msg-card');
+        deleteSingleMessage(msgId, card);
+      }
+    });
+
+    chatFeedEl?.addEventListener('change', (e) => {
+      if (e.target.matches('.msg-select-cb')) {
+        updateSelectionToolbar();
+      }
+    });
+
+    el('chkSelectAllMessages')?.addEventListener('change', (e) => {
+      const isChecked = e.target.checked;
+      document.querySelectorAll('.msg-select-cb').forEach((cb) => {
+        cb.checked = isChecked;
+      });
+      updateSelectionToolbar();
+    });
+
+    el('btnDeleteSelectedMessages')?.addEventListener('click', () => {
+      deleteSelectedMessages();
+    });
+
+    el('btnClearAllMessages')?.addEventListener('click', () => {
+      clearAllMessages();
     });
 
     initDraggableArWindows();

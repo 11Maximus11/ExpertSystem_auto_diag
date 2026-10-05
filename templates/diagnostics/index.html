@@ -81,7 +81,7 @@
     <aside class="panel-sidebar" id="panelSidebar" aria-label="Диалоги и память контекста">
       <div class="panel-section-header">
         <span>Журнал диагностик</span>
-        <span style="font-family: var(--font-mono); font-size: 0.72rem; color: var(--text-muted);">Окно {{ active_settings.context_window_tokens }} ток.</span>
+        <button type="button" class="btn-drawer-close js-close-mobile-drawer" aria-label="Закрыть панель" title="Закрыть">✕</button>
       </div>
 
       <div class="scrollable-y">
@@ -156,6 +156,28 @@
         </div>
       </div>
 
+      <!-- Панель массового управления и удаления сообщений (Чекбоксы / Выделить все) -->
+      <div class="chat-selection-toolbar" id="chatSelectionToolbar" style="display:none;" aria-label="Управление сообщениями">
+        <div class="selection-info">
+          <label class="custom-checkbox-wrap" title="Выделить все сообщения в чате">
+            <input type="checkbox" id="chkSelectAllMessages" class="custom-checkbox" />
+            <span style="font-size:0.8rem; font-weight:600;">Выделить все</span>
+          </label>
+          <span class="selection-counter" id="selectionCountBadge">0 выбрано</span>
+        </div>
+        <div class="selection-actions">
+          <button type="button" class="btn-action-danger" id="btnDeleteSelectedMessages" title="Удалить выбранные сообщения из чата и контекста памяти">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+            </svg>
+            <span>Удалить выбранные</span>
+          </button>
+          <button type="button" class="btn-action-ghost" id="btnClearAllMessages" title="Полностью очистить все сообщения сессии">
+            Очистить чат
+          </button>
+        </div>
+      </div>
+
       <!-- Лента сообщений и карточек ремонта -->
       <div class="chat-feed" id="chatFeed" role="log" aria-live="polite">
         <!-- Заполняется динамически через JS -->
@@ -165,7 +187,7 @@
       <div class="composer-dock">
         <div class="staging-bar" id="stagingBar" aria-label="Прикрепленные материалы и коды ошибок"></div>
 
-        <input type="file" id="hiddenFileInput" multiple accept="image/*,.txt,.log,.obd,.json,.csv,.tsv,.pdf,.docx,.xml,.html,.md,.ini,.yaml,.wav,.mp3,.ogg,.webm,.m4a,.flac" style="display:none;" />
+        <input type="file" id="hiddenFileInput" multiple accept="image/*,.txt,.log,.obd,.json,.csv,.tsv,.pdf,.docx,.xlsx,.xml,.html,.md,.ini,.yaml,.wav,.mp3,.ogg,.webm,.m4a,.flac" style="display:none;" />
 
         <div class="composer-row">
           <div class="composer-tools">
@@ -176,7 +198,7 @@
               </svg>
             </button>
 
-            <button type="button" class="btn-tool" id="btnAttachFile" title="Прикрепить файл (фото, лог .obd/.log/.txt, .pdf, .docx, аудиозапись)" aria-label="Прикрепить файл">
+            <button type="button" class="btn-tool" id="btnAttachFile" title="Прикрепить файл (фото, лог .obd/.log/.txt, .pdf, .docx, .xlsx, аудиозапись)" aria-label="Прикрепить файл">
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/>
               </svg>
@@ -213,8 +235,8 @@
       </div>
     </section>
 
-    <!-- 3. ПРАВАЯ ПАНЕЛЬ: ЧЕКЛИСТ / СЛОВАРЬ DTC / ЯДРО GEMMA 4 & AIRLLM -->
-    <aside class="panel-inspector" id="panelInspector" aria-label="Инспектор ремонта, словарь ошибок и настройки ИИ">
+    <!-- 3. ПРАВАЯ ПАНЕЛЬ: ЧЕКЛИСТ / СЛОВАРЬ DTC -->
+    <aside class="panel-inspector" id="panelInspector" aria-label="Инспектор ремонта и словарь ошибок">
       <div class="inspector-tabs" role="tablist">
         <button type="button" class="inspector-tab-btn active" data-inspector-tab="paneChecklist" role="tab" aria-selected="true">
           Чеклист &amp; Инвентарь
@@ -222,9 +244,7 @@
         <button type="button" class="inspector-tab-btn" data-inspector-tab="paneDtc" role="tab" aria-selected="false">
           Словарь DTC ({{ hw_telemetry.rag.total_dtc_codes }})
         </button>
-        <button type="button" class="inspector-tab-btn" data-inspector-tab="paneSettings" role="tab" aria-selected="false">
-          Gemma 4 &amp; Vulkan
-        </button>
+        <button type="button" class="btn-drawer-close js-close-mobile-drawer" aria-label="Закрыть панель" title="Закрыть">✕</button>
       </div>
 
       <!-- Вкладка 1: Сводный чеклист -->
@@ -249,75 +269,6 @@
         </div>
         <div class="scrollable-y" id="dtcDictionaryList">
           <!-- Загружается из /api/dtc/ -->
-        </div>
-      </div>
-
-      <!-- Вкладка 3: Настройки Gemma 4, AirLLM и окна контекста -->
-      <div class="inspector-pane" id="paneSettings" role="tabpanel">
-        <div class="scrollable-y">
-          <div style="margin-bottom: 12px;">
-            <label for="settingBackend" style="display:block; font-size:0.78rem; font-weight:600; margin-bottom:4px;">
-              Бэкенд инференса:
-            </label>
-            <select id="settingBackend" class="settings-select">
-              <option value="airllm_vulkan" selected>AirLLM Gemma 4 12B Unified + GPU VRAM DMA</option>
-            </select>
-          </div>
-
-          <div style="margin-bottom: 12px;">
-            <label for="settingAirllmModel" style="display:block; font-size:0.78rem; font-weight:600; margin-bottom:4px;">
-              Модель Google Gemma 4 12B (AirLLM):
-            </label>
-            <input type="text" id="settingAirllmModel" class="settings-input" value="{{ active_settings.airllm_model_id }}" />
-          </div>
-
-          <div style="margin-bottom: 12px;">
-            <label for="settingAirllmCompression" style="display:block; font-size:0.78rem; font-weight:600; margin-bottom:4px;">
-              Формат квантования слоев:
-            </label>
-            <select id="settingAirllmCompression" class="settings-select">
-              <option value="4bit" {% if active_settings.airllm_compression == "4bit" %}selected{% endif %}>4-bit W4A16 QAT (Рекомендуется для 8 ГБ VRAM)</option>
-              <option value="none" {% if active_settings.airllm_compression == "none" %}selected{% endif %}>BFloat16 / Без квантования</option>
-            </select>
-          </div>
-
-          <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 12px;">
-            <div>
-              <label for="settingGpuLayers" style="display:block; font-size:0.75rem; font-weight:600; margin-bottom:4px;">
-                Слоев в GPU (0..48):
-              </label>
-              <input type="number" id="settingGpuLayers" class="settings-input" value="{{ active_settings.vulkan_gpu_layers }}" min="0" max="48" />
-            </div>
-            <div>
-              <label for="settingCtxTokens" style="display:block; font-size:0.75rem; font-weight:600; margin-bottom:4px;">
-                Окно контекста:
-              </label>
-              <input type="number" id="settingCtxTokens" class="settings-input" value="{{ active_settings.context_window_tokens }}" step="1024" min="16384" max="65536" />
-            </div>
-          </div>
-
-          <div style="margin-bottom: 12px;">
-            <label for="settingVoiceMode" style="display:block; font-size:0.78rem; font-weight:600; margin-bottom:4px;">
-              Голосовой вход:
-            </label>
-            <select id="settingVoiceMode" class="settings-select">
-              <option value="direct_audio" selected>Прямой мультимодальный вход Gemma 4 (embed_audio)</option>
-            </select>
-          </div>
-
-          <button type="button" class="btn-new-session" id="btnSaveSettings" style="margin-top: 6px;">
-            Сохранить конфигурацию ядра
-          </button>
-
-          <div class="context-worker-card" style="margin-top: 12px; font-family: var(--font-mono); font-size: 0.72rem;">
-            <div style="font-weight:700; color:var(--accent-cyan); margin-bottom:6px;">ДИАГНОСТИКА AIRLLM &amp; GPU VRAM:</div>
-            <div>GPU: {{ hw_telemetry.vulkan.device_name }}</div>
-            <div>API: Vulkan {{ hw_telemetry.vulkan.api_version }} + PyTorch CUDA</div>
-            <div>VRAM: {{ hw_telemetry.vulkan.vram_free_mb }} / {{ hw_telemetry.vulkan.vram_total_mb }} МБ</div>
-            <div>Шарды AirLLM: {{ hw_telemetry.airllm.shards_count }} слоев (Gemma 4 12B)</div>
-            <div>Окно контекста: {{ hw_telemetry.context_window }} токенов (ответ до ~{{ hw_telemetry.max_response_tokens }})</div>
-            <div>RAG-документов: {{ hw_telemetry.rag.total_documents }} (кодов: {{ hw_telemetry.rag.total_dtc_codes }})</div>
-          </div>
         </div>
       </div>
     </aside>

@@ -277,3 +277,47 @@ class AIdealAutoComprehensiveTests(TransactionTestCase):
         trimmed = truncate_to_last_sentence(cut_off_text)
         self.assertTrue(trimmed.endswith("свечу."))
         self.assertNotIn("сопротивле", trimmed)
+
+    def test_09_message_deletion_and_multiformat_documents(self):
+        """Проверка удаления сообщений из чата/контекста и расширенного парсинга документов."""
+        session = DialogSession.objects.create(
+            title="Тест удаления сообщений",
+            vehicle_info="BMW 320d F30",
+            summary="Выжимка: обнаружены множественные пропуски зажигания P0300.",
+        )
+        msg1 = ChatMessage.objects.create(session=session, role="user", content="Вопрос 1: троит двигатель")
+        msg2 = ChatMessage.objects.create(session=session, role="assistant", content="Ответ 1: проверьте свечи")
+        msg3 = ChatMessage.objects.create(session=session, role="user", content="Вопрос 2: проверил свечи")
+
+        # 1. Удаление одного сообщения через POST/DELETE /api/messages/<id>/delete/
+        del_single_resp = self.client.post(f"/api/messages/{msg1.id}/delete/")
+        self.assertEqual(del_single_resp.status_code, 200)
+        self.assertFalse(ChatMessage.objects.filter(id=msg1.id).exists())
+
+        # 2. Массовое удаление через POST /api/messages/delete/
+        del_batch_resp = self.client.post(
+            "/api/messages/delete/",
+            data=json.dumps({"message_ids": [msg2.id]}),
+            content_type="application/json",
+        )
+        self.assertEqual(del_batch_resp.status_code, 200)
+        self.assertFalse(ChatMessage.objects.filter(id=msg2.id).exists())
+        self.assertTrue(ChatMessage.objects.filter(id=msg3.id).exists())
+
+        # 3. Полная очистка чата через POST /api/messages/delete/ с delete_all
+        clear_all_resp = self.client.post(
+            "/api/messages/delete/",
+            data=json.dumps({"session_id": str(session.id), "delete_all": True}),
+            content_type="application/json",
+        )
+        self.assertEqual(clear_all_resp.status_code, 200)
+        self.assertEqual(ChatMessage.objects.filter(session=session).count(), 0)
+        session.refresh_from_db()
+        self.assertEqual(session.summary, "")
+
+        # 4. Проверка парсинга текстовых/CSV/XLSX документов
+        csv_data = "Код_ошибки,Описание,Статус\nP0171,Система слишком бедная,Активна\nP0420,Эффективность катализатора ниже порога,В памяти".encode("utf-8")
+        parsed_csv = parse_uploaded_document(csv_data, "diagnostics_table.csv")
+        self.assertIn("P0171", parsed_csv["detected_dtc_codes"])
+        self.assertIn("P0420", parsed_csv["detected_dtc_codes"])
+        self.assertIn("Система слишком бедная", parsed_csv["extracted_text"])

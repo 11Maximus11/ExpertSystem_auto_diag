@@ -17,8 +17,8 @@ from typing import Any, Dict, List
 from PIL import Image, ImageStat
 
 
-AUDIO_EXTENSIONS = {".wav", ".mp3", ".ogg", ".m4a", ".flac", ".webm", ".aac"}
-IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif"}
+AUDIO_EXTENSIONS = {".wav", ".mp3", ".ogg", ".m4a", ".flac", ".webm", ".aac", ".opus", ".wma"}
+IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif", ".tiff", ".tif", ".avif", ".jfif"}
 
 
 def extract_dtc_codes(text: str) -> List[str]:
@@ -27,16 +27,69 @@ def extract_dtc_codes(text: str) -> List[str]:
     return list(dict.fromkeys(found))
 
 
+def _extract_xlsx_text(file_bytes: bytes) -> str:
+    """Извлекает текстовые таблицы из .xlsx (Office Open XML) без внешних тяжёлых зависимостей."""
+    import xml.etree.ElementTree as ET
+    import zipfile
+
+    rows_out: List[str] = []
+    with zipfile.ZipFile(io.BytesIO(file_bytes)) as zf:
+        shared_strings: List[str] = []
+        if "xl/sharedStrings.xml" in zf.namelist():
+            root = ET.fromstring(zf.read("xl/sharedStrings.xml"))
+            for si in root.iter():
+                if si.tag.endswith("}si") or si.tag == "si":
+                    texts = [
+                        t.text or ""
+                        for t in si.iter()
+                        if (t.tag.endswith("}t") or t.tag == "t") and t.text
+                    ]
+                    shared_strings.append("".join(texts))
+
+        sheet_files = sorted(
+            name for name in zf.namelist() if name.startswith("xl/worksheets/sheet") and name.endswith(".xml")
+        )
+        for sheet_name in sheet_files[:4]:
+            root = ET.fromstring(zf.read(sheet_name))
+            for row_el in root.iter():
+                if row_el.tag.endswith("}row") or row_el.tag == "row":
+                    row_vals: List[str] = []
+                    for cell in row_el:
+                        if not (cell.tag.endswith("}c") or cell.tag == "c"):
+                            continue
+                        cell_type = cell.attrib.get("t", "")
+                        val_text = ""
+                        for child in cell:
+                            if child.tag.endswith("}v") or child.tag == "v":
+                                val_text = (child.text or "").strip()
+                            elif child.tag.endswith("}is") or child.tag == "is":
+                                val_text = "".join(
+                                    (t.text or "") for t in child.iter() if t.text
+                                ).strip()
+                        if cell_type == "s" and val_text.isdigit():
+                            idx = int(val_text)
+                            if 0 <= idx < len(shared_strings):
+                                val_text = shared_strings[idx]
+                        if val_text:
+                            row_vals.append(val_text)
+                    if row_vals:
+                        rows_out.append(" | ".join(row_vals))
+                    if len(rows_out) >= 120:
+                        break
+    return "\n".join(rows_out)
+
+
 def parse_uploaded_document(file_bytes: bytes, filename: str) -> Dict[str, Any]:
     """
-    Извлекает текстовое содержимое, коды ошибок и ключевые параметры телеметрии
+    Извлекает текстовое содержимое, коды ошибок, встроенные изображения и ключевые параметры телеметрии
     из прикреплённого документа любого поддерживаемого формата:
-    .txt, .log, .obd, .json, .csv, .tsv, .pdf, .docx, .xml, .html, .md, .ini, .yaml,
+    .txt, .log, .obd, .json, .csv, .tsv, .pdf, .docx, .xlsx, .xml, .html, .md, .ini, .yaml, .rtf,
     а также декодирует аудиофайлы в 16 кГц float32 массив для прямой подачи в Gemma 4 12B.
     """
     ext = Path(filename or "document.txt").suffix.lower()
     extracted_text = ""
     audio_waveform_16k = None
+    embedded_images_bytes: List[bytes] = []
 
     try:
         if ext in AUDIO_EXTENSIONS:
@@ -54,6 +107,11 @@ def parse_uploaded_document(file_bytes: bytes, filename: str) -> Dict[str, Any]:
                 if voice_res.get("audio_attached_to_model")
                 else f"[Аудиофайл {filename}: не удалось декодировать аудиопоток]"
             )
+        elif ext in IMAGE_EXTENSIONS:
+            img_info = analyze_image_bytes(file_bytes, filename=filename)
+            if img_info.get("raw_jpeg_bytes"):
+                embedded_images_bytes.append(img_info["raw_jpeg_bytes"])
+            extracted_text = f"[Изображение {filename}: {img_info.get('visual_summary', '')}]"
         elif ext in {".txt", ".log", ".md", ".obd", ".ini", ".cfg", ".conf", ".yaml", ".yml"}:
             extracted_text = file_bytes.decode("utf-8", errors="replace")
         elif ext in {".xml", ".html", ".htm", ".rtf"}:
@@ -69,13 +127,25 @@ def parse_uploaded_document(file_bytes: bytes, filename: str) -> Dict[str, Any]:
             reader = csv.reader(io.StringIO(decoded), delimiter=delimiter)
             rows = [", ".join(row) for _, row in zip(range(120), reader)]
             extracted_text = "\n".join(rows)
+        elif ext == ".xlsx":
+            extracted_text = _extract_xlsx_text(file_bytes)
         elif ext == ".pdf":
             from pypdf import PdfReader
 
             reader = PdfReader(io.BytesIO(file_bytes))
-            pages_text = [page.extract_text() or "" for page in reader.pages[:15]]
+            pages_text = []
+            for page in reader.pages[:15]:
+                pages_text.append(page.extract_text() or "")
+                try:
+                    if len(embedded_images_bytes) < 2 and hasattr(page, "images"):
+                        for img_file in page.images[:2]:
+                            if getattr(img_file, "data", None):
+                                embedded_images_bytes.append(img_file.data)
+                except Exception:
+                    pass
             extracted_text = "\n".join(pages_text)
         elif ext == ".docx":
+            import zipfile
             import docx
 
             doc = docx.Document(io.BytesIO(file_bytes))
@@ -86,6 +156,15 @@ def parse_uploaded_document(file_bytes: bytes, filename: str) -> Dict[str, Any]:
                     if row_txt:
                         paragraphs.append(row_txt)
             extracted_text = "\n".join(paragraphs)
+            try:
+                with zipfile.ZipFile(io.BytesIO(file_bytes)) as zf:
+                    for name in zf.namelist():
+                        if name.startswith("word/media/") and Path(name).suffix.lower() in IMAGE_EXTENSIONS:
+                            embedded_images_bytes.append(zf.read(name))
+                            if len(embedded_images_bytes) >= 2:
+                                break
+            except Exception:
+                pass
         else:
             extracted_text = file_bytes.decode("utf-8", errors="replace")
     except Exception as exc:
@@ -107,6 +186,7 @@ def parse_uploaded_document(file_bytes: bytes, filename: str) -> Dict[str, Any]:
         "filename": filename,
         "extension": ext,
         "text_snippet": snippet,
+        "extracted_text": extracted_text,
         "raw_excerpt": snippet[:1600],
         "summary": f"[{filename}] Коды: {', '.join(dtc_codes) if dtc_codes else 'нет'}. {snippet[:500]}",
         "detected_dtc_codes": dtc_codes,
@@ -114,14 +194,19 @@ def parse_uploaded_document(file_bytes: bytes, filename: str) -> Dict[str, Any]:
         "key_metrics": key_metrics,
         "char_length": len(extracted_text),
         "audio_waveform_16k": audio_waveform_16k,
+        "embedded_images_bytes": embedded_images_bytes,
     }
 
 
-def analyze_image_bytes(image_bytes: bytes, filename: str = "capture.jpg") -> Dict[str, Any]:
+def analyze_image_bytes(
+    image_bytes: bytes,
+    filename: str = "capture.jpg",
+    abs_path: str = "",
+) -> Dict[str, Any]:
     """
     Выполняет предварительный визуально-технический анализ изображения (разрешение, экспозиция,
-    цветовые доминанты индикаторов приборной панели / следов перегрева или подтёков)
-    и готовит сжатый data URL base64 для прямой передачи в мультимодальную модель Gemma 4 12B (embed_vision).
+    цветовые доминанты индикаторов приборной панели / следов перегрева или подтёков / обрыва проводки)
+    и готовит сжатый JPEG-поток и data URL base64 для прямой передачи в мультимодальную модель Gemma 4 12B (embed_vision).
     """
     try:
         img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
@@ -177,20 +262,22 @@ def analyze_image_bytes(image_bytes: bytes, filename: str = "capture.jpg") -> Di
                 )
         elif metallic_ratio > 0.30:
             visual_clues.append(
-                "Обнаружены металлические поверхности агрегатов подкапотного пространства или подвески"
+                "Обнаружены металлические поверхности агрегатов, разъёмов или жгутов подкапотного пространства"
             )
         else:
             visual_clues.append(
-                f"Фотография узла/детали автомобиля ({width}x{height} пикс., яркость {int(brightness * 100)}%)"
+                f"Фотография узла/проводки/детали автомобиля ({width}x{height} пикс., яркость {int(brightness * 100)}%)"
             )
 
         out_buf = io.BytesIO()
         resized.save(out_buf, format="JPEG", quality=85)
-        b64_str = base64.b64encode(out_buf.getvalue()).decode("utf-8")
+        jpeg_bytes = out_buf.getvalue()
+        b64_str = base64.b64encode(jpeg_bytes).decode("utf-8")
         data_url = f"data:image/jpeg;base64,{b64_str}"
 
         return {
             "filename": filename,
+            "abs_path": str(abs_path or ""),
             "width": width,
             "height": height,
             "brightness": round(brightness, 2),
@@ -199,17 +286,18 @@ def analyze_image_bytes(image_bytes: bytes, filename: str = "capture.jpg") -> Di
             "visual_summary": "; ".join(visual_clues),
             "data_url": data_url,
             "data_uri": data_url,
-            "raw_jpeg_bytes": out_buf.getvalue(),
+            "raw_jpeg_bytes": jpeg_bytes,
         }
     except Exception as exc:
         return {
             "filename": filename,
+            "abs_path": str(abs_path or ""),
             "error": str(exc),
             "visual_clues": ["Изображение прикреплено для визуального осмотра"],
             "visual_summary": "Изображение прикреплено для визуального осмотра",
             "data_url": "",
             "data_uri": "",
-            "raw_jpeg_bytes": b"",
+            "raw_jpeg_bytes": image_bytes or b"",
         }
 
 

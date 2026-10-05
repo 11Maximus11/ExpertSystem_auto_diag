@@ -11,8 +11,11 @@ urlpatterns = [
     path("api/sessions/", views.api_sessions, name="api_sessions"),
     path("api/sessions/<uuid:session_id>/", views.api_session_detail, name="api_session_detail"),
     path("api/worker-status/<uuid:session_id>/", views.api_worker_status, name="api_worker_status"),
-    # Главный API диагностики и чеклистов
+    # Главный API диагностики, чеклистов и удаления сообщений
     path("api/ask/", views.api_ask_expert, name="api_ask_expert"),
+    path("api/messages/delete/", views.api_delete_messages, name="api_delete_messages"),
+    path("api/messages/<int:message_id>/delete/", views.api_delete_single_message, name="api_delete_single_message"),
+    path("api/messages/<int:message_id>/", views.api_delete_single_message, name="api_delete_single_message_direct"),
     path("api/messages/<int:message_id>/toggle-task/", views.api_toggle_task, name="api_toggle_task"),
     # API словаря кодов ошибок (DTC) и телеметрии
     path("api/dtc/", views.api_dtc_dictionary, name="api_dtc_dictionary"),

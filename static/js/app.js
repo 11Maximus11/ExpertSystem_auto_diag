@@ -175,11 +175,12 @@
 
       setTimeout(() => {
         if (type === 'prompt' && inputEl) {
-          inputEl.focus();
+          inputEl.focus({ preventScroll: true });
           inputEl.select();
         } else if (btnConfirm) {
-          btnConfirm.focus();
+          btnConfirm.focus({ preventScroll: true });
         }
+        if (window.scrollX !== 0) window.scrollTo(0, 0);
       }, 40);
 
       let keyHandler = null;
@@ -881,9 +882,8 @@
     if (!feed) return;
     const doScroll = () => {
       feed.scrollTop = feed.scrollHeight;
-      const lastChild = feed.lastElementChild;
-      if (lastChild && typeof lastChild.scrollIntoView === 'function') {
-        lastChild.scrollIntoView({ behavior: forceImmediate ? 'auto' : 'smooth', block: 'end' });
+      if (window.scrollX !== 0) {
+        window.scrollTo(0, window.scrollY);
       }
     };
     if (forceImmediate) {
@@ -2491,6 +2491,15 @@
   }
 
   document.addEventListener('DOMContentLoaded', () => {
+    window.addEventListener(
+      'scroll',
+      () => {
+        if (window.scrollX !== 0) {
+          window.scrollTo(0, window.scrollY);
+        }
+      },
+      { passive: true }
+    );
     initEvents();
     loadSession(state.currentSessionId);
     loadDtcDictionary();

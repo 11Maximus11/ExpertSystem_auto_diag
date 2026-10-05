@@ -53,6 +53,9 @@ html {
   -webkit-text-size-adjust: 100%;
   overscroll-behavior: none;
   height: 100%;
+  width: 100%;
+  max-width: 100%;
+  overflow-x: hidden;
 }
 
 body {
@@ -60,8 +63,10 @@ body {
   background-color: var(--bg-base);
   color: var(--text-primary);
   height: 100dvh;
-  width: 100vw;
-  overflow: hidden;
+  width: 100%;
+  max-width: 100%;
+  overflow-x: hidden;
+  overflow-y: hidden;
   display: flex;
   flex-direction: column;
   line-height: 1.5;
@@ -71,7 +76,8 @@ body {
 body::before {
   content: "";
   position: fixed;
-  inset: -30px;
+  inset: 0;
+  transform: scale(1.08);
   background: url("/static/images/aideal_logo.jpg") no-repeat center center / cover;
   filter: blur(50px) brightness(0.18) contrast(1.15) saturate(1.2);
   pointer-events: none;
@@ -86,10 +92,12 @@ body.ar-glasses-mode::before {
 
 .app-header,
 .workbench-grid,
-.modal-backdrop,
 .mobile-bottom-nav {
   position: relative;
   z-index: 1;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
 }
 
 input,
@@ -1617,61 +1625,175 @@ body.ar-glasses-mode .ar-hud-overlay {
 }
 
 @media (max-width: 768px) {
-  .workbench-grid {
-    grid-template-columns: 1fr;
+  /* Шапка на мобильных устройствах — строгий подгон по ширине экрана */
+  .app-header {
+    height: 52px;
+    min-height: 52px;
+    padding: env(safe-area-inset-top, 0px) 10px 0 10px;
+    gap: 8px;
+    width: 100%;
+    max-width: 100%;
+    box-sizing: border-box;
+    overflow: hidden;
+  }
+  .brand-group {
+    gap: 8px;
     min-width: 0;
-    max-width: 100vw;
+    flex-shrink: 1;
+    overflow: hidden;
+  }
+  .brand-logo {
+    width: 32px;
+    height: 32px;
+    border-radius: 8px;
+    flex-shrink: 0;
+  }
+  .brand-title {
+    font-size: 0.92rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .brand-subtext {
+    display: none !important;
+  }
+  .badge-vulkan {
+    font-size: 0.65rem;
+    padding: 1px 5px;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+  .header-telemetry {
+    display: none !important;
+  }
+  .header-actions {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    flex-shrink: 0;
+  }
+  .user-pill {
+    padding: 4px 7px;
+    font-size: 0.72rem;
+    max-width: 78px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .btn-action-ghost#btnLogout,
+  #btnOpenAuthModal {
+    padding: 4px 8px !important;
+    font-size: 0.72rem !important;
+  }
+  .btn-ar-launch {
+    padding: 6px 9px;
+  }
+  .btn-ar-launch span {
+    display: none !important;
+  }
+  .btn-header-tool {
+    padding: 6px 9px;
+  }
+  .btn-header-tool span {
+    display: none !important;
+  }
+  .btn-icon-top {
+    width: 34px;
+    height: 34px;
+    padding: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+  }
+
+  /* Рабочий стенд: гибкий контейнер на 100% ширины без паразитных колонок */
+  .workbench-grid {
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
     overflow-x: hidden;
+    flex: 1;
   }
   .panel-main {
+    width: 100%;
     min-width: 0;
-    max-width: 100vw;
+    max-width: 100%;
     overflow-x: hidden;
-  }
-  .panel-sidebar {
-    position: fixed;
-    inset: 56px 0 58px 0;
-    z-index: 50;
-    display: none;
-    box-shadow: 0 0 40px rgba(0, 0, 0, 0.75);
-  }
-  .panel-sidebar.mobile-active {
+    flex: 1;
     display: flex;
+    flex-direction: column;
   }
+  .panel-sidebar,
   .panel-inspector {
     position: fixed;
-    inset: 56px 0 58px 0;
+    inset: 52px 0 58px 0;
+    width: 100%;
+    max-width: 100%;
+    box-sizing: border-box;
     z-index: 50;
     display: none;
     box-shadow: 0 0 40px rgba(0, 0, 0, 0.75);
   }
+  .panel-sidebar.mobile-active,
   .panel-inspector.mobile-active {
     display: flex;
   }
+
+  /* Нижняя мобильная навигация */
   .mobile-bottom-nav {
     display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    width: 100%;
+    max-width: 100%;
+    box-sizing: border-box;
+    padding: 6px 4px calc(6px + env(safe-area-inset-bottom, 0px)) 4px;
+    gap: 2px;
   }
-  .header-telemetry {
-    display: none;
+  .mobile-nav-btn {
+    padding: 6px 2px;
+    font-size: 0.68rem;
+    gap: 3px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .mobile-nav-btn svg {
+    width: 18px;
+    height: 18px;
+    flex-shrink: 0;
   }
 
-  /* Компоновщик ввода на смартфонах — 2 строки без горизонтального переполнения */
+  /* Компоновщик ввода на смартфонах */
   .composer-dock {
     padding: 8px 10px calc(8px + env(safe-area-inset-bottom, 0px)) 10px;
-    max-width: 100vw;
+    width: 100%;
+    max-width: 100%;
     box-sizing: border-box;
   }
   .composer-row {
+    display: flex;
     flex-wrap: wrap;
+    align-items: center;
     gap: 8px;
     width: 100%;
+    box-sizing: border-box;
   }
   .composer-textarea {
     flex: 1 1 100%;
     order: 1;
     width: 100%;
+    min-width: 0;
     box-sizing: border-box;
-    min-height: 48px;
+    min-height: 44px;
+    max-height: 120px;
+    padding: 10px 12px;
+    font-size: 0.88rem;
   }
   .composer-tools {
     order: 2;
@@ -1679,13 +1801,92 @@ body.ar-glasses-mode .ar-hud-overlay {
     align-items: center;
     gap: 6px;
     flex-wrap: nowrap;
+    min-width: 0;
+  }
+  .btn-tool {
+    width: 38px;
+    height: 38px;
+    flex-shrink: 0;
+  }
+  .mic-button-wrap {
+    width: 38px;
+    height: 38px;
+    flex-shrink: 0;
   }
   .btn-send {
     order: 3;
     margin-left: auto;
-    height: 44px;
-    padding: 0 16px;
+    height: 42px;
+    padding: 0 14px;
+    font-size: 0.85rem;
     flex-shrink: 0;
+  }
+
+  /* Чат и карточки */
+  .chat-feed {
+    padding: 10px 10px 14px 10px;
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
+    box-sizing: border-box;
+    overflow-x: hidden;
+  }
+  .msg-card {
+    padding: 12px;
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
+    box-sizing: border-box;
+    word-break: break-word;
+    overflow-wrap: break-word;
+  }
+
+  /* Панель массового управления сообщениями */
+  .chat-selection-toolbar {
+    flex-wrap: wrap;
+    gap: 6px;
+    padding: 6px 10px;
+    width: 100%;
+    box-sizing: border-box;
+  }
+  .selection-actions {
+    flex-wrap: wrap;
+    gap: 6px;
+    width: 100%;
+    justify-content: flex-end;
+  }
+  .selection-actions button {
+    font-size: 0.72rem;
+    padding: 5px 8px;
+  }
+
+  /* Модальные окна */
+  .modal-backdrop {
+    padding: 12px;
+    box-sizing: border-box;
+    width: 100%;
+    max-width: 100%;
+  }
+  .custom-dialog-card,
+  .settings-modal-card,
+  .project-modal-card,
+  .auth-modal-card,
+  .camera-modal-card {
+    width: 100% !important;
+    max-width: min(440px, calc(100vw - 24px)) !important;
+    box-sizing: border-box !important;
+    margin: auto !important;
+  }
+  .custom-dialog-actions {
+    display: flex;
+    gap: 8px;
+    width: 100%;
+    box-sizing: border-box;
+  }
+  .custom-dialog-btn-cancel,
+  .custom-dialog-btn-confirm {
+    flex: 1 1 50%;
+    justify-content: center;
   }
 
   .faults-grid {
@@ -1701,17 +1902,6 @@ body.ar-glasses-mode .ar-hud-overlay {
   }
   .quick-scenarios {
     width: 100%;
-  }
-  .chat-feed {
-    padding: 10px;
-    min-width: 0;
-    max-width: 100vw;
-    overflow-x: hidden;
-  }
-  .msg-card {
-    padding: 12px;
-    width: 100%;
-    box-sizing: border-box;
   }
 
   #arWindowCamera {
@@ -1731,33 +1921,26 @@ body.ar-glasses-mode .ar-hud-overlay {
 
 @media (max-width: 480px) {
   .app-header {
-    padding: 0 10px;
-    height: 52px;
+    height: 50px;
+    min-height: 50px;
+    padding: 0 8px;
   }
   .brand-title {
-    font-size: 0.96rem;
+    font-size: 0.86rem;
   }
-  .brand-badge {
-    display: none;
+  .badge-vulkan {
+    font-size: 0.62rem;
+    padding: 1px 4px;
   }
-  .btn-ar-launch span {
-    display: none;
-  }
-  .btn-ar-launch {
-    padding: 6px 10px;
-  }
-  .btn-tool {
-    width: 40px;
-    height: 40px;
-  }
+  .btn-tool,
   .mic-button-wrap {
-    width: 40px;
-    height: 40px;
+    width: 36px;
+    height: 36px;
   }
   .btn-send {
-    height: 40px;
+    height: 38px;
     padding: 0 12px;
-    font-size: 0.85rem;
+    font-size: 0.82rem;
   }
 }
 

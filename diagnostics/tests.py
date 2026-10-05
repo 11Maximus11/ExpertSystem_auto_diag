@@ -391,9 +391,27 @@ class AIdealAutoComprehensiveTests(TransactionTestCase):
         self.assertEqual(len(filtered_tag_sessions), 1)
         self.assertEqual(filtered_tag_sessions[0]["tag"], "ДВС")
 
-        # 8. Проверка отдачи главной страницы
+        # 8. Проверка получения деталей сессии (GET /api/sessions/<id>/)
+        detail_resp = self.client.get(f"/api/sessions/{s1_id}/")
+        self.assertEqual(detail_resp.status_code, 200)
+        detail_json = detail_resp.json()
+        self.assertEqual(detail_json["id"], s1_id)
+        self.assertEqual(detail_json["title"], "Skoda Octavia — Пропуск зажигания")
+        self.assertEqual(detail_json["tag"], "ДВС")
+        self.assertIn("messages", detail_json)
+
+        # 9. Проверка обновления деталей сессии (PATCH /api/sessions/<id>/)
+        patch_resp = self.client.patch(
+            f"/api/sessions/{s1_id}/",
+            data=json.dumps({"summary": "Проверено состояние свечей"}),
+            content_type="application/json",
+        )
+        self.assertEqual(patch_resp.status_code, 200)
+
+        # 10. Проверка отдачи главной страницы
         idx_resp = self.client.get("/")
         self.assertEqual(idx_resp.status_code, 200)
         self.assertIn("projects", idx_resp.context)
         self.assertIn("all_tags", idx_resp.context)
+
 

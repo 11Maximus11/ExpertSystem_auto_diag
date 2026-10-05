@@ -322,6 +322,44 @@ def api_session_detail(request: HttpRequest, session_id: uuid.UUID) -> JsonRespo
         if "summary" in payload:
             session.summary = str(payload["summary"]).strip()
         session.save()
+        return JsonResponse({"success": True, "session": session.to_dict()})
+
+    # Обработка GET-запроса: детали сессии и список всех сообщений
+    messages_data = [
+        {
+            "id": m.id,
+            "role": m.role,
+            "content": m.content,
+            "structured_data": m.structured_data,
+            "attachments": _sanitize_attachments(m.attachments),
+            "dtc_codes": m.dtc_codes,
+            "created_at": m.created_at.strftime("%H:%M"),
+        }
+        for m in session.messages.all()
+    ]
+
+    active_settings = SystemSettings.get_active()
+    worker_live = context_worker_manager.get_worker_state(str(session.id))
+
+    return JsonResponse(
+        {
+            "id": str(session.id),
+            "title": session.title,
+            "is_pinned": session.is_pinned,
+            "tag": session.tag,
+            "project_id": session.project_id,
+            "project_name": session.project.name if session.project else None,
+            "vehicle_info": session.vehicle_info,
+            "summary": session.summary,
+            "worker_status": session.worker_status,
+            "worker_version": session.worker_version,
+            "worker_last_duration_ms": session.worker_last_duration_ms,
+            "worker_live": worker_live,
+            "cross_dialog_memory_enabled": active_settings.cross_dialog_memory_enabled,
+            "global_memory_summary": active_settings.global_memory_summary,
+            "messages": messages_data,
+        }
+    )
 
 
 @csrf_exempt
@@ -369,38 +407,6 @@ def api_session_rename(request: HttpRequest, session_id: uuid.UUID) -> JsonRespo
         session.title = title
         session.save(update_fields=["title", "updated_at"])
     return JsonResponse({"id": str(session.id), "title": session.title})
-
-    messages_data = [
-        {
-            "id": m.id,
-            "role": m.role,
-            "content": m.content,
-            "structured_data": m.structured_data,
-            "attachments": _sanitize_attachments(m.attachments),
-            "dtc_codes": m.dtc_codes,
-            "created_at": m.created_at.strftime("%H:%M"),
-        }
-        for m in session.messages.all()
-    ]
-
-    active_settings = SystemSettings.get_active()
-    worker_live = context_worker_manager.get_worker_state(str(session.id))
-
-    return JsonResponse(
-        {
-            "id": str(session.id),
-            "title": session.title,
-            "vehicle_info": session.vehicle_info,
-            "summary": session.summary,
-            "worker_status": session.worker_status,
-            "worker_version": session.worker_version,
-            "worker_last_duration_ms": session.worker_last_duration_ms,
-            "worker_live": worker_live,
-            "cross_dialog_memory_enabled": active_settings.cross_dialog_memory_enabled,
-            "global_memory_summary": active_settings.global_memory_summary,
-            "messages": messages_data,
-        }
-    )
 
 
 # =========================================================================

@@ -186,17 +186,17 @@ class W4A16Linear(nn.Module):
     Модуль линейного слоя с прямой аппаратной декомпрессией весов W4A16 QAT
     в bfloat16/float32 на GPU во время прямого прохода.
     """
-    def __init__(self, in_features: int, out_features: int, group_size: int = 32):
+    def __init__(self, in_features: int, out_features: int, group_size: int = 32, device: str = "meta"):
         super().__init__()
         self.in_features = in_features
         self.out_features = out_features
         self.group_size = group_size
         self.weight_packed = nn.Parameter(
-            torch.empty((out_features, in_features // 8), dtype=torch.int32),
+            torch.empty((out_features, in_features // 8), dtype=torch.int32, device=device),
             requires_grad=False,
         )
         self.weight_scale = nn.Parameter(
-            torch.empty((out_features, in_features // group_size), dtype=torch.bfloat16),
+            torch.empty((out_features, in_features // group_size), dtype=torch.bfloat16, device=device),
             requires_grad=False,
         )
 
@@ -209,6 +209,27 @@ class W4A16Linear(nn.Module):
         return F.linear(x, w)
 
 
+def _replace_decoder_linears_with_w4a16(root_module: nn.Module, group_size: int = 32) -> int:
+    """Заменяет стандартные nn.Linear внутри декодер-слоёв Gemma 4 на квантованные W4A16Linear (на meta-устройстве)."""
+    replaced = 0
+    for name, child in list(root_module.named_children()):
+        if isinstance(child, nn.Linear):
+            setattr(
+                root_module,
+                name,
+                W4A16Linear(
+                    in_features=child.in_features,
+                    out_features=child.out_features,
+                    group_size=group_size,
+                    device="meta",
+                ),
+            )
+            replaced += 1
+        else:
+            replaced += _replace_decoder_linears_with_w4a16(child, group_size=group_size)
+    return replaced
+
+
 def _create_adaptive_airllm_model(
     model_path: str,
     shards_path: str,
@@ -218,20 +239,27 @@ def _create_adaptive_airllm_model(
     Создает экземпляр AirLLM для Google Gemma 4 12B (48 слоев, W4A16)
     с адаптивным закреплением максимума слоев в видеопамяти GPU и быстрым DMA-стримингом.
     """
+    from accelerate.utils.modeling import set_module_tensor_to_device
     from airllm.airllm_base import AirLLMBaseModel
 
     class AdaptiveAirLLMGemma4(AirLLMBaseModel):
-        def _get_model_layer_names(self):
-            layer_names = ["model.language_model.embed_tokens"]
-            for i in range(48):
-                layer_names.append(f"model.language_model.layers.{i}")
-            layer_names.append("model.language_model.norm")
-            layer_names.append("model.embed_vision")
-            layer_names.append("model.embed_audio")
-            return layer_names
+        def set_layer_names_dict(self):
+            self.layer_names_dict = {
+                "embed": "model.language_model.embed_tokens",
+                "layer_prefix": "model.language_model.layers",
+                "norm": "model.language_model.norm",
+                "lm_head": "lm_head",
+                "resident": ["model.embed_vision", "model.embed_audio"],
+            }
+
+        def init_model(self):
+            super().init_model()
+            _replace_decoder_linears_with_w4a16(
+                self.model.model.language_model.layers,
+                group_size=32,
+            )
 
         def _install_streaming_hooks(self):
-            n = len(self.layer_names)
             self._pinned_cpu_cache: Dict[int, Dict[str, torch.Tensor]] = {}
             self._fast_layer_bindings: Dict[int, List[Tuple[Any, str, torch.Tensor, torch.nn.Parameter]]] = {}
             self.resident_gpu_layers_count = 0
@@ -251,6 +279,12 @@ def _create_adaptive_airllm_model(
                 except FileNotFoundError:
                     pass
 
+            # Восстанавливаем привязку весов lm_head к материализованному на GPU embed_tokens.weight
+            try:
+                self.model.lm_head.weight = self.model.model.language_model.embed_tokens.weight
+            except Exception:
+                pass
+
             # 2. Адаптивный расчет резидентных слоев в VRAM
             decoder_indices = list(range(1, 49))
             streamed_indices: List[int] = []
@@ -260,7 +294,7 @@ def _create_adaptive_airllm_model(
                 free_b, total_b = torch.cuda.mem_get_info(0)
                 reserved_unallocated_b = torch.cuda.memory_reserved(0) - torch.cuda.memory_allocated(0)
                 usable_free_mb = (free_b + reserved_unallocated_b) // (1024 * 1024)
-                # Резерв под KV-кэш 32K окна + 1 слой AirLLM
+                # Резерв под KV-кэш 32K окна + декомпрессию активного слоя W4A16
                 kv_and_stream_reserve_mb = 1350
                 layer_budget_mb = max(0, usable_free_mb - kv_and_stream_reserve_mb)
 
@@ -290,10 +324,21 @@ def _create_adaptive_airllm_model(
                     sd = self.load_layer_to_cpu(self.layer_names[idx])
                 bindings = []
                 for param_name, val in sd.items():
-                    self._adopt_checkpoint_shape(param_name, val)
                     mod_path, _, attr = param_name.rpartition(".")
                     submod = self.model.get_submodule(mod_path) if mod_path else self.model
-                    cpu_t = val.to(dtype=self.running_dtype, device="cpu").contiguous()
+                    # Небольшие буферы (например, layer_scalar) сразу закрепляем на GPU
+                    if attr in getattr(submod, "_buffers", {}):
+                        set_module_tensor_to_device(
+                            self.model,
+                            param_name,
+                            self.running_device,
+                            value=val,
+                            dtype=self.running_dtype,
+                        )
+                        continue
+                    self._adopt_checkpoint_shape(param_name, val)
+                    target_dtype = val.dtype if self._should_load_verbatim(param_name, val) else self.running_dtype
+                    cpu_t = val.to(dtype=target_dtype, device="cpu").contiguous()
                     if use_pin:
                         try:
                             cpu_t = cpu_t.pin_memory()
@@ -354,6 +399,7 @@ def _create_adaptive_airllm_model(
         layer_shards_saving_path=shards_path,
         prefetching=False,
         delete_original=False,
+        load_resident=False,
     )
 
 

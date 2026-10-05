@@ -736,3 +736,43 @@ class VehicleExpertEngine:
 
         results.sort(key=lambda x: x["score"], reverse=True)
         return results[:top_n]
+
+    def prepare_llm_context(
+        self,
+        query: str,
+        top_n: int = 3,
+        dtc_codes: Optional[List[str]] = None,
+        extra_docs_text: Optional[str] = None,
+        dialog_summary: Optional[str] = None,
+        global_summary: Optional[str] = None,
+    ) -> str:
+        """
+        Формирует структурированный контекст базы знаний и памяти для промпта LLM (Google Gemma 4 12B).
+        """
+        hits = self.search(query=query, top_n=top_n, dtc_codes=dtc_codes)
+        parts: List[str] = []
+
+        if global_summary:
+            parts.append(f"[Глобальный профиль и накопленная память клиента]:\n{global_summary.strip()}")
+        if dialog_summary:
+            parts.append(f"[Сжатая сводка ранней истории диалога]:\n{dialog_summary.strip()}")
+
+        if hits:
+            kb_lines = ["[Релевантные прецеденты из экспертной базы знаний (BERT + BM25 + CrossEncoder)]:"]
+            for i, h in enumerate(hits, 1):
+                meta = h.get("meta") or {}
+                code = meta.get("code") or "N/A"
+                sys_name = meta.get("system_ru") or meta.get("system") or "Система"
+                kb_lines.append(
+                    f"{i}. Код: {code} ({sys_name}) | Релевантность: {h.get('score', 0):.3f}\n"
+                    f"   Симптомы: {meta.get('symptoms', '')}\n"
+                    f"   Причина: {meta.get('cause', meta.get('reason', ''))}\n"
+                    f"   Проверка и ремонт: {meta.get('recommendation', '')}"
+                )
+            parts.append("\n".join(kb_lines))
+
+        if extra_docs_text:
+            parts.append(f"[Вложенные диагностические логи и документы]:\n{extra_docs_text.strip()}")
+
+        parts.append(f"[Текущий запрос мастера / симптомы]:\n{(query or '').strip()}")
+        return "\n\n".join(parts)

@@ -126,34 +126,36 @@
         <div class="sessions-list" id="sessionsList">
           {% for s in sessions %}
           <div class="session-item clickable {% if s.id == current_session.id %}active{% endif %} {% if s.is_pinned %}pinned{% endif %}" data-session-id="{{ s.id }}">
-            <button type="button" class="btn-pin-session {% if s.is_pinned %}active{% endif %}" data-pin-session="{{ s.id }}" title="{% if s.is_pinned %}Открепить диалог{% else %}Закрепить диалог{% endif %}">
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="{% if s.is_pinned %}currentColor{% else %}none{% endif %}" stroke="currentColor" stroke-width="2">
-                <path d="M12 17v5"/><path d="M9 2h6l1 7H8l1-7z"/><path d="M5 9h14v2a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V9z"/>
-              </svg>
-            </button>
-            <div class="session-item-info">
-              <div class="session-item-title-row">
-                <span class="session-item-title">{{ s.title }}</span>
+            <div class="session-row-main">
+              <button type="button" class="btn-pin-session {% if s.is_pinned %}active{% endif %}" data-pin-session="{{ s.id }}" title="{% if s.is_pinned %}Открепить диалог{% else %}Закрепить диалог{% endif %}">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="{% if s.is_pinned %}currentColor{% else %}none{% endif %}" stroke="currentColor" stroke-width="2">
+                  <path d="M12 17v5"/><path d="M9 2h6l1 7H8l1-7z"/><path d="M5 9h14v2a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V9z"/>
+                </svg>
+              </button>
+              <span class="session-item-title" title="{{ s.title }}">{{ s.title }}</span>
+              <div class="session-item-actions">
                 <button type="button" class="btn-rename-session" data-rename-session="{{ s.id }}" data-current-title="{{ s.title }}" title="Переименовать диалог">
                   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                     <path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/>
                   </svg>
                 </button>
-              </div>
-              <div class="session-item-meta-row">
-                {% if s.tag %}
-                <span class="session-tag-badge">{{ s.tag }}</span>
-                {% else %}
-                <button type="button" class="btn-set-tag" data-set-tag-session="{{ s.id }}" title="Назначить тег">+тег</button>
-                {% endif %}
-                <span>{{ s.vehicle_info|default:"Автомобиль OBD-II" }} • {{ s.updated_at|date:"H:i" }}</span>
+                <button type="button" class="btn-delete-session" data-delete-session="{{ s.id }}" title="Удалить сессию" aria-label="Удалить сессию">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+                  </svg>
+                </button>
               </div>
             </div>
-            <button type="button" class="btn-delete-session" data-delete-session="{{ s.id }}" title="Удалить сессию" aria-label="Удалить сессию">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
-              </svg>
-            </button>
+            <div class="session-row-sub">
+              {% if s.tag %}
+              <span class="session-tag-badge" data-set-tag-session="{{ s.id }}" data-current-tag="{{ s.tag }}">{{ s.tag }}</span>
+              {% else %}
+              <button type="button" class="btn-set-tag" data-set-tag-session="{{ s.id }}" title="Назначить тег">+ тег</button>
+              {% endif %}
+              <span class="session-sub-meta" title="{{ s.vehicle_info|default:'Автомобиль OBD-II' }} • {{ s.updated_at|date:'H:i' }}">
+                {{ s.vehicle_info|default:"Автомобиль OBD-II" }} • {{ s.updated_at|date:"H:i" }}
+              </span>
+            </div>
           </div>
           {% endfor %}
         </div>
@@ -429,6 +431,8 @@
         </div>
       </div>
     </div>
+  </div>
+
   <!-- ====================================================================
        МОДАЛЬНОЕ ОКНО: НАСТРОЙКИ СИСТЕМЫ И МЕЖДИАЛОГОВОЙ ПАМЯТИ
        ==================================================================== -->

@@ -343,44 +343,45 @@ select:focus-visible {
 }
 
 .session-item {
-  padding: 10px 12px;
+  padding: 8px 10px;
   border-radius: var(--radius-control);
   background: var(--bg-elevated);
-  border: 1px solid transparent;
+  border: 1px solid var(--border-subtle);
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
+  flex-direction: column;
+  gap: 6px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  position: relative;
+}
+
+.session-item:hover {
+  background: var(--bg-surface);
+  border-color: rgba(249, 115, 22, 0.35);
 }
 
 .session-item.active {
   border-color: var(--accent-orange);
-  background: rgba(249, 115, 22, 0.1);
+  background: rgba(249, 115, 22, 0.12);
+  box-shadow: 0 0 0 1px rgba(249, 115, 22, 0.25);
 }
 
-.session-item-info {
+.session-item.pinned {
+  border-left: 3px solid var(--accent-orange);
+}
+
+.session-row-main {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   min-width: 0;
-  flex: 1;
+  width: 100%;
 }
 
-.session-item-title {
-  font-size: 0.84rem;
-  font-weight: 600;
-  color: var(--text-primary);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.session-item-meta {
-  font-size: 0.72rem;
-  color: var(--text-muted);
-}
-
-.btn-delete-session {
-  width: 28px;
-  height: 28px;
-  border-radius: 6px;
+.btn-pin-session {
+  width: 22px;
+  height: 22px;
+  border-radius: 4px;
   border: none;
   background: transparent;
   color: var(--text-muted);
@@ -388,6 +389,131 @@ select:focus-visible {
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
+  padding: 0;
+  cursor: pointer;
+  font-size: 0.85rem;
+  transition: all 0.15s ease;
+}
+
+.btn-pin-session.active {
+  color: var(--accent-orange);
+}
+
+.btn-pin-session:hover {
+  color: var(--accent-orange);
+  background: rgba(249, 115, 22, 0.15);
+}
+
+.session-item-title {
+  font-size: 0.84rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.session-item-actions {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  flex-shrink: 0;
+  margin-left: auto;
+}
+
+.btn-rename-session,
+.btn-delete-session {
+  width: 22px;
+  height: 22px;
+  border-radius: 4px;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  padding: 0;
+  cursor: pointer;
+  opacity: 0.65;
+  font-size: 0.8rem;
+  transition: all 0.15s ease;
+}
+
+.session-item:hover .btn-rename-session,
+.session-item:hover .btn-delete-session {
+  opacity: 1;
+}
+
+.btn-rename-session:hover {
+  color: var(--accent-cyan);
+  background: rgba(56, 189, 248, 0.15);
+}
+
+.btn-delete-session:hover {
+  color: #ef4444;
+  background: rgba(239, 68, 68, 0.15);
+}
+
+.session-row-sub {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+  width: 100%;
+}
+
+.session-tag-badge {
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: rgba(56, 189, 248, 0.15);
+  color: var(--accent-cyan);
+  border: 1px solid rgba(56, 189, 248, 0.35);
+  font-size: 0.68rem;
+  font-weight: 600;
+  max-width: 90px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.session-tag-badge:hover {
+  border-color: var(--accent-cyan);
+  background: rgba(56, 189, 248, 0.25);
+}
+
+.btn-set-tag {
+  border: 1px dashed rgba(148, 163, 184, 0.4);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 0.68rem;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 4px;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: all 0.15s ease;
+}
+
+.btn-set-tag:hover {
+  color: var(--accent-orange);
+  border-color: var(--accent-orange);
+}
+
+.session-sub-meta {
+  flex: 1;
+  min-width: 0;
+  text-align: right;
+  font-size: 0.71rem;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .context-worker-card {
@@ -1841,97 +1967,7 @@ body.ar-glasses-mode .ar-hud-overlay {
   border-color: rgba(249, 115, 22, 0.45);
 }
 
-/* Закрепление и теги на карточке сессии */
-.session-item.pinned {
-  border-left: 3px solid var(--accent-orange);
-  background: rgba(249, 115, 22, 0.06);
-}
 
-.btn-pin-session {
-  width: 24px;
-  height: 24px;
-  border-radius: 6px;
-  border: none;
-  background: transparent;
-  color: var(--text-muted);
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-  padding: 0;
-}
-.btn-pin-session.active {
-  color: var(--accent-orange);
-}
-.btn-pin-session:hover {
-  color: var(--accent-orange);
-}
-
-.session-item-title-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 6px;
-}
-
-.btn-rename-session {
-  opacity: 0;
-  width: 20px;
-  height: 20px;
-  border: none;
-  background: transparent;
-  color: var(--text-muted);
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-  padding: 0;
-  border-radius: 4px;
-}
-.session-item:hover .btn-rename-session {
-  opacity: 1;
-}
-.btn-rename-session:hover {
-  color: var(--accent-cyan);
-}
-
-.session-item-meta-row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-top: 3px;
-  font-size: 0.72rem;
-  color: var(--text-muted);
-}
-
-.session-tag-badge {
-  padding: 1px 6px;
-  border-radius: 4px;
-  background: rgba(56, 189, 248, 0.15);
-  color: var(--accent-cyan);
-  border: 1px solid rgba(56, 189, 248, 0.3);
-  font-size: 0.68rem;
-  font-weight: 600;
-}
-
-.btn-set-tag {
-  border: none;
-  background: transparent;
-  color: var(--text-muted);
-  font-size: 0.75rem;
-  font-weight: 700;
-  padding: 0 4px;
-  border-radius: 3px;
-  cursor: pointer;
-  opacity: 0;
-}
-.session-item:hover .btn-set-tag {
-  opacity: 0.8;
-}
-.btn-set-tag:hover {
-  color: var(--accent-orange);
-  opacity: 1;
-}
 
 /* Модальные окна: Настройки и Проекты */
 .settings-modal-card,

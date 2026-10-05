@@ -263,6 +263,8 @@
         });
       }
       html += `</div>`;
+    }
+
     // Трассировка вызовов Function Calling (в консоль разработчика, скрыто из UI)
     if (toolCalls.length > 0) {
       console.debug('[Gemma 4 Function Calling executed]', toolCalls);
@@ -1473,34 +1475,34 @@
       listEl.innerHTML = sessions
         .map((s) => `
           <div class="session-item clickable ${s.id === state.currentSessionId ? 'active' : ''} ${s.is_pinned ? 'pinned' : ''}" data-session-id="${s.id}">
-            <button type="button" class="btn-pin-session ${s.is_pinned ? 'active' : ''}" data-pin-session="${s.id}" title="${s.is_pinned ? 'Открепить диалог' : 'Закрепить диалог'}">
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="${s.is_pinned ? 'currentColor' : 'none'}" stroke="currentColor" stroke-width="2">
-                <path d="M12 17v5"/><path d="M9 2h6l1 7H8l1-7z"/><path d="M5 9h14v2a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V9z"/>
-              </svg>
-            </button>
-            <div class="session-item-info">
-              <div class="session-item-title-row">
-                <span class="session-item-title">${escapeHtml(s.title || 'Новый диалог')}</span>
+            <div class="session-row-main">
+              <button type="button" class="btn-pin-session ${s.is_pinned ? 'active' : ''}" data-pin-session="${s.id}" title="${s.is_pinned ? 'Открепить диалог' : 'Закрепить диалог'}">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="${s.is_pinned ? 'currentColor' : 'none'}" stroke="currentColor" stroke-width="2">
+                  <path d="M12 17v5"/><path d="M9 2h6l1 7H8l1-7z"/><path d="M5 9h14v2a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V9z"/>
+                </svg>
+              </button>
+              <span class="session-item-title" title="${escapeHtml(s.title || 'Новый диалог')}">${escapeHtml(s.title || 'Новый диалог')}</span>
+              <div class="session-item-actions">
                 <button type="button" class="btn-rename-session" data-rename-session="${s.id}" data-current-title="${escapeHtml(s.title || '')}" title="Переименовать диалог">
                   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                     <path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/>
                   </svg>
                 </button>
-              </div>
-              <div class="session-item-meta-row">
-                ${
-                  s.tag
-                    ? `<span class="session-tag-badge" data-set-tag-session="${s.id}" data-current-tag="${escapeHtml(s.tag)}">${escapeHtml(s.tag)}</span>`
-                    : `<button type="button" class="btn-set-tag" data-set-tag-session="${s.id}" title="Назначить тег">+тег</button>`
-                }
-                <span>${escapeHtml(s.vehicle_info || 'Автомобиль OBD-II')}</span>
+                <button type="button" class="btn-delete-session" data-delete-session="${s.id}" title="Удалить сессию" aria-label="Удалить сессию">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+                  </svg>
+                </button>
               </div>
             </div>
-            <button type="button" class="btn-delete-session" data-delete-session="${s.id}" title="Удалить сессию" aria-label="Удалить сессию">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
-              </svg>
-            </button>
+            <div class="session-row-sub">
+              ${
+                s.tag
+                  ? `<span class="session-tag-badge" data-set-tag-session="${s.id}" data-current-tag="${escapeHtml(s.tag)}">${escapeHtml(s.tag)}</span>`
+                  : `<button type="button" class="btn-set-tag" data-set-tag-session="${s.id}" title="Назначить тег">+ тег</button>`
+              }
+              <span class="session-sub-meta" title="${escapeHtml(s.vehicle_info || 'Автомобиль OBD-II')}">${escapeHtml(s.vehicle_info || 'Автомобиль OBD-II')}</span>
+            </div>
           </div>
         `)
         .join('');

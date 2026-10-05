@@ -56,6 +56,226 @@
   }
 
   // =========================================================================
+  // Универсальная система стилизованных модальных диалогов (Confirm / Alert / Prompt)
+  // =========================================================================
+  const DIALOG_ICONS = {
+    danger: `
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+        <line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
+      </svg>
+    `,
+    warning: `
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
+      </svg>
+    `,
+    info: `
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/>
+      </svg>
+    `,
+    error: `
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/>
+      </svg>
+    `,
+    prompt: `
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/>
+      </svg>
+    `,
+    success: `
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/>
+      </svg>
+    `,
+  };
+
+  let activeDialogResolver = null;
+
+  function showCustomDialog({
+    type = 'confirm',
+    title = 'Подтверждение',
+    subtitle = 'ИИдеал Авто',
+    message = '',
+    icon = 'info',
+    confirmText = '',
+    cancelText = 'Отмена',
+    defaultValue = '',
+    placeholder = '',
+    label = 'Значение:',
+    danger = false,
+  }) {
+    return new Promise((resolve) => {
+      const modal = el('customDialogModal');
+      const iconBox = el('customDialogIconBox');
+      const titleEl = el('customDialogTitle');
+      const subtitleEl = el('customDialogSubtitle');
+      const msgEl = el('customDialogMessage');
+      const inputGroup = el('customDialogInputGroup');
+      const inputEl = el('customDialogInput');
+      const inputLabel = el('customDialogInputLabel');
+      const btnCancel = el('btnCustomDialogCancel');
+      const btnConfirm = el('btnCustomDialogConfirm');
+      const btnClose = el('btnCustomDialogClose');
+
+      if (!modal) {
+        if (type === 'confirm') return resolve(window.confirm(message));
+        if (type === 'prompt') return resolve(window.prompt(message, defaultValue));
+        window.alert(message);
+        return resolve();
+      }
+
+      if (activeDialogResolver) {
+        activeDialogResolver(type === 'prompt' ? null : false);
+        activeDialogResolver = null;
+      }
+
+      let iconType = icon;
+      if (type === 'confirm' && danger) iconType = 'danger';
+      else if (type === 'prompt') iconType = 'prompt';
+      else if (type === 'alert' && (!icon || icon === 'info')) iconType = 'info';
+
+      if (iconBox) {
+        iconBox.className = `custom-dialog-icon-box ${iconType}`;
+        iconBox.innerHTML = DIALOG_ICONS[iconType] || DIALOG_ICONS.info;
+      }
+
+      if (titleEl) titleEl.textContent = title;
+      if (subtitleEl) subtitleEl.textContent = subtitle;
+      if (msgEl) msgEl.textContent = message;
+
+      if (inputGroup && inputEl) {
+        if (type === 'prompt') {
+          inputGroup.style.display = 'flex';
+          if (inputLabel) inputLabel.textContent = label;
+          inputEl.value = defaultValue || '';
+          inputEl.placeholder = placeholder || '';
+        } else {
+          inputGroup.style.display = 'none';
+          inputEl.value = '';
+        }
+      }
+
+      if (btnCancel) {
+        btnCancel.style.display = type === 'alert' ? 'none' : 'inline-flex';
+        btnCancel.textContent = cancelText || 'Отмена';
+      }
+
+      if (btnConfirm) {
+        btnConfirm.textContent =
+          confirmText ||
+          (type === 'alert' ? 'Понятно' : type === 'prompt' ? 'Сохранить' : danger ? 'Удалить' : 'Подтвердить');
+        btnConfirm.className = `btn-send custom-dialog-btn-confirm ${danger ? 'danger' : ''}`;
+      }
+
+      modal.style.display = 'flex';
+      modal.setAttribute('aria-hidden', 'false');
+
+      setTimeout(() => {
+        if (type === 'prompt' && inputEl) {
+          inputEl.focus();
+          inputEl.select();
+        } else if (btnConfirm) {
+          btnConfirm.focus();
+        }
+      }, 40);
+
+      let keyHandler = null;
+
+      const cleanup = () => {
+        modal.style.display = 'none';
+        modal.setAttribute('aria-hidden', 'true');
+        if (keyHandler) document.removeEventListener('keydown', keyHandler);
+        activeDialogResolver = null;
+      };
+
+      const doConfirm = () => {
+        const val = inputEl ? inputEl.value : '';
+        cleanup();
+        if (type === 'prompt') {
+          resolve(val);
+        } else {
+          resolve(true);
+        }
+      };
+
+      const doCancel = () => {
+        cleanup();
+        if (type === 'prompt') {
+          resolve(null);
+        } else if (type === 'confirm') {
+          resolve(false);
+        } else {
+          resolve();
+        }
+      };
+
+      activeDialogResolver = (val) => {
+        cleanup();
+        resolve(val);
+      };
+
+      if (btnConfirm) btnConfirm.onclick = () => doConfirm();
+      if (btnCancel) btnCancel.onclick = () => doCancel();
+      if (btnClose) btnClose.onclick = () => doCancel();
+
+      keyHandler = (e) => {
+        if (e.key === 'Escape') {
+          e.preventDefault();
+          doCancel();
+        } else if (e.key === 'Enter') {
+          if (document.activeElement === inputEl || document.activeElement === btnConfirm) {
+            e.preventDefault();
+            doConfirm();
+          }
+        }
+      };
+
+      document.addEventListener('keydown', keyHandler);
+    });
+  }
+
+  const uiConfirm = (message, title = 'Подтверждение', danger = false, confirmText = 'Подтвердить') => {
+    return showCustomDialog({
+      type: 'confirm',
+      title,
+      message,
+      danger,
+      confirmText,
+      icon: danger ? 'danger' : 'warning',
+    });
+  };
+
+  const uiAlert = (message, title = 'Уведомление', icon = 'info', confirmText = 'Понятно') => {
+    return showCustomDialog({
+      type: 'alert',
+      title,
+      message,
+      icon,
+      confirmText,
+    });
+  };
+
+  const uiPrompt = (message, defaultValue = '', title = 'Ввод данных', confirmText = 'Сохранить') => {
+    return showCustomDialog({
+      type: 'prompt',
+      title,
+      message,
+      defaultValue,
+      confirmText,
+      icon: 'prompt',
+    });
+  };
+
+  // Экспорт на глобальный объект для доступа из любых скриптов и тестов
+  window.uiAlert = uiAlert;
+  window.uiConfirm = uiConfirm;
+  window.uiPrompt = uiPrompt;
+  window.showCustomDialog = showCustomDialog;
+
+  // =========================================================================
   // 1. Отрисовка очереди вложений (Staging Bar: Коды DTC, Фото, Документы, Голос)
   // =========================================================================
   function renderStagingBar() {
@@ -527,7 +747,13 @@
 
   async function deleteSingleMessage(msgId, cardEl) {
     if (!msgId) return;
-    if (!confirm('Удалить это сообщение из чата и рабочей памяти ИИ?')) return;
+    const confirmed = await uiConfirm(
+      'Удалить это сообщение из чата и рабочей памяти экспертной модели?',
+      'Удаление сообщения',
+      true,
+      'Удалить'
+    );
+    if (!confirmed) return;
 
     try {
       const resp = await fetch(`/api/messages/${msgId}/delete/`, {
@@ -548,7 +774,7 @@
           updateWorkerUi(null, data.session_summary, null, false);
         }
       } else {
-        alert('Не удалось удалить сообщение.');
+        await uiAlert('Не удалось удалить сообщение из базы данных.', 'Ошибка удаления', 'error');
       }
     } catch (err) {
       console.error('Ошибка удаления сообщения:', err);
@@ -559,7 +785,13 @@
     const checkedBoxes = Array.from(document.querySelectorAll('.msg-select-cb:checked'));
     if (!checkedBoxes.length) return;
     const ids = checkedBoxes.map((cb) => Number(cb.dataset.msgId)).filter(Boolean);
-    if (!confirm(`Удалить выбранные сообщения (${ids.length} шт.) из чата и контекста модели?`)) return;
+    const confirmed = await uiConfirm(
+      `Удалить выбранные сообщения (${ids.length} шт.) из истории диалога и контекстной памяти модели?`,
+      'Массовое удаление',
+      true,
+      'Удалить все'
+    );
+    if (!confirmed) return;
 
     try {
       const resp = await fetch('/api/messages/delete/', {
@@ -583,7 +815,7 @@
           updateWorkerUi(null, data.session_summary, null, false);
         }
       } else {
-        alert('Не удалось удалить выбранные сообщения.');
+        await uiAlert('Не удалось удалить выбранные сообщения из базы данных.', 'Ошибка удаления', 'error');
       }
     } catch (err) {
       console.error('Ошибка массового удаления сообщений:', err);
@@ -592,7 +824,13 @@
 
   async function clearAllMessages() {
     if (!state.currentSessionId) return;
-    if (!confirm('Полностью очистить всю историю текущего чата и сбросить память модели?')) return;
+    const confirmed = await uiConfirm(
+      'Полностью очистить всю историю текущего диалога и сбросить контекстную выжимку модели?',
+      'Очистка диалога',
+      true,
+      'Очистить всё'
+    );
+    if (!confirmed) return;
 
     try {
       const resp = await fetch('/api/messages/delete/', {
@@ -610,7 +848,7 @@
           updateWorkerUi(null, data.session_summary, null, false);
         }
       } else {
-        alert('Не удалось очистить чат.');
+        await uiAlert('Не удалось очистить историю диалога.', 'Ошибка очистки', 'error');
       }
     } catch (err) {
       console.error('Ошибка очистки чата:', err);
@@ -868,7 +1106,7 @@
           pendingArEl._stopAnimation?.();
           pendingArEl.remove();
         }
-        alert(data.error || 'Ошибка выполнения диагностики');
+        await uiAlert(data.error || 'Ошибка выполнения диагностики', 'Ошибка диагностики', 'error');
         return;
       }
 
@@ -1308,7 +1546,7 @@
       state.isRecording = false;
       setMicRecordingVisualState(false);
       stopMicSpectrogram();
-      alert('Микрофон недоступен или доступ запрещён браузером.');
+      await uiAlert('Микрофон недоступен или доступ к аудиоустройству запрещён браузером. Пожалуйста, проверьте разрешения.', 'Доступ к микрофону', 'warning');
     }
   }
 
@@ -1540,7 +1778,13 @@
       if (delBtn) {
         e.stopPropagation();
         const sid = delBtn.dataset.deleteSession;
-        if (!confirm('Удалить эту сессию диагностики?')) return;
+        const confirmed = await uiConfirm(
+          'Удалить эту сессию диагностики вместе со всей историей сообщений?',
+          'Удаление сессии',
+          true,
+          'Удалить'
+        );
+        if (!confirmed) return;
         const resp = await fetch(`/api/sessions/${sid}/`, { method: 'DELETE' });
         if (resp.ok) {
           if (sid === state.currentSessionId) {
@@ -1570,7 +1814,12 @@
         e.stopPropagation();
         const sid = renBtn.dataset.renameSession;
         const curTitle = renBtn.dataset.currentTitle || '';
-        const newTitle = prompt('Введите новое название диалога:', curTitle);
+        const newTitle = await uiPrompt(
+          'Введите новое название для этой сессии диагностики:',
+          curTitle,
+          'Переименование диалога',
+          'Сохранить'
+        );
         if (newTitle && newTitle.trim() && newTitle.trim() !== curTitle) {
           const resp = await fetch(`/api/sessions/${sid}/rename/`, {
             method: 'POST',
@@ -1639,7 +1888,10 @@
     el('btnSubmitProject')?.addEventListener('click', async () => {
       const name = el('projectNameInput')?.value.trim();
       const desc = el('projectDescInput')?.value.trim();
-      if (!name) return alert('Пожалуйста, введите название проекта');
+      if (!name) {
+        await uiAlert('Пожалуйста, укажите название для проекта или автомобиля.', 'Название обязательно', 'warning');
+        return;
+      }
       try {
         const resp = await fetch('/api/projects/', {
           method: 'POST',
@@ -1659,7 +1911,7 @@
           }
           loadSessionsList();
         } else {
-          alert('Ошибка при создании проекта');
+          await uiAlert('Не удалось сохранить проект в базе данных.', 'Ошибка создания проекта', 'error');
         }
       } catch (err) {
         console.error('Ошибка создания проекта:', err);
@@ -1884,7 +2136,13 @@
     el('btnSaveSettings')?.addEventListener('click', saveSettings);
 
     el('btnClearGlobalMemory')?.addEventListener('click', async () => {
-      if (!confirm('Очистить всю накопленную междиалоговую память по всем сессиям?')) return;
+      const confirmed = await uiConfirm(
+        'Очистить всю накопленную междиалоговую память по всем сессиям автомобиля? Это действие удалит сохранённый контекст неисправностей.',
+        'Сброс глобальной памяти',
+        true,
+        'Очистить память'
+      );
+      if (!confirmed) return;
       try {
         const resp = await fetch('/api/settings/', {
           method: 'POST',

@@ -566,6 +566,40 @@
     </div>
   </div>
 
+  <!-- ====================================================================
+       УНИВЕРСАЛЬНОЕ СТИЛИЗОВАННОЕ МОДАЛЬНОЕ ОКНО (CONFIRM / ALERT / PROMPT)
+       ==================================================================== -->
+  <div class="modal-backdrop custom-dialog-backdrop" id="customDialogModal" role="dialog" aria-modal="true" aria-hidden="true" style="display:none;">
+    <div class="custom-dialog-card" id="customDialogCard">
+      <div class="custom-dialog-header">
+        <div class="custom-dialog-icon-box" id="customDialogIconBox">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/>
+          </svg>
+        </div>
+        <div class="custom-dialog-title-group">
+          <h3 class="custom-dialog-title" id="customDialogTitle">Подтверждение</h3>
+          <span class="custom-dialog-subtitle" id="customDialogSubtitle">ИИдеал Авто</span>
+        </div>
+        <button type="button" class="btn-icon-top custom-dialog-close" id="btnCustomDialogClose" aria-label="Закрыть">✕</button>
+      </div>
+
+      <div class="custom-dialog-content">
+        <p class="custom-dialog-message" id="customDialogMessage"></p>
+        
+        <div class="custom-dialog-input-group" id="customDialogInputGroup" style="display:none;">
+          <label for="customDialogInput" class="custom-dialog-label" id="customDialogInputLabel">Значение:</label>
+          <input type="text" id="customDialogInput" class="dtc-input custom-dialog-input" autocomplete="off" spellcheck="false" />
+        </div>
+      </div>
+
+      <div class="custom-dialog-actions" id="customDialogActions">
+        <button type="button" class="btn-action-ghost custom-dialog-btn-cancel" id="btnCustomDialogCancel">Отмена</button>
+        <button type="button" class="btn-send custom-dialog-btn-confirm" id="btnCustomDialogConfirm">Подтвердить</button>
+      </div>
+    </div>
+  </div>
+
   <script id="initialHardwareTelemetry" type="application/json">{{ hw_telemetry_json|safe }}</script>
   <script src="{% static 'js/app.js' %}"></script>
 </body>

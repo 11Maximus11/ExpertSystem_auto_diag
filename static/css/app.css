@@ -65,6 +65,31 @@ body {
   display: flex;
   flex-direction: column;
   line-height: 1.5;
+  position: relative;
+}
+
+body::before {
+  content: "";
+  position: fixed;
+  inset: -30px;
+  background: url("/static/images/aideal_logo.jpg") no-repeat center center / cover;
+  filter: blur(50px) brightness(0.18) contrast(1.15) saturate(1.2);
+  pointer-events: none;
+  z-index: 0;
+  opacity: 0.55;
+  transition: opacity 0.3s ease;
+}
+
+body.ar-glasses-mode::before {
+  display: none !important;
+}
+
+.app-header,
+.workbench-grid,
+.modal-backdrop,
+.mobile-bottom-nav {
+  position: relative;
+  z-index: 1;
 }
 
 input,
@@ -922,7 +947,7 @@ select:focus-visible {
 .btn-tool {
   width: 44px;
   height: 44px;
-  border-radius: var(--radius-control);
+  border-radius: 50%;
   background: var(--bg-elevated);
   border: 1px solid var(--border-subtle);
   color: var(--text-secondary);
@@ -1715,6 +1740,284 @@ body.ar-glasses-mode .ar-hud-overlay {
 
 .spin-icon {
   animation: spin360 0.9s linear infinite;
+}
+
+.btn-header-tool {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 12px;
+  border-radius: var(--radius-control);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
+  font-size: 0.82rem;
+  font-weight: 500;
+}
+.btn-header-tool:hover {
+  color: var(--text-primary);
+  border-color: var(--border-strong);
+  background: rgba(249, 115, 22, 0.08);
+}
+
+/* Сайдбар: проекты и теги */
+.sidebar-top-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.project-selector-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.project-select {
+  flex: 1;
+  min-width: 0;
+  height: 36px;
+  padding: 0 10px;
+  border-radius: var(--radius-control);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-primary);
+  font-size: 0.82rem;
+  font-weight: 500;
+  outline: none;
+}
+.project-select:focus {
+  border-color: var(--accent-orange);
+}
+
+.btn-icon-sidebar {
+  width: 36px;
+  height: 36px;
+  border-radius: var(--radius-control);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.btn-icon-sidebar:hover {
+  color: var(--accent-orange);
+  border-color: var(--accent-orange);
+}
+
+.tags-filter-bar {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  overflow-x: auto;
+  padding: 2px 0;
+  scrollbar-width: none;
+}
+.tags-filter-bar::-webkit-scrollbar {
+  display: none;
+}
+
+.tag-chip {
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  font-weight: 600;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.tag-chip:hover {
+  color: var(--text-primary);
+  border-color: var(--border-strong);
+}
+.tag-chip.active {
+  background: rgba(249, 115, 22, 0.16);
+  color: var(--accent-orange);
+  border-color: rgba(249, 115, 22, 0.45);
+}
+
+/* Закрепление и теги на карточке сессии */
+.session-item.pinned {
+  border-left: 3px solid var(--accent-orange);
+  background: rgba(249, 115, 22, 0.06);
+}
+
+.btn-pin-session {
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  padding: 0;
+}
+.btn-pin-session.active {
+  color: var(--accent-orange);
+}
+.btn-pin-session:hover {
+  color: var(--accent-orange);
+}
+
+.session-item-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.btn-rename-session {
+  opacity: 0;
+  width: 20px;
+  height: 20px;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  padding: 0;
+  border-radius: 4px;
+}
+.session-item:hover .btn-rename-session {
+  opacity: 1;
+}
+.btn-rename-session:hover {
+  color: var(--accent-cyan);
+}
+
+.session-item-meta-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 3px;
+  font-size: 0.72rem;
+  color: var(--text-muted);
+}
+
+.session-tag-badge {
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: rgba(56, 189, 248, 0.15);
+  color: var(--accent-cyan);
+  border: 1px solid rgba(56, 189, 248, 0.3);
+  font-size: 0.68rem;
+  font-weight: 600;
+}
+
+.btn-set-tag {
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  font-weight: 700;
+  padding: 0 4px;
+  border-radius: 3px;
+  cursor: pointer;
+  opacity: 0;
+}
+.session-item:hover .btn-set-tag {
+  opacity: 0.8;
+}
+.btn-set-tag:hover {
+  color: var(--accent-orange);
+  opacity: 1;
+}
+
+/* Модальные окна: Настройки и Проекты */
+.settings-modal-card,
+.project-modal-card {
+  width: 100%;
+  max-width: 580px;
+  max-height: 85vh;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-card);
+  overflow-y: auto;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.65);
+  display: flex;
+  flex-direction: column;
+}
+
+.settings-modal-body {
+  padding: 18px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.settings-section {
+  display: flex;
+  flex-direction: column;
+}
+
+.settings-section-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.92rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  margin-bottom: 6px;
+}
+
+.settings-desc {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  line-height: 1.45;
+}
+
+.settings-info-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.info-tile {
+  padding: 10px 12px;
+  border-radius: var(--radius-control);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.info-label {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.info-val {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+}
+
+.btn-action-success {
+  padding: 7px 14px;
+  border-radius: var(--radius-control);
+  background: var(--status-ok);
+  color: #ffffff;
+  border: none;
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+.btn-action-success:hover {
+  opacity: 0.9;
 }
 
 @media (prefers-reduced-motion: reduce) {

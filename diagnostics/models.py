@@ -125,8 +125,34 @@ class SystemSettings(models.Model):
         return cls.get_active()
 
 
+class DiagnosticProject(models.Model):
+    """Проект диагностики / автомобиль / заказ-наряд (по аналогии с AIBPMN и emotions_chat)."""
+    name = models.CharField(max_length=200, verbose_name="Название проекта")
+    description = models.TextField(blank=True, default="", verbose_name="Описание проекта")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-updated_at"]
+        verbose_name = "Проект диагностики"
+        verbose_name_plural = "Проекты диагностики"
+
+    def __str__(self) -> str:
+        return self.name
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "name": self.name,
+            "description": self.description,
+            "sessions_count": self.sessions.count(),
+            "created_at": self.created_at.strftime("%Y-%m-%d %H:%M"),
+            "updated_at": self.updated_at.strftime("%Y-%m-%d %H:%M"),
+        }
+
+
 class DialogSession(models.Model):
-    """Сессия диагностики автомобиля с поддержкой фонового воркера выжимки контекста."""
+    """Сессия диагностики автомобиля с поддержкой проектов, тегов, закрепления и фонового воркера."""
 
     WORKER_STATUS_CHOICES = [
         ("idle", "Ожидание"),
@@ -137,7 +163,25 @@ class DialogSession(models.Model):
     ]
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    project = models.ForeignKey(
+        DiagnosticProject,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="sessions",
+        verbose_name="Проект",
+    )
     title = models.CharField(max_length=200, default="Новая диагностика")
+    is_pinned = models.BooleanField(
+        default=False,
+        verbose_name="Закреплен вверху списка",
+    )
+    tag = models.CharField(
+        max_length=60,
+        blank=True,
+        default="",
+        verbose_name="Тег категории (ДВС, АКПП, Электрика, Тормоза и т.д.)",
+    )
     vehicle_info = models.CharField(
         max_length=200,
         blank=True,
@@ -164,9 +208,27 @@ class DialogSession(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
-        ordering = ["-updated_at"]
+        ordering = ["-is_pinned", "-updated_at"]
         verbose_name = "Диагностическая сессия"
         verbose_name_plural = "Диагностические сессии"
+
+    def to_dict(self):
+        return {
+            "id": str(self.id),
+            "title": self.title,
+            "is_pinned": self.is_pinned,
+            "tag": self.tag,
+            "project_id": self.project_id,
+            "project_name": self.project.name if self.project else None,
+            "vehicle_info": self.vehicle_info,
+            "summary": self.summary,
+            "worker_status": self.worker_status,
+            "worker_version": self.worker_version,
+            "attached_dtc_codes": self.attached_dtc_codes,
+            "message_count": self.messages.count(),
+            "updated_at": self.updated_at.strftime("%d.%m.%Y %H:%M"),
+            "created_at": self.created_at.strftime("%d.%m.%Y %H:%M"),
+        }
 
     @property
     def vehicle_context(self) -> str:

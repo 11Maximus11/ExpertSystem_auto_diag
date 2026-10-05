@@ -26,7 +26,7 @@ from engine import VehicleExpertEngine
 from vulkan_backend import BASE_DIR, compute_optimal_vulkan_layers, init_vulkan_environment
 from .context_worker import compute_dynamic_context_budget, context_worker_manager
 from .document_service import parse_uploaded_document
-from .models import ChatMessage, DialogSession, SystemSettings
+from .models import ChatMessage, DiagnosticProject, DialogSession, SystemSettings
 from .schemas import (
     DIAGNOSTIC_JSON_SCHEMA,
     DiagnosticStructuredResponse,
@@ -321,3 +321,79 @@ class AIdealAutoComprehensiveTests(TransactionTestCase):
         self.assertIn("P0171", parsed_csv["detected_dtc_codes"])
         self.assertIn("P0420", parsed_csv["detected_dtc_codes"])
         self.assertIn("Система слишком бедная", parsed_csv["extracted_text"])
+
+    def test_10_projects_pinning_tagging_and_renaming(self):
+        """Проверка создания проектов, закрепления, тегирования и переименования диалогов."""
+        # 1. Создание проекта через API
+        proj_resp = self.client.post(
+            "/api/projects/",
+            data=json.dumps({"name": "Парк такси Skoda Octavia", "description": "Диагностика автопарка"}),
+            content_type="application/json",
+        )
+        self.assertEqual(proj_resp.status_code, 201)
+        proj_data = proj_resp.json()
+        proj_id = proj_data["id"]
+        self.assertEqual(proj_data["name"], "Парк такси Skoda Octavia")
+
+        # 2. Создание сессий: с проектом и без проекта
+        s1_resp = self.client.post(
+            "/api/sessions/",
+            data=json.dumps({"vehicle_info": "Skoda Octavia 1.6", "project_id": proj_id, "title": "Диагностика #1"}),
+            content_type="application/json",
+        )
+        self.assertEqual(s1_resp.status_code, 201)
+        s1_id = s1_resp.json()["id"]
+
+        s2_resp = self.client.post(
+            "/api/sessions/",
+            data=json.dumps({"vehicle_info": "Toyota Camry", "title": "Диагностика #2"}),
+            content_type="application/json",
+        )
+        self.assertEqual(s2_resp.status_code, 201)
+        s2_id = s2_resp.json()["id"]
+
+        # 3. Закрепление (Pin/Unpin)
+        pin_resp = self.client.post(f"/api/sessions/{s1_id}/pin/")
+        self.assertEqual(pin_resp.status_code, 200)
+        self.assertTrue(pin_resp.json()["is_pinned"])
+        s1 = DialogSession.objects.get(id=s1_id)
+        self.assertTrue(s1.is_pinned)
+
+        # 4. Переименование (Rename)
+        rename_resp = self.client.post(
+            f"/api/sessions/{s1_id}/rename/",
+            data=json.dumps({"title": "Skoda Octavia — Пропуск зажигания"}),
+            content_type="application/json",
+        )
+        self.assertEqual(rename_resp.status_code, 200)
+        self.assertEqual(rename_resp.json()["title"], "Skoda Octavia — Пропуск зажигания")
+
+        # 5. Тегирование (Tag)
+        tag_resp = self.client.post(
+            f"/api/sessions/{s1_id}/tag/",
+            data=json.dumps({"tag": "ДВС"}),
+            content_type="application/json",
+        )
+        self.assertEqual(tag_resp.status_code, 200)
+        self.assertEqual(tag_resp.json()["tag"], "ДВС")
+
+        # 6. Фильтрация сессий по проекту
+        filter_proj_resp = self.client.get(f"/api/sessions/?project_id={proj_id}")
+        self.assertEqual(filter_proj_resp.status_code, 200)
+        filtered_proj_sessions = filter_proj_resp.json()["sessions"]
+        self.assertEqual(len(filtered_proj_sessions), 1)
+        self.assertEqual(filtered_proj_sessions[0]["id"], s1_id)
+
+        # 7. Фильтрация сессий по тегу
+        filter_tag_resp = self.client.get("/api/sessions/?tag=ДВС")
+        self.assertEqual(filter_tag_resp.status_code, 200)
+        filtered_tag_sessions = filter_tag_resp.json()["sessions"]
+        self.assertEqual(len(filtered_tag_sessions), 1)
+        self.assertEqual(filtered_tag_sessions[0]["tag"], "ДВС")
+
+        # 8. Проверка отдачи главной страницы
+        idx_resp = self.client.get("/")
+        self.assertEqual(idx_resp.status_code, 200)
+        self.assertIn("projects", idx_resp.context)
+        self.assertIn("all_tags", idx_resp.context)
+

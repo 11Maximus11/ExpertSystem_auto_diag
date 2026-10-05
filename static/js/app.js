@@ -34,6 +34,8 @@
     cameraFacingMode: 'environment',
     workerPollTimer: null,
     latestAssistantMessage: null,
+    activeProjectId: '',
+    activeTag: '',
   };
 
   const el = (id) => document.getElementById(id);
@@ -261,23 +263,9 @@
         });
       }
       html += `</div>`;
-    }
-
-    // Трассировка вызовов Function Calling
+    // Трассировка вызовов Function Calling (в консоль разработчика, скрыто из UI)
     if (toolCalls.length > 0) {
-      html += `
-        <div class="tool-calls-drawer">
-          <div style="font-weight:600;">Выполненные вызовы инструментов ИИ (Function Calling: ${toolCalls.length}):</div>
-          ${toolCalls
-            .map(
-              (tc) =>
-                `<div class="tool-call-item">fn <strong>${escapeHtml(tc.tool_name)}</strong>(${escapeHtml(
-                  JSON.stringify(tc.arguments || {})
-                )}) → ${escapeHtml(tc.result_summary)}</div>`
-            )
-            .join('')}
-        </div>
-      `;
+      console.debug('[Gemma 4 Function Calling executed]', toolCalls);
     }
 
     return html;
@@ -481,12 +469,33 @@
         <div class="diagnosis-verdict-title">
           <span>Интеллектуальный стенд автодиагностики и пошагового ремонта</span>
         </div>
-        <p style="font-size:0.88rem; color:var(--text-secondary);">
+        <p style="font-size:0.88rem; color:var(--text-secondary); margin-bottom: 12px;">
           Опишите симптом своими словами, выберите код ошибки OBD-II из словаря БД, прикрепите лог сканера,
           запишите голосовой вопрос или сфотографируйте неисправный узел прямо через встроенную камеру / очки RayNeo AR.
         </p>
+        <div style="font-size:0.78rem; font-weight:600; color:var(--text-muted); margin-bottom:6px;">Быстрые примеры неисправностей:</div>
+        <div class="quick-scenarios" style="display:flex; flex-wrap:wrap; gap:6px;">
+          <button type="button" class="chip-scenario" data-quick-query="Двигатель троит на холостых, мигает Check Engine, ошибка P0300" data-quick-code="P0300">P0300 Троит ДВС</button>
+          <button type="button" class="chip-scenario" data-quick-query="Жёсткие пинки АКПП при переключении с 1 на 2 передачу, код P0796" data-quick-code="P0796">P0796 Пинки АКПП</button>
+          <button type="button" class="chip-scenario" data-quick-query="Педаль тормоза стала мягкой и проваливается, ошибка C0050" data-quick-code="C0050">C0050 Тормоза</button>
+          <button type="button" class="chip-scenario" data-quick-query="Потеря связи по шине CAN с блоком управления, ошибка U1900" data-quick-code="U1900">U1900 CAN-шина</button>
+          <button type="button" class="chip-scenario" data-quick-query="Пневмоподвеска не поднимает кузов, ошибка компрессора C1731" data-quick-code="C1731">C1731 Пневма</button>
+        </div>
       </div>
     `;
+
+    feed.querySelectorAll('.chip-scenario').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const q = btn.dataset.quickQuery;
+        const code = btn.dataset.quickCode;
+        if (code && !state.stagedCodes.includes(code)) {
+          state.stagedCodes.push(code);
+          renderStagingBar();
+        }
+        sendDiagnosticQuery(q);
+      });
+    });
+
     updateSelectionToolbar();
   }
 
@@ -1433,33 +1442,281 @@
       });
     });
 
+    // =========================================================================
+    // Управление проектами и сессиями (Проекты, Закрепление, Переименование, Теги)
+    // =========================================================================
+    async function loadSessionsList(projectId, tag) {
+      if (projectId !== undefined) state.activeProjectId = projectId;
+      if (tag !== undefined) state.activeTag = tag;
+
+      let url = '/api/sessions/?';
+      if (state.activeProjectId) url += `project_id=${encodeURIComponent(state.activeProjectId)}&`;
+      if (state.activeTag) url += `tag=${encodeURIComponent(state.activeTag)}&`;
+
+      try {
+        const resp = await fetch(url);
+        if (!resp.ok) return;
+        const data = await resp.json();
+        renderSessionsList(data.sessions || []);
+      } catch (err) {
+        console.error('Ошибка загрузки сессий:', err);
+      }
+    }
+
+    function renderSessionsList(sessions) {
+      const listEl = el('sessionsList');
+      if (!listEl) return;
+      if (sessions.length === 0) {
+        listEl.innerHTML = `<div style="padding:16px 8px; color:var(--text-muted); font-size:0.75rem; text-align:center;">Диалоги не найдены</div>`;
+        return;
+      }
+      listEl.innerHTML = sessions
+        .map((s) => `
+          <div class="session-item clickable ${s.id === state.currentSessionId ? 'active' : ''} ${s.is_pinned ? 'pinned' : ''}" data-session-id="${s.id}">
+            <button type="button" class="btn-pin-session ${s.is_pinned ? 'active' : ''}" data-pin-session="${s.id}" title="${s.is_pinned ? 'Открепить диалог' : 'Закрепить диалог'}">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="${s.is_pinned ? 'currentColor' : 'none'}" stroke="currentColor" stroke-width="2">
+                <path d="M12 17v5"/><path d="M9 2h6l1 7H8l1-7z"/><path d="M5 9h14v2a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V9z"/>
+              </svg>
+            </button>
+            <div class="session-item-info">
+              <div class="session-item-title-row">
+                <span class="session-item-title">${escapeHtml(s.title || 'Новый диалог')}</span>
+                <button type="button" class="btn-rename-session" data-rename-session="${s.id}" data-current-title="${escapeHtml(s.title || '')}" title="Переименовать диалог">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/>
+                  </svg>
+                </button>
+              </div>
+              <div class="session-item-meta-row">
+                ${
+                  s.tag
+                    ? `<span class="session-tag-badge" data-set-tag-session="${s.id}" data-current-tag="${escapeHtml(s.tag)}">${escapeHtml(s.tag)}</span>`
+                    : `<button type="button" class="btn-set-tag" data-set-tag-session="${s.id}" title="Назначить тег">+тег</button>`
+                }
+                <span>${escapeHtml(s.vehicle_info || 'Автомобиль OBD-II')}</span>
+              </div>
+            </div>
+            <button type="button" class="btn-delete-session" data-delete-session="${s.id}" title="Удалить сессию" aria-label="Удалить сессию">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+              </svg>
+            </button>
+          </div>
+        `)
+        .join('');
+    }
+
     // Создание и переключение сессий
     el('btnNewSession')?.addEventListener('click', async () => {
       const veh = el('vehicleInfoInput')?.value || 'Автомобиль OBD-II';
+      const body = { vehicle_info: veh };
+      if (state.activeProjectId) {
+        body.project_id = Number(state.activeProjectId);
+      }
       const resp = await fetch('/api/sessions/', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ vehicle_info: veh }),
+        body: JSON.stringify(body),
       });
       if (resp.ok) {
-        window.location.reload();
+        const data = await resp.json();
+        if (data.id) {
+          state.currentSessionId = data.id;
+          await loadSessionsList();
+          await loadSession(data.id);
+        } else {
+          window.location.reload();
+        }
       }
     });
 
-    document.querySelectorAll('.session-item').forEach((item) => {
-      item.addEventListener('click', (e) => {
-        if (e.target.closest('[data-delete-session]')) return;
+    // Делегирование событий списка диалогов (переход, закрепление, переименование, тег, удаление)
+    const sessionsListEl = el('sessionsList');
+    sessionsListEl?.addEventListener('click', async (e) => {
+      // 1. Удаление диалога
+      const delBtn = e.target.closest('[data-delete-session]');
+      if (delBtn) {
+        e.stopPropagation();
+        const sid = delBtn.dataset.deleteSession;
+        if (!confirm('Удалить эту сессию диагностики?')) return;
+        const resp = await fetch(`/api/sessions/${sid}/`, { method: 'DELETE' });
+        if (resp.ok) {
+          if (sid === state.currentSessionId) {
+            window.location.reload();
+          } else {
+            loadSessionsList();
+          }
+        }
+        return;
+      }
+
+      // 2. Закрепление диалога (Pin/Unpin)
+      const pinBtn = e.target.closest('[data-pin-session]');
+      if (pinBtn) {
+        e.stopPropagation();
+        const sid = pinBtn.dataset.pinSession;
+        const resp = await fetch(`/api/sessions/${sid}/pin/`, { method: 'POST' });
+        if (resp.ok) {
+          loadSessionsList();
+        }
+        return;
+      }
+
+      // 3. Переименование диалога
+      const renBtn = e.target.closest('[data-rename-session]');
+      if (renBtn) {
+        e.stopPropagation();
+        const sid = renBtn.dataset.renameSession;
+        const curTitle = renBtn.dataset.currentTitle || '';
+        const newTitle = prompt('Введите новое название диалога:', curTitle);
+        if (newTitle && newTitle.trim() && newTitle.trim() !== curTitle) {
+          const resp = await fetch(`/api/sessions/${sid}/rename/`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ title: newTitle.trim() }),
+          });
+          if (resp.ok) {
+            loadSessionsList();
+          }
+        }
+        return;
+      }
+
+      // 4. Открытие модального окна тега
+      const tagTrigger = e.target.closest('[data-set-tag-session]');
+      if (tagTrigger) {
+        e.stopPropagation();
+        const sid = tagTrigger.dataset.setTagSession;
+        const curTag = tagTrigger.dataset.currentTag || '';
+        const modal = el('tagModal');
+        const idInp = el('tagModalSessionId');
+        const tagInp = el('sessionTagInput');
+        if (modal && idInp && tagInp) {
+          idInp.value = sid;
+          tagInp.value = curTag;
+          modal.style.display = 'flex';
+          tagInp.focus();
+        }
+        return;
+      }
+
+      // 5. Переход к диалогу
+      const item = e.target.closest('.session-item');
+      if (item && item.dataset.sessionId) {
         loadSession(item.dataset.sessionId);
+      }
+    });
+
+    // Фильтр по проектам
+    const projSelect = el('projectSelect');
+    projSelect?.addEventListener('change', () => {
+      state.activeProjectId = projSelect.value;
+      loadSessionsList();
+    });
+
+    // Создание проекта
+    el('btnNewProject')?.addEventListener('click', () => {
+      const modal = el('newProjectModal');
+      if (modal) {
+        const nameInp = el('projectNameInput');
+        const descInp = el('projectDescInput');
+        if (nameInp) nameInp.value = '';
+        if (descInp) descInp.value = '';
+        modal.style.display = 'flex';
+        nameInp?.focus();
+      }
+    });
+
+    const closeProjectModal = () => {
+      const modal = el('newProjectModal');
+      if (modal) modal.style.display = 'none';
+    };
+    el('btnCloseProjectModal')?.addEventListener('click', closeProjectModal);
+    el('btnCancelProject')?.addEventListener('click', closeProjectModal);
+
+    el('btnSubmitProject')?.addEventListener('click', async () => {
+      const name = el('projectNameInput')?.value.trim();
+      const desc = el('projectDescInput')?.value.trim();
+      if (!name) return alert('Пожалуйста, введите название проекта');
+      try {
+        const resp = await fetch('/api/projects/', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name, description: desc }),
+        });
+        if (resp.ok) {
+          const project = await resp.json();
+          closeProjectModal();
+          if (projSelect) {
+            const opt = document.createElement('option');
+            opt.value = project.id;
+            opt.textContent = `${project.name} (0)`;
+            projSelect.appendChild(opt);
+            projSelect.value = project.id;
+            state.activeProjectId = String(project.id);
+          }
+          loadSessionsList();
+        } else {
+          alert('Ошибка при создании проекта');
+        }
+      } catch (err) {
+        console.error('Ошибка создания проекта:', err);
+      }
+    });
+
+    // Фильтрация по тегам
+    const tagsFilterBar = el('tagsFilterBar');
+    tagsFilterBar?.addEventListener('click', (e) => {
+      const chip = e.target.closest('.tag-chip');
+      if (!chip) return;
+      tagsFilterBar.querySelectorAll('.tag-chip').forEach((c) => c.classList.remove('active'));
+      chip.classList.add('active');
+      state.activeTag = chip.dataset.tag || '';
+      loadSessionsList();
+    });
+
+    // Модальное окно тегирования
+    const closeTagModal = () => {
+      const modal = el('tagModal');
+      if (modal) modal.style.display = 'none';
+    };
+    el('btnCloseTagModal')?.addEventListener('click', closeTagModal);
+    el('btnCancelTag')?.addEventListener('click', closeTagModal);
+
+    document.querySelectorAll('.js-quick-tag').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const inp = el('sessionTagInput');
+        if (inp) inp.value = btn.dataset.tagVal || '';
       });
     });
 
-    document.querySelectorAll('[data-delete-session]').forEach((btn) => {
-      btn.addEventListener('click', async (e) => {
-        e.stopPropagation();
-        const sid = btn.dataset.deleteSession;
-        const resp = await fetch(`/api/sessions/${sid}/`, { method: 'DELETE' });
-        if (resp.ok) window.location.reload();
+    el('btnSaveSessionTag')?.addEventListener('click', async () => {
+      const sid = el('tagModalSessionId')?.value;
+      const tag = el('sessionTagInput')?.value.trim() || '';
+      if (!sid) return;
+      const resp = await fetch(`/api/sessions/${sid}/tag/`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tag }),
       });
+      if (resp.ok) {
+        closeTagModal();
+        loadSessionsList();
+      }
+    });
+
+    el('btnClearSessionTag')?.addEventListener('click', async () => {
+      const sid = el('tagModalSessionId')?.value;
+      if (!sid) return;
+      const resp = await fetch(`/api/sessions/${sid}/tag/`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tag: '' }),
+      });
+      if (resp.ok) {
+        closeTagModal();
+        loadSessionsList();
+      }
     });
 
     // Прикрепление файлов
@@ -1565,35 +1822,82 @@
     });
     el('btnArVoiceTrigger')?.addEventListener('click', () => toggleVoiceRecording());
 
-    // Сохранение настроек Vulkan / AirLLM Gemma 4 12B / Междиалоговой памяти
+    // =========================================================================
+    // Модальное окно настроек и междиалоговой памяти
+    // =========================================================================
+    const openSettingsModal = async () => {
+      const modal = el('settingsModal');
+      if (!modal) return;
+      try {
+        const resp = await fetch('/api/settings/');
+        if (resp.ok) {
+          const s = await resp.json();
+          const chk = el('chkCrossDialogMemory');
+          if (chk) chk.checked = Boolean(s.cross_dialog_memory_enabled);
+          const gta = el('globalSummaryTextarea');
+          if (gta) gta.value = s.global_memory_summary || '';
+          const wrap = el('globalMemorySectionWrap');
+          if (wrap) wrap.style.display = chk && chk.checked ? 'block' : 'none';
+        }
+      } catch (err) {
+        console.error('Ошибка загрузки настроек:', err);
+      }
+      modal.style.display = 'flex';
+    };
+
+    const closeSettingsModal = () => {
+      const modal = el('settingsModal');
+      if (modal) modal.style.display = 'none';
+    };
+
+    el('btnOpenSettingsModal')?.addEventListener('click', openSettingsModal);
+    el('btnOpenMemorySettingsFromSidebar')?.addEventListener('click', openSettingsModal);
+    el('btnCloseSettingsModal')?.addEventListener('click', closeSettingsModal);
+    el('btnCloseSettingsModalBottom')?.addEventListener('click', closeSettingsModal);
+
+    el('chkCrossDialogMemory')?.addEventListener('change', (e) => {
+      const wrap = el('globalMemorySectionWrap');
+      if (wrap) wrap.style.display = e.target.checked ? 'block' : 'none';
+    });
+
     const saveSettings = async () => {
       const payload = {
-        llm_backend: el('settingBackend')?.value || 'airllm_vulkan',
-        airllm_model_id: el('settingAirllmModel')?.value || 'google/gemma-4-12B-it-qat-w4a16-ct',
-        airllm_compression: el('settingAirllmCompression')?.value || '4bit',
-        gguf_model_rel_path: el('settingGgufPath')?.value || 'models/airllm_shards',
-        vulkan_gpu_layers: Number(el('settingGpuLayers')?.value || 36),
-        context_window_tokens: Number(el('settingCtxTokens')?.value || 32768),
-        voice_mode: el('settingVoiceMode')?.value || 'direct_audio',
         cross_dialog_memory_enabled: Boolean(el('chkCrossDialogMemory')?.checked),
         global_memory_summary: el('globalSummaryTextarea')?.value || '',
       };
-      const resp = await fetch('/api/settings/', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
-      if (resp.ok) {
-        const badge = el('backendDisplayBadge');
-        if (badge) badge.textContent = `AirLLM ${payload.airllm_compression} + Vulkan`;
+      try {
+        const resp = await fetch('/api/settings/', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        if (resp.ok) {
+          closeSettingsModal();
+        }
+      } catch (err) {
+        console.error('Ошибка сохранения настроек:', err);
       }
     };
 
     el('btnSaveSettings')?.addEventListener('click', saveSettings);
-    el('chkCrossDialogMemory')?.addEventListener('change', (e) => {
-      const wrap = el('globalMemoryWrap');
-      if (wrap) wrap.style.display = e.target.checked ? 'block' : 'none';
-      saveSettings();
+
+    el('btnClearGlobalMemory')?.addEventListener('click', async () => {
+      if (!confirm('Очистить всю накопленную междиалоговую память по всем сессиям?')) return;
+      try {
+        const resp = await fetch('/api/settings/', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            global_memory_summary: '',
+          }),
+        });
+        if (resp.ok) {
+          const gta = el('globalSummaryTextarea');
+          if (gta) gta.value = '';
+        }
+      } catch (err) {
+        console.error('Ошибка очистки глобальной памяти:', err);
+      }
     });
 
     // Сохранение ручных правок выжимки диалога

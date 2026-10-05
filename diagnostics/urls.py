@@ -7,9 +7,14 @@ urlpatterns = [
     path("ar/", views.ar_mode_view, name="ar_mode"),
     path("manifest.json", views.pwa_manifest_view, name="pwa_manifest"),
     path("sw.js", views.service_worker_view, name="service_worker"),
-    # API сессий и фонового воркера контекста
+    # API проектов диагностики и сессий (Requirement #2)
+    path("api/projects/", views.api_projects, name="api_projects"),
+    path("api/projects/<int:project_id>/", views.api_project_detail, name="api_project_detail"),
     path("api/sessions/", views.api_sessions, name="api_sessions"),
     path("api/sessions/<uuid:session_id>/", views.api_session_detail, name="api_session_detail"),
+    path("api/sessions/<uuid:session_id>/pin/", views.api_session_pin, name="api_session_pin"),
+    path("api/sessions/<uuid:session_id>/tag/", views.api_session_tag, name="api_session_tag"),
+    path("api/sessions/<uuid:session_id>/rename/", views.api_session_rename, name="api_session_rename"),
     path("api/worker-status/<uuid:session_id>/", views.api_worker_status, name="api_worker_status"),
     # Главный API диагностики, чеклистов и удаления сообщений
     path("api/ask/", views.api_ask_expert, name="api_ask_expert"),

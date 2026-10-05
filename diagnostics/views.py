@@ -10,15 +10,19 @@
 
 import base64
 import json
+import logging
 import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from django.conf import settings
+from django.db import models
 from django.http import HttpRequest, HttpResponse, JsonResponse
 from django.shortcuts import render
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
+
+logger = logging.getLogger(__name__)
 
 from .airllm_vulkan_service import orchestrator
 from .context_worker import context_worker_manager
@@ -29,7 +33,7 @@ from .document_service import (
     extract_dtc_codes,
     parse_uploaded_document,
 )
-from .models import ChatMessage, DialogSession, SystemSettings
+from .models import ChatMessage, DialogSession, DiagnosticProject, SystemSettings
 from .voice_service import process_voice_input
 
 
@@ -39,7 +43,7 @@ def _ensure_default_session() -> DialogSession:
     if not session:
         session = DialogSession.objects.create(
             title="Диагностика #1",
-            vehicle_info="Универсальный профиль OBD-II",
+            vehicle_info="",
         )
     return session
 
@@ -83,7 +87,9 @@ def index_view(request: HttpRequest) -> HttpResponse:
     """Главная страница экспертной системы (Mobile-First PWA + Desktop + RayNeo AR HUD)."""
     active_settings = SystemSettings.get_active()
     current_session = _ensure_default_session()
-    sessions = list(DialogSession.objects.all()[:30])
+    sessions = list(DialogSession.objects.select_related("project").all()[:40])
+    projects = [p.to_dict() for p in DiagnosticProject.objects.all()]
+    all_tags = list(DialogSession.objects.exclude(tag="").values_list("tag", flat=True).distinct())
     systems_list = orchestrator.rag_engine.get_all_systems()
     hw_telemetry = orchestrator.get_hardware_and_model_telemetry(active_settings)
     ar_mode_initial = request.GET.get("mode", "").lower() == "ar"
@@ -92,6 +98,8 @@ def index_view(request: HttpRequest) -> HttpResponse:
         "active_settings": active_settings,
         "current_session": current_session,
         "sessions": sessions,
+        "projects": projects,
+        "all_tags": all_tags,
         "systems_list": systems_list,
         "hw_telemetry": hw_telemetry,
         "hw_telemetry_json": json.dumps(hw_telemetry, ensure_ascii=False),
@@ -164,28 +172,96 @@ def service_worker_view(request: HttpRequest) -> HttpResponse:
 
 
 # =========================================================================
-# REST API: Управление сессиями диалогов
+# REST API: Управление проектами диагностики (Requirement #2)
+# =========================================================================
+@csrf_exempt
+@require_http_methods(["GET", "POST"])
+def api_projects(request: HttpRequest) -> JsonResponse:
+    """Список проектов диагностики и создание нового проекта."""
+    if request.method == "GET":
+        projects = DiagnosticProject.objects.prefetch_related("sessions").all()
+        return JsonResponse({"projects": [p.to_dict() for p in projects]})
+
+    try:
+        payload = json.loads(request.body.decode("utf-8") or "{}")
+    except Exception:
+        payload = {}
+
+    name = str(payload.get("name", "")).strip()
+    if not name:
+        name = f"Проект #{DiagnosticProject.objects.count() + 1}"
+    description = str(payload.get("description", "")).strip()
+
+    proj = DiagnosticProject.objects.create(name=name, description=description)
+    return JsonResponse(proj.to_dict(), status=201)
+
+
+@csrf_exempt
+@require_http_methods(["GET", "PATCH", "DELETE"])
+def api_project_detail(request: HttpRequest, project_id: int) -> JsonResponse:
+    """Детали проекта, переименование или удаление."""
+    proj = DiagnosticProject.objects.filter(pk=project_id).first()
+    if not proj:
+        return JsonResponse({"error": "Проект не найден"}, status=404)
+
+    if request.method == "GET":
+        data = proj.to_dict()
+        data["sessions"] = [s.to_dict() for s in proj.sessions.all()]
+        return JsonResponse({"project": data})
+
+    if request.method == "DELETE":
+        proj.delete()
+        return JsonResponse({"success": True, "deleted_id": project_id})
+
+    if request.method == "PATCH":
+        try:
+            payload = json.loads(request.body.decode("utf-8") or "{}")
+        except Exception:
+            payload = {}
+        if "name" in payload:
+            proj.name = str(payload["name"]).strip()[:200] or proj.name
+        if "description" in payload:
+            proj.description = str(payload["description"]).strip()
+        proj.save()
+        return JsonResponse({"success": True, "project": proj.to_dict()})
+
+
+# =========================================================================
+# REST API: Управление сессиями диалогов (Проекты, Теги, Закрепление, Поиск)
 # =========================================================================
 @csrf_exempt
 @require_http_methods(["GET", "POST"])
 def api_sessions(request: HttpRequest) -> JsonResponse:
     if request.method == "GET":
-        sessions = DialogSession.objects.all()[:50]
-        data = [
-            {
-                "id": str(s.id),
-                "title": s.title,
-                "vehicle_info": s.vehicle_info,
-                "summary": s.summary,
-                "worker_status": s.worker_status,
-                "worker_version": s.worker_version,
-                "attached_dtc_codes": s.attached_dtc_codes,
-                "message_count": s.messages.count(),
-                "updated_at": s.updated_at.strftime("%d.%m.%Y %H:%M"),
-            }
-            for s in sessions
-        ]
-        return JsonResponse({"sessions": data})
+        qs = DialogSession.objects.select_related("project").all()
+        project_id = request.GET.get("project_id")
+        if project_id:
+            if project_id == "none":
+                qs = qs.filter(project__isnull=True)
+            elif project_id.isdigit():
+                qs = qs.filter(project_id=int(project_id))
+
+        tag = request.GET.get("tag")
+        if tag and tag.strip():
+            qs = qs.filter(tag__iexact=tag.strip())
+
+        q = request.GET.get("q")
+        if q and q.strip():
+            qs = qs.filter(
+                models.Q(title__icontains=q.strip())
+                | models.Q(tag__icontains=q.strip())
+                | models.Q(vehicle_info__icontains=q.strip())
+            )
+
+        sessions = qs[:60]
+        all_tags = list(DialogSession.objects.exclude(tag="").values_list("tag", flat=True).distinct())
+        projects = [p.to_dict() for p in DiagnosticProject.objects.all()]
+
+        return JsonResponse({
+            "sessions": [s.to_dict() for s in sessions],
+            "all_tags": all_tags,
+            "projects": projects,
+        })
 
     try:
         payload = json.loads(request.body.decode("utf-8") or "{}")
@@ -193,30 +269,28 @@ def api_sessions(request: HttpRequest) -> JsonResponse:
         payload = {}
 
     count = DialogSession.objects.count() + 1
-    title = payload.get("title", "").strip() or f"Диагностика #{count}"
-    vehicle_info = payload.get("vehicle_info", "").strip() or "Автомобиль OBD-II"
+    title = str(payload.get("title", "")).strip() or f"Диагностика #{count}"
+    vehicle_info = str(payload.get("vehicle_info", "")).strip() or "Автомобиль OBD-II"
+    tag = str(payload.get("tag", "")).strip()[:60]
+
+    project_id = payload.get("project_id")
+    project = None
+    if project_id and str(project_id).isdigit():
+        project = DiagnosticProject.objects.filter(pk=int(project_id)).first()
 
     session = DialogSession.objects.create(
         title=title,
         vehicle_info=vehicle_info,
+        tag=tag,
+        project=project,
     )
-    return JsonResponse(
-        {
-            "id": str(session.id),
-            "title": session.title,
-            "vehicle_info": session.vehicle_info,
-            "summary": session.summary,
-            "worker_status": session.worker_status,
-            "updated_at": session.updated_at.strftime("%d.%m.%Y %H:%M"),
-        },
-        status=201,
-    )
+    return JsonResponse(session.to_dict(), status=201)
 
 
 @csrf_exempt
 @require_http_methods(["GET", "PATCH", "DELETE"])
 def api_session_detail(request: HttpRequest, session_id: uuid.UUID) -> JsonResponse:
-    session = DialogSession.objects.filter(pk=session_id).first()
+    session = DialogSession.objects.select_related("project").filter(pk=session_id).first()
     if not session:
         return JsonResponse({"error": "Сессия не найдена"}, status=404)
 
@@ -233,11 +307,68 @@ def api_session_detail(request: HttpRequest, session_id: uuid.UUID) -> JsonRespo
             payload = {}
         if "title" in payload:
             session.title = str(payload["title"]).strip()[:200] or session.title
+        if "is_pinned" in payload:
+            session.is_pinned = bool(payload["is_pinned"])
+        if "tag" in payload:
+            session.tag = str(payload["tag"]).strip()[:60]
+        if "project_id" in payload:
+            p_id = payload["project_id"]
+            if p_id is None or p_id == "" or p_id == 0 or p_id == "none":
+                session.project = None
+            elif str(p_id).isdigit():
+                session.project = DiagnosticProject.objects.filter(pk=int(p_id)).first()
         if "vehicle_info" in payload:
             session.vehicle_info = str(payload["vehicle_info"]).strip()[:200]
         if "summary" in payload:
             session.summary = str(payload["summary"]).strip()
         session.save()
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def api_session_pin(request: HttpRequest, session_id: uuid.UUID) -> JsonResponse:
+    """Переключение закрепления чата (Pin/Unpin)."""
+    session = DialogSession.objects.filter(pk=session_id).first()
+    if not session:
+        return JsonResponse({"error": "Сессия не найдена"}, status=404)
+    session.is_pinned = not session.is_pinned
+    session.save(update_fields=["is_pinned", "updated_at"])
+    return JsonResponse({"id": str(session.id), "is_pinned": session.is_pinned})
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def api_session_tag(request: HttpRequest, session_id: uuid.UUID) -> JsonResponse:
+    """Установка или очистка тега чата."""
+    session = DialogSession.objects.filter(pk=session_id).first()
+    if not session:
+        return JsonResponse({"error": "Сессия не найдена"}, status=404)
+    try:
+        payload = json.loads(request.body.decode("utf-8") or "{}")
+    except Exception:
+        payload = {}
+    tag = str(payload.get("tag", request.POST.get("tag", ""))).strip()[:60]
+    session.tag = tag
+    session.save(update_fields=["tag", "updated_at"])
+    return JsonResponse({"id": str(session.id), "tag": session.tag})
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def api_session_rename(request: HttpRequest, session_id: uuid.UUID) -> JsonResponse:
+    """Переименование названия чата."""
+    session = DialogSession.objects.filter(pk=session_id).first()
+    if not session:
+        return JsonResponse({"error": "Сессия не найдена"}, status=404)
+    try:
+        payload = json.loads(request.body.decode("utf-8") or "{}")
+    except Exception:
+        payload = {}
+    title = str(payload.get("title", request.POST.get("title", ""))).strip()[:200]
+    if title:
+        session.title = title
+        session.save(update_fields=["title", "updated_at"])
+    return JsonResponse({"id": str(session.id), "title": session.title})
 
     messages_data = [
         {
@@ -535,6 +666,8 @@ def api_ask_expert(request: HttpRequest) -> JsonResponse:
     )
 
     structured_dict = structured_response.model_dump()
+    for tc in structured_response.tool_calls:
+        logger.debug(f"[Function Calling Debug] fn {tc.tool_name}({tc.arguments}) -> {tc.result_summary}")
 
     assistant_msg = ChatMessage.objects.create(
         session=session,

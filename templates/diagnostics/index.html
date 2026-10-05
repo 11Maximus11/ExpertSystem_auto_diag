@@ -28,7 +28,7 @@
   <header class="app-header">
     <div class="brand-group">
       <div class="brand-logo" aria-hidden="true">
-        <img src="{% static 'images/aideal_logo.jpg' %}" alt="Логотип ИИдеал Авто" class="brand-logo-img" onerror="this.onerror=null; this.src='{% static 'icons/icon-192.svg' %}';" />
+        <img src="{% static 'icons/icon-192.svg' %}" alt="Логотип ИИдеал Авто" class="brand-logo-img" />
       </div>
       <div>
         <div class="brand-title">
@@ -64,6 +64,14 @@
         <span>AR HUD</span>
       </button>
 
+      <button type="button" class="btn-header-tool" id="btnOpenSettingsModal" aria-label="Открыть настройки системы и памяти" title="Настройки памяти и системы">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="3"/>
+          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+        </svg>
+        <span>Настройки</span>
+      </button>
+
       <button type="button" class="btn-icon-top" id="btnToggleTheme" aria-label="Переключить тему оформления" title="Светлая / Тёмная тема">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/>
@@ -77,7 +85,7 @@
        ==================================================================== -->
   <main class="workbench-grid">
 
-    <!-- 1. ЛЕВАЯ ПАНЕЛЬ: СЕССИИ ДИАЛОГОВ И ДИНАМИЧЕСКИЙ ВОРКЕР ПАМЯТИ -->
+    <!-- 1. ЛЕВАЯ ПАНЕЛЬ: ПРОЕКТЫ, СЕССИИ ДИАЛОГОВ И ДИНАМИЧЕСКИЙ ВОРКЕР ПАМЯТИ -->
     <aside class="panel-sidebar" id="panelSidebar" aria-label="Диалоги и память контекста">
       <div class="panel-section-header">
         <span>Журнал диагностик</span>
@@ -85,6 +93,29 @@
       </div>
 
       <div class="scrollable-y">
+        <!-- Блок выбора проектов и тегов -->
+        <div class="sidebar-top-bar">
+          <div class="project-selector-row">
+            <select id="projectSelect" class="project-select" aria-label="Фильтр диалогов по проекту">
+              <option value="">Все проекты</option>
+              {% for p in projects %}
+              <option value="{{ p.id }}">{{ p.name }} ({{ p.sessions_count }})</option>
+              {% endfor %}
+            </select>
+            <button type="button" class="btn-icon-sidebar" id="btnNewProject" title="Создать новый проект диагностики" aria-label="Создать проект">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+              </svg>
+            </button>
+          </div>
+          <div class="tags-filter-bar" id="tagsFilterBar">
+            <button type="button" class="tag-chip active" data-tag="">Все</button>
+            {% for t in all_tags %}
+            <button type="button" class="tag-chip" data-tag="{{ t }}">{{ t }}</button>
+            {% endfor %}
+          </div>
+        </div>
+
         <button type="button" class="btn-new-session" id="btnNewSession">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
             <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
@@ -94,10 +125,29 @@
 
         <div class="sessions-list" id="sessionsList">
           {% for s in sessions %}
-          <div class="session-item clickable {% if s.id == current_session.id %}active{% endif %}" data-session-id="{{ s.id }}">
+          <div class="session-item clickable {% if s.id == current_session.id %}active{% endif %} {% if s.is_pinned %}pinned{% endif %}" data-session-id="{{ s.id }}">
+            <button type="button" class="btn-pin-session {% if s.is_pinned %}active{% endif %}" data-pin-session="{{ s.id }}" title="{% if s.is_pinned %}Открепить диалог{% else %}Закрепить диалог{% endif %}">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="{% if s.is_pinned %}currentColor{% else %}none{% endif %}" stroke="currentColor" stroke-width="2">
+                <path d="M12 17v5"/><path d="M9 2h6l1 7H8l1-7z"/><path d="M5 9h14v2a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V9z"/>
+              </svg>
+            </button>
             <div class="session-item-info">
-              <div class="session-item-title">{{ s.title }}</div>
-              <div class="session-item-meta">{{ s.vehicle_info|default:"Автомобиль OBD-II" }} • {{ s.updated_at|date:"H:i" }}</div>
+              <div class="session-item-title-row">
+                <span class="session-item-title">{{ s.title }}</span>
+                <button type="button" class="btn-rename-session" data-rename-session="{{ s.id }}" data-current-title="{{ s.title }}" title="Переименовать диалог">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/>
+                  </svg>
+                </button>
+              </div>
+              <div class="session-item-meta-row">
+                {% if s.tag %}
+                <span class="session-tag-badge">{{ s.tag }}</span>
+                {% else %}
+                <button type="button" class="btn-set-tag" data-set-tag-session="{{ s.id }}" title="Назначить тег">+тег</button>
+                {% endif %}
+                <span>{{ s.vehicle_info|default:"Автомобиль OBD-II" }} • {{ s.updated_at|date:"H:i" }}</span>
+              </div>
             </div>
             <button type="button" class="btn-delete-session" data-delete-session="{{ s.id }}" title="Удалить сессию" aria-label="Удалить сессию">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -108,53 +158,34 @@
           {% endfor %}
         </div>
 
-        <!-- Карточка динамического фонового воркера выжимки контекста -->
+        <!-- Карточка динамического фонового воркера выжимки контекста текущей сессии -->
         <div class="context-worker-card">
           <div class="worker-header-row">
-            <span style="font-size: 0.8rem; font-weight: 700;">Фоновый воркер памяти</span>
-            <span class="worker-badge" id="sidebarWorkerBadge">Синхронизирован</span>
+            <span style="font-size: 0.8rem; font-weight: 700;">Память текущей сессии</span>
+            <span class="worker-badge" id="sidebarWorkerBadge">Синхронизировано</span>
           </div>
           <p style="font-size: 0.72rem; color: var(--text-muted); margin-bottom: 6px;">
-            Динамически оптимизирует контекст под свободный объем окна (модель помнит последние 5 вопросов и 5 ответов ИИ).
+            Модель динамически помнит не менее 5 последних вопросов и 5 ответов ИИ, а ранние сообщения сжимаются воркером.
           </p>
 
           <label for="dialogSummaryTextarea" style="display:block; font-size:0.73rem; font-weight:600; margin-bottom:4px; color:var(--text-secondary);">
-            Выжимка ранней истории диалога:
+            Выжимка ранней истории:
           </label>
-          <textarea id="dialogSummaryTextarea" class="summary-box" rows="4" style="width:100%; resize:vertical;" placeholder="Выжимка сформируется автоматически после первых сообщений...">{{ current_session.summary }}</textarea>
+          <textarea id="dialogSummaryTextarea" class="summary-box" rows="3" style="width:100%; resize:vertical;" placeholder="Выжимка сформируется автоматически...">{{ current_session.summary }}</textarea>
 
-          <div class="toggle-row">
-            <label for="chkCrossDialogMemory" style="cursor:pointer; flex:1;">
-              Междиалоговая память (между сессиями)
-            </label>
-            <input type="checkbox" id="chkCrossDialogMemory" class="custom-checkbox" {% if active_settings.cross_dialog_memory_enabled %}checked{% endif %} />
-          </div>
-
-          <div id="globalMemoryWrap" style="margin-top: 8px; {% if not active_settings.cross_dialog_memory_enabled %}display:none;{% endif %}">
-            <label for="globalSummaryTextarea" style="display:block; font-size:0.72rem; color:var(--text-muted); margin-bottom:3px;">
-              Междиалоговая сводка по автомобилю:
-            </label>
-            <textarea id="globalSummaryTextarea" class="summary-box" rows="3" style="width:100%; resize:vertical;" placeholder="Накопительная память по всем диалогам...">{{ active_settings.global_memory_summary }}</textarea>
-          </div>
+          <button type="button" class="btn-action-ghost" id="btnOpenMemorySettingsFromSidebar" style="width:100%; margin-top:8px; display:flex; align-items:center; justify-content:center; gap:6px;">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+            </svg>
+            <span>Междиалоговая память & Настройки</span>
+          </button>
         </div>
       </div>
     </aside>
 
     <!-- 2. ЦЕНТРАЛЬНАЯ ПАНЕЛЬ: ДИАЛОГ С ЭКСПЕРТОМ И ДОК ВВОДА -->
     <section class="panel-main" id="panelMain" aria-label="Рабочая область диагностики">
-      <div class="vehicle-bar">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color:var(--accent-orange); flex-shrink:0;">
-          <rect x="3" y="4" width="18" height="16" rx="2"/><line x1="7" y1="8" x2="17" y2="8"/><line x1="7" y1="12" x2="17" y2="12"/><line x1="7" y1="16" x2="12" y2="16"/>
-        </svg>
-        <input type="text" id="vehicleInfoInput" class="vehicle-input" value="{{ current_session.vehicle_info }}" placeholder="Укажите авто: марка, модель, двигатель, КПП, пробег (например: Toyota Camry 2.5 АКПП 140 тыс. км)" aria-label="Профиль автомобиля" />
-        <div class="quick-scenarios" aria-label="Быстрые примеры поломок">
-          <button type="button" class="chip-scenario" data-quick-query="Двигатель троит на холостых, мигает Check Engine, ошибка P0300" data-quick-code="P0300">P0300 Троит ДВС</button>
-          <button type="button" class="chip-scenario" data-quick-query="Жёсткие пинки АКПП при переключении с 1 на 2 передачу, код P0796" data-quick-code="P0796">P0796 Пинки АКПП</button>
-          <button type="button" class="chip-scenario" data-quick-query="Педаль тормоза стала мягкой и проваливается, ошибка C0050" data-quick-code="C0050">C0050 Тормоза</button>
-          <button type="button" class="chip-scenario" data-quick-query="Потеря связи по шине CAN с блоком управления, ошибка U1900" data-quick-code="U1900">U1900 CAN-шина</button>
-          <button type="button" class="chip-scenario" data-quick-query="Пневмоподвеска не поднимает кузов, ошибка компрессора C1731" data-quick-code="C1731">C1731 Пневма</button>
-        </div>
-      </div>
+      <input type="hidden" id="vehicleInfoInput" value="{{ current_session.vehicle_info|default:'Универсальный профиль OBD-II' }}" />
 
       <!-- Панель массового управления и удаления сообщений (Чекбоксы / Выделить все) -->
       <div class="chat-selection-toolbar" id="chatSelectionToolbar" style="display:none;" aria-label="Управление сообщениями">
@@ -395,6 +426,137 @@
         <div style="display:flex; gap:8px;">
           <input type="text" id="arQuickInput" class="dtc-input" placeholder="Быстрый вопрос или код DTC в AR..." />
           <button type="button" class="btn-send" id="btnArSendQuick">Отправить</button>
+        </div>
+      </div>
+    </div>
+  <!-- ====================================================================
+       МОДАЛЬНОЕ ОКНО: НАСТРОЙКИ СИСТЕМЫ И МЕЖДИАЛОГОВОЙ ПАМЯТИ
+       ==================================================================== -->
+  <div class="modal-backdrop" id="settingsModal" role="dialog" aria-modal="true" aria-labelledby="settingsModalTitle" style="display:none;">
+    <div class="settings-modal-card">
+      <div class="panel-section-header">
+        <span id="settingsModalTitle">Настройки ИИдеал Авто и Памяти</span>
+        <button type="button" class="btn-icon-top" id="btnCloseSettingsModal" aria-label="Закрыть настройки">✕</button>
+      </div>
+      <div class="settings-modal-body">
+        <div class="settings-section">
+          <div class="settings-section-title">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/>
+            </svg>
+            <span>Междиалоговая память (Cross-Dialog Memory)</span>
+          </div>
+          <p class="settings-desc">
+            Позволяет экспертной модели Gemma 4 помнить глобальный профиль автомобиля, историю ремонтов и прошлые неисправности во всех созданных диалогах.
+          </p>
+          <div class="toggle-row" style="margin-top: 10px;">
+            <label for="chkCrossDialogMemory" style="cursor:pointer; flex:1; font-weight:600;">
+              Включить накопление глобальной памяти между диалогами
+            </label>
+            <input type="checkbox" id="chkCrossDialogMemory" class="custom-checkbox" {% if active_settings.cross_dialog_memory_enabled %}checked{% endif %} />
+          </div>
+
+          <div id="globalMemorySectionWrap" style="margin-top: 12px; {% if not active_settings.cross_dialog_memory_enabled %}display:none;{% endif %}">
+            <label for="globalSummaryTextarea" style="display:block; font-size:0.75rem; font-weight:600; color:var(--text-secondary); margin-bottom:4px;">
+              Глобальная база знаний и накопленный профиль:
+            </label>
+            <textarea id="globalSummaryTextarea" class="summary-box" rows="5" style="width:100%; resize:vertical;" placeholder="Глобальный профиль сформируется автоматически по ходу диалогов...">{{ active_settings.global_memory_summary }}</textarea>
+            <div style="display:flex; justify-content:flex-end; gap:8px; margin-top:8px;">
+              <button type="button" class="btn-action-danger" id="btnClearGlobalMemory">Очистить глобальную память</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="settings-section">
+          <div class="settings-section-title">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="10"/><path d="m4.93 4.93 4.24 4.24"/><path d="m14.83 9.17 4.24-4.24"/><path d="m14.83 14.83 4.24 4.24"/><path d="m9.17 14.83-4.24 4.24"/>
+            </svg>
+            <span>Параметры экспертной модели Gemma 4 12B</span>
+          </div>
+          <div class="settings-info-grid">
+            <div class="info-tile">
+              <span class="info-label">Модель</span>
+              <span class="info-val">Gemma 4 12B Instruct</span>
+            </div>
+            <div class="info-tile">
+              <span class="info-label">Метод инференса</span>
+              <span class="info-val">AirLLM Layer-by-Layer</span>
+            </div>
+            <div class="info-tile">
+              <span class="info-label">Окно контекста</span>
+              <span class="info-val">32 768 токенов</span>
+            </div>
+            <div class="info-tile">
+              <span class="info-label">Целевой ответ</span>
+              <span class="info-val">~5 000 токенов</span>
+            </div>
+          </div>
+        </div>
+
+        <div style="display:flex; justify-content:flex-end; gap:10px; margin-top:10px;">
+          <button type="button" class="btn-action-ghost" id="btnCloseSettingsModalBottom">Закрыть</button>
+          <button type="button" class="btn-action-success" id="btnSaveSettings">Сохранить изменения</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ====================================================================
+       МОДАЛЬНОЕ ОКНО: СОЗДАНИЕ ПРОЕКТА
+       ==================================================================== -->
+  <div class="modal-backdrop" id="newProjectModal" role="dialog" aria-modal="true" aria-labelledby="newProjectModalTitle" style="display:none;">
+    <div class="project-modal-card">
+      <div class="panel-section-header">
+        <span id="newProjectModalTitle">Новый проект диагностики</span>
+        <button type="button" class="btn-icon-top" id="btnCloseProjectModal" aria-label="Закрыть">✕</button>
+      </div>
+      <div class="settings-modal-body">
+        <div>
+          <label for="projectNameInput" style="display:block; font-size:0.8rem; font-weight:600; margin-bottom:4px;">Название проекта / Автомобиля:</label>
+          <input type="text" id="projectNameInput" class="dtc-input" placeholder="Например: Toyota Camry 2.5 (2020) или Ремонт автопарка" />
+        </div>
+        <div>
+          <label for="projectDescInput" style="display:block; font-size:0.8rem; font-weight:600; margin-bottom:4px;">Описание (опционально):</label>
+          <textarea id="projectDescInput" class="summary-box" rows="2" style="width:100%;" placeholder="Заметки по проекту..."></textarea>
+        </div>
+        <div style="display:flex; justify-content:flex-end; gap:8px;">
+          <button type="button" class="btn-action-ghost" id="btnCancelProject">Отмена</button>
+          <button type="button" class="btn-send" id="btnSubmitProject">Создать проект</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ====================================================================
+       МОДАЛЬНОЕ ОКНО: ТЕГИРОВАНИЕ ДИАЛОГА
+       ==================================================================== -->
+  <div class="modal-backdrop" id="tagModal" role="dialog" aria-modal="true" aria-labelledby="tagModalTitle" style="display:none;">
+    <div class="project-modal-card" style="max-width:440px;">
+      <div class="panel-section-header">
+        <span id="tagModalTitle">Тег диалога</span>
+        <button type="button" class="btn-icon-top" id="btnCloseTagModal" aria-label="Закрыть">✕</button>
+      </div>
+      <div class="settings-modal-body">
+        <input type="hidden" id="tagModalSessionId" value="" />
+        <div>
+          <label for="sessionTagInput" style="display:block; font-size:0.8rem; font-weight:600; margin-bottom:4px;">Тег (система или категория):</label>
+          <input type="text" id="sessionTagInput" class="dtc-input" placeholder="Например: ДВС, АКПП, Подвеска..." />
+        </div>
+        <div style="display:flex; gap:6px; flex-wrap:wrap; margin-top:4px;">
+          <button type="button" class="tag-chip js-quick-tag" data-tag-val="ДВС">ДВС</button>
+          <button type="button" class="tag-chip js-quick-tag" data-tag-val="АКПП">АКПП</button>
+          <button type="button" class="tag-chip js-quick-tag" data-tag-val="Электрика">Электрика</button>
+          <button type="button" class="tag-chip js-quick-tag" data-tag-val="Тормоза">Тормоза</button>
+          <button type="button" class="tag-chip js-quick-tag" data-tag-val="Подвеска">Подвеска</button>
+          <button type="button" class="tag-chip js-quick-tag" data-tag-val="CAN-шина">CAN-шина</button>
+        </div>
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-top:12px;">
+          <button type="button" class="btn-action-danger" id="btnClearSessionTag">Снять тег</button>
+          <div style="display:flex; gap:8px;">
+            <button type="button" class="btn-action-ghost" id="btnCancelTag">Отмена</button>
+            <button type="button" class="btn-send" id="btnSaveSessionTag">Сохранить</button>
+          </div>
         </div>
       </div>
     </div>

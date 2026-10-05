@@ -677,7 +677,7 @@ def api_ask_expert(request: HttpRequest) -> JsonResponse:
                     "mime_type": mime,
                     "size_bytes": len(f_bytes),
                     "mode": voice_info["mode_label"],
-                    "transcript": voice_info["transcript"] or f"Прямой аудиовход 16 кГц ({voice_info.get('duration_sec', 0.0):.1f} с)",
+                    "transcript": voice_info["transcript"] or f"Прямой аудиовход Gemma 4 ({voice_info.get('duration_sec', 0.0):.1f} с)",
                 }
             )
         else:
@@ -725,7 +725,7 @@ def api_ask_expert(request: HttpRequest) -> JsonResponse:
                     "mime_type": "audio/webm",
                     "size_bytes": len(v_bytes),
                     "mode": voice_info["mode_label"],
-                    "transcript": voice_info["transcript"] or f"Прямой аудиовход 16 кГц ({voice_info.get('duration_sec', 0.0):.1f} с)",
+                    "transcript": voice_info["transcript"] or f"Прямой аудиовход Gemma 4 ({voice_info.get('duration_sec', 0.0):.1f} с)",
                 }
             )
         except Exception:
@@ -751,7 +751,7 @@ def api_ask_expert(request: HttpRequest) -> JsonResponse:
         query = f"Диагностика и план устранения кодов ошибок: {', '.join(attached_codes)}"
     if not query and voice_info:
         dur = voice_info.get("duration_sec") or 0.0
-        query = f"Голосовой запрос / аудиозапись ({dur:.1f} с)"
+        query = f"Голосовой запрос мастера ({dur:.1f} с)"
     if not query and image_analyses:
         query = "Визуальная диагностика неисправности автомобиля по прикреплённому фото"
     if not query and doc_analyses:

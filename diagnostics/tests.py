@@ -36,6 +36,7 @@ from .schemas import (
     truncate_to_last_sentence,
     validate_and_coerce_structured_json,
 )
+from . import voice_service
 from .voice_service import decode_audio_to_waveform_16k, process_voice_input
 
 
@@ -247,11 +248,13 @@ class AIdealAutoComprehensiveTests(TransactionTestCase):
             wf.writeframes(wave_data.tobytes())
         raw_wav_bytes = wav_buf.getvalue()
 
-        # Тест voice_service
+        # Тест voice_service: исключительно нативный ввод Gemma 4 без Whisper
         voice_res = process_voice_input(raw_wav_bytes, filename="engine_sound.wav", voice_mode="direct_audio")
         self.assertTrue(voice_res["audio_attached_to_model"])
         self.assertIsNotNone(voice_res["audio_waveform_16k"])
         self.assertEqual(len(voice_res["audio_waveform_16k"]), sample_rate)
+        self.assertEqual(voice_res["engine"], "Google Gemma 4 Unified (embed_audio 16kHz)")
+        self.assertFalse(hasattr(voice_service, "get_asr_pipeline"))
 
         # Тест отправки чисто голосового запроса через /api/ask/ без текстового поля
         from django.core.files.uploadedfile import SimpleUploadedFile

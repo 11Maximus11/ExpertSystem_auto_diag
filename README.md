@@ -132,11 +132,11 @@ chmod +x run_dev.sh
 
 ---
 
-## 5. Нативный аудиовход и чистое хранение вложений в БД (Base64 Data URI)
+## 5. Нативный аудиовход (Gemma 4 embed_audio) и чистое хранение вложений в БД (Base64 Data URI)
 
 Все прикреплённые материалы (фотографии узлов, снимки с камеры, логи OBD-II, документы PDF/DOCX и аудиозаписи) сохраняются **напрямую в базе данных SQLite в виде base64 Data URI** (`data:<mime>;base64,...`), без записи файлов на диск сервера:
 - **Полная автономность и безопасность**: На сервере не накапливаются временные файлы в директории `media/`, а резервное копирование и экспорт диалогов инкапсулированы внутри базы данных.
-- **Прямой нативный аудиовход (Direct Gemma 4 Audio)**: Сервис [`diagnostics/voice_service.py`](file:///d:/GDrive/Документы/Visual%20Studio%202022/ExpertSystem_auto_diag/diagnostics/voice_service.py) декодирует аудиозаписи любых форматов (`.webm`, `.wav`, `.mp3`, `.ogg`, `.m4a`) в **16 кГц моно float32 тензор** с нормализацией амплитуды для аудио-проектора `model.embed_audio` Gemma 4, дополняясь локальным пайплайном Whisper-tiny fallback для транскрибации речи.
+- **Прямой нативный аудиовход (Direct Gemma 4 Audio)**: Сервис [`diagnostics/voice_service.py`](file:///d:/GDrive/Документы/Visual%20Studio%202022/ExpertSystem_auto_diag/diagnostics/voice_service.py) декодирует аудиозаписи любых форматов (`.webm`, `.wav`, `.mp3`, `.ogg`, `.m4a`) в **16 кГц моно float32 тензор** с фильтрацией DC offset и нормализацией амплитуды для аудио-проектора `model.embed_audio` Gemma 4. **Сторонние модели распознавания речи (Whisper) полностью исключены** — распознавание русской речи мастера и акустический анализ шумов автомобиля осуществляются исключительно нативно архитектурой Google Gemma 4 12B Unified.
 
 ---
 
@@ -209,7 +209,7 @@ ExpertSystem_auto_diag/
 │   ├── airllm_vulkan_service.py   # AdaptiveAirLLMGemma4 + стриминг слоев + Function Calling
 │   ├── context_worker.py          # Динамический вытесняемый воркер памяти (окно 32K, 5 реплик)
 │   ├── document_service.py        # Универсальный парсер документов (.pdf, .docx, .txt, .log, .json, .csv)
-│   ├── voice_service.py           # Нативный аудиовход 16 кГц float32 + Whisper fallback STT
+│   ├── voice_service.py           # Нативный аудиовход 16 кГц float32 для Gemma 4 (embed_audio)
 │   ├── schemas.py                 # Pydantic v2 схемы, JSON Schema и truncate_to_last_sentence
 │   ├── models.py                  # Модели SQLite: SystemSettings, DiagnosticProject, DialogSession, ChatMessage
 │   ├── views.py                   # Представления интерфейса, авторизации, REST API и PWA

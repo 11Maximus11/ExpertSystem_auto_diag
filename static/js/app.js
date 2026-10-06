@@ -21,6 +21,9 @@
     stagedFiles: [],
     stagedCameraShots: [],
     stagedVoiceBlob: null,
+    stagedVoicePreviewUrl: null,
+    stagedVoiceDuration: 0,
+    recordingStartTime: 0,
     stagedVoiceTranscript: '',
     isRecording: false,
     mediaRecorder: null,
@@ -579,8 +582,10 @@
         if (!f._previewUrl) {
           try { f._previewUrl = URL.createObjectURL(f); } catch (_) {}
         }
+        const dur = (f._duration && isFinite(f._duration) && f._duration > 0) ? f._duration : 0;
+        const durTxt = dur > 0 ? `0:00 / ${formatAudioTime(dur)}` : '0:00 / --:--';
         cards.push(
-          `<span class="staged-card staged-card-audio">
+          `<span class="staged-card staged-card-audio" data-audio-src="${escapeHtml(f._previewUrl || '')}" data-audio-dur="${dur}">
             <div class="staged-card-icon-wrap staged-icon-audio">
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
@@ -589,7 +594,7 @@
             <div class="staged-audio-content">
               <div class="staged-audio-top-row">
                 <span class="staged-card-title" title="${escapeHtml(f.name)}">${escapeHtml(f.name)}</span>
-                <span class="audio-time-label js-audio-time">0:00 / --:--</span>
+                <span class="audio-time-label js-audio-time">${durTxt}</span>
               </div>
               <div class="staged-audio-scrubber-row">
                 <button type="button" class="btn-audio-scrub-play js-audio-play-toggle" title="Воспроизвести / Пауза" aria-label="Воспроизвести">
@@ -597,7 +602,7 @@
                   <svg class="pause-icon" width="13" height="13" viewBox="0 0 24 24" fill="currentColor" style="display:none;"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
                 </button>
                 <input type="range" class="audio-seek-slider js-audio-seek" min="0" max="100" value="0" step="0.1" aria-label="Перемотка аудио" />
-                <audio src="${escapeHtml(f._previewUrl || '')}" preload="metadata" class="js-audio-element" style="display:none;"></audio>
+                <audio src="${escapeHtml(f._previewUrl || '')}" preload="auto" class="js-audio-element" style="position:absolute; width:0; height:0; opacity:0; pointer-events:none;"></audio>
               </div>
             </div>
             <button type="button" class="staged-card-remove" data-remove-file="${idx}" title="Удалить аудио" aria-label="Удалить">
@@ -619,14 +624,14 @@
               <div class="staged-card-meta-row">
                 <span class="staged-card-meta">${formatFileSize(f.size)}</span>
                 ${f._parsedDoc ? `
-                  <button type="button" class="btn-staged-doc-inspect js-open-doc-preview" data-file-idx="${idx}" title="Посмотреть точные данные, которые получит модель">
+                  <button type="button" class="btn-staged-doc-inspect js-open-doc-preview" data-file-idx="${idx}" title="Просмотреть точные данные, которые получит модель">
                     <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>
-                    <span>В модель</span>
+                    <span>Просмотреть</span>
                   </button>
                 ` : (f._parsing ? '<span class="staged-doc-analyzing">Анализ...</span>' : `
-                  <button type="button" class="btn-staged-doc-inspect js-open-doc-preview" data-file-idx="${idx}" title="Посмотреть документ">
+                  <button type="button" class="btn-staged-doc-inspect js-open-doc-preview" data-file-idx="${idx}" title="Просмотреть документ">
                     <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>
-                    <span>В модель</span>
+                    <span>Просмотреть</span>
                   </button>
                 `)}
               </div>
@@ -644,8 +649,12 @@
       if (!state.stagedVoicePreviewUrl) {
         try { state.stagedVoicePreviewUrl = URL.createObjectURL(state.stagedVoiceBlob); } catch (_) {}
       }
+      const dur = (state.stagedVoiceDuration && isFinite(state.stagedVoiceDuration) && state.stagedVoiceDuration > 0)
+        ? state.stagedVoiceDuration
+        : (state.stagedVoiceBlob._duration && isFinite(state.stagedVoiceBlob._duration) ? state.stagedVoiceBlob._duration : 0);
+      const durTxt = dur > 0 ? `0:00 / ${formatAudioTime(dur)}` : '0:00 / --:--';
       cards.push(
-        `<span class="staged-card staged-card-audio">
+        `<span class="staged-card staged-card-audio" data-audio-src="${escapeHtml(state.stagedVoicePreviewUrl || '')}" data-audio-dur="${dur}">
           <div class="staged-card-icon-wrap staged-icon-audio">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
@@ -654,7 +663,7 @@
           <div class="staged-audio-content">
             <div class="staged-audio-top-row">
               <span class="staged-card-title">Голосовая запись</span>
-              <span class="audio-time-label js-audio-time">0:00 / --:--</span>
+              <span class="audio-time-label js-audio-time">${durTxt}</span>
             </div>
             <div class="staged-audio-scrubber-row">
               <button type="button" class="btn-audio-scrub-play js-audio-play-toggle" title="Воспроизвести / Пауза" aria-label="Воспроизвести">
@@ -662,7 +671,7 @@
                 <svg class="pause-icon" width="13" height="13" viewBox="0 0 24 24" fill="currentColor" style="display:none;"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
               </button>
               <input type="range" class="audio-seek-slider js-audio-seek" min="0" max="100" value="0" step="0.1" aria-label="Перемотка аудио" />
-              <audio src="${escapeHtml(state.stagedVoicePreviewUrl || '')}" preload="metadata" class="js-audio-element" style="display:none;"></audio>
+              <audio src="${escapeHtml(state.stagedVoicePreviewUrl || '')}" preload="auto" class="js-audio-element" style="position:absolute; width:0; height:0; opacity:0; pointer-events:none;"></audio>
             </div>
           </div>
           <button type="button" class="staged-card-remove" data-remove-voice="1" title="Удалить запись" aria-label="Удалить">
@@ -702,6 +711,7 @@
         btn.addEventListener('click', () => {
           state.stagedVoiceBlob = null;
           state.stagedVoiceTranscript = '';
+          state.stagedVoiceDuration = 0;
           if (state.stagedVoicePreviewUrl) {
             try { URL.revokeObjectURL(state.stagedVoicePreviewUrl); } catch (_) {}
             state.stagedVoicePreviewUrl = null;
@@ -710,7 +720,7 @@
         });
       });
 
-      // Инспекция документа (кнопка "В модель")
+      // Инспекция документа (кнопка "Просмотреть")
       bar.querySelectorAll('.js-open-doc-preview').forEach((btn) => {
         btn.addEventListener('click', (e) => {
           e.stopPropagation();
@@ -736,12 +746,21 @@
       bar.querySelectorAll('audio.js-audio-element').forEach((aud) => {
         const updateDur = () => {
           const card = aud.closest('.staged-card-audio, .attachment-card-audio');
-          const timeLbl = card ? card.querySelector('.js-audio-time') : null;
-          if (timeLbl && aud.duration && isFinite(aud.duration)) {
-            timeLbl.textContent = `0:00 / ${formatAudioTime(aud.duration)}`;
+          if (!card) return;
+          const timeLbl = card.querySelector('.js-audio-time');
+          let d = (aud.duration && isFinite(aud.duration) && aud.duration > 0)
+            ? aud.duration
+            : Number(card.dataset.audioDur) || 0;
+          if (d > 0) {
+            card.dataset.audioDur = String(d);
+            if (timeLbl && (!aud.currentTime || aud.currentTime === 0)) {
+              timeLbl.textContent = `0:00 / ${formatAudioTime(d)}`;
+            }
           }
         };
         aud.addEventListener('loadedmetadata', updateDur);
+        aud.addEventListener('durationchange', updateDur);
+        aud.addEventListener('canplay', updateDur);
         if (aud.duration && isFinite(aud.duration)) updateDur();
       });
     });
@@ -768,8 +787,10 @@
         `;
       } else if (att.type === 'audio') {
         const modeLabel = att.mode && !att.mode.toLowerCase().includes('ggml') ? att.mode : 'Gemma 4 Native Audio';
+        const attDur = att.duration || att.duration_seconds || 0;
+        const durTxt = attDur > 0 ? `0:00 / ${formatAudioTime(attDur)}` : '0:00';
         html += `
-          <div class="attachment-card-audio">
+          <div class="attachment-card-audio" data-audio-src="${escapeHtml(att.url || '')}" data-audio-dur="${attDur}">
             <div class="attachment-card-audio-header">
               <div style="display:flex; align-items:center; gap:6px;">
                 <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -788,7 +809,7 @@
                   <svg class="pause-icon" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="display:none;"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
                 </button>
                 <input type="range" class="audio-seek-slider js-audio-seek" min="0" max="100" value="0" step="0.1" aria-label="Перемотка аудио" style="max-width:140px; margin:0 4px;" />
-                <audio src="${escapeHtml(att.url)}" preload="metadata" class="js-audio-element" style="display:none;"></audio>
+                <audio src="${escapeHtml(att.url)}" preload="auto" class="js-audio-element" style="position:absolute; width:0; height:0; opacity:0; pointer-events:none;"></audio>
               ` : ''}
               <div class="audio-waveform-bars" aria-hidden="true">
                 <span class="audio-wave-bar" style="height:8px;"></span>
@@ -801,7 +822,7 @@
                 <span class="audio-wave-bar" style="height:18px;"></span>
                 <span class="audio-wave-bar" style="height:9px;"></span>
               </div>
-              <span class="audio-duration-txt js-audio-duration-display js-audio-time">0:00</span>
+              <span class="audio-duration-txt js-audio-duration-display js-audio-time">${durTxt}</span>
             </div>
             ${att.transcript ? `<div class="audio-transcript-note">«${escapeHtml(att.transcript)}»</div>` : ''}
           </div>
@@ -881,9 +902,9 @@
             ${extractedImgs}
             ${excerptBlock}
             <div class="attachment-doc-footer">
-              <button type="button" class="btn-staged-doc-inspect js-chat-inspect-doc" data-doc-json="${escapeHtml(docInspectJson)}" title="Посмотреть, что передано в контекст модели">
+              <button type="button" class="btn-staged-doc-inspect js-chat-inspect-doc" data-doc-json="${escapeHtml(docInspectJson)}" title="Просмотреть, что передано в контекст модели">
                 <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>
-                <span>Что в модели</span>
+                <span>Просмотреть</span>
               </button>
               ${att.url ? `
                 <a href="${escapeHtml(att.url)}" download="${escapeHtml(att.name || 'document')}" class="btn-doc-download" target="_blank" rel="noopener">
@@ -1685,6 +1706,11 @@
     state.stagedCameraShots = [];
     state.stagedVoiceBlob = null;
     state.stagedVoiceTranscript = '';
+    state.stagedVoiceDuration = 0;
+    if (state.stagedVoicePreviewUrl) {
+      try { URL.revokeObjectURL(state.stagedVoicePreviewUrl); } catch (_) {}
+      state.stagedVoicePreviewUrl = null;
+    }
     renderStagingBar();
 
     // 1. Мгновенно отображаем сообщение пользователя в чате (Optimistic UI), чтобы оно не исчезало
@@ -1707,7 +1733,14 @@
       } else if (isAud) {
         const objUrl = f._previewUrl || URL.createObjectURL(f);
         tempObjectUrls.push(objUrl);
-        optimisticAttachments.push({ type: 'audio', url: objUrl, name: f.name, size_bytes: f.size, mode: 'Gemma 4 Native Audio' });
+        optimisticAttachments.push({
+          type: 'audio',
+          url: objUrl,
+          name: f.name,
+          size_bytes: f.size,
+          duration: f._duration || 0,
+          mode: 'Gemma 4 Native Audio',
+        });
       } else {
         optimisticAttachments.push({ type: 'document', name: f.name, size_bytes: f.size, is_fully_processed: true });
       }
@@ -1720,6 +1753,7 @@
         url: vUrl,
         name: 'Голосовой запрос',
         size_bytes: voiceBlobSnapshot.size,
+        duration: voiceBlobSnapshot._duration || state.stagedVoiceDuration || 0,
         mode: 'Gemma 4 Native Audio',
         transcript: voiceTranscriptSnapshot || 'Голосовой запрос мастера',
       });
@@ -2180,6 +2214,7 @@
     }
 
     state.isRecording = true;
+    state.recordingStartTime = Date.now();
     state.stagedVoiceTranscript = '';
     setMicRecordingVisualState(true);
 
@@ -2240,8 +2275,41 @@
           stopMicSpectrogram();
           if (chunks.length > 0) {
             const blob = new Blob(chunks, { type: mimeType || 'audio/webm' });
+            const recElapsed = state.recordingStartTime
+              ? Math.max(0.3, (Date.now() - state.recordingStartTime) / 1000)
+              : 0;
+            blob._duration = recElapsed;
             state.stagedVoiceBlob = blob;
+            state.stagedVoiceDuration = recElapsed;
+            if (state.stagedVoicePreviewUrl) {
+              try { URL.revokeObjectURL(state.stagedVoicePreviewUrl); } catch (_) {}
+            }
+            state.stagedVoicePreviewUrl = URL.createObjectURL(blob);
             renderStagingBar();
+
+            // Точное декодирование PCM длительности через Web Audio API
+            blob.arrayBuffer().then((buf) => {
+              const AudioCtx = window.AudioContext || window.webkitAudioContext;
+              if (!AudioCtx) return;
+              const actx = new AudioCtx();
+              actx.decodeAudioData(buf).then((ab) => {
+                if (ab && isFinite(ab.duration) && ab.duration > 0) {
+                  blob._duration = ab.duration;
+                  state.stagedVoiceDuration = ab.duration;
+                  document.querySelectorAll('.staged-card-audio').forEach((c) => {
+                    c.dataset.audioDur = String(ab.duration);
+                    const tl = c.querySelector('.js-audio-time');
+                    const aud = c.querySelector('.js-audio-element');
+                    if (tl && (!aud || aud.paused)) {
+                      tl.textContent = `0:00 / ${formatAudioTime(ab.duration)}`;
+                    }
+                  });
+                }
+                actx.close().catch(() => {});
+              }).catch(() => {
+                actx.close().catch(() => {});
+              });
+            }).catch(() => {});
           }
           resolve();
         };
@@ -2939,7 +3007,28 @@
     fileInput?.addEventListener('change', () => {
       Array.from(fileInput.files || []).forEach((f) => {
         state.stagedFiles.push(f);
-        fetchDocPreview(f);
+        const isAud = (f.type && f.type.startsWith('audio/')) || /\.(wav|mp3|ogg|m4a|flac|webm|aac)$/i.test(f.name);
+        if (isAud) {
+          try {
+            f._previewUrl = URL.createObjectURL(f);
+            f.arrayBuffer().then((buf) => {
+              const AudioCtx = window.AudioContext || window.webkitAudioContext;
+              if (!AudioCtx) return;
+              const actx = new AudioCtx();
+              actx.decodeAudioData(buf).then((ab) => {
+                if (ab && isFinite(ab.duration) && ab.duration > 0) {
+                  f._duration = ab.duration;
+                  renderStagingBar();
+                }
+                actx.close().catch(() => {});
+              }).catch(() => {
+                actx.close().catch(() => {});
+              });
+            }).catch(() => {});
+          } catch (_) {}
+        } else {
+          fetchDocPreview(f);
+        }
       });
       fileInput.value = '';
       renderStagingBar();
@@ -3430,6 +3519,55 @@
       }
     });
 
+  function getEffectiveAudioDuration(card, audio) {
+    if (audio && audio.duration && isFinite(audio.duration) && audio.duration > 0) {
+      return audio.duration;
+    }
+    const cardDur = card ? Number(card.dataset.audioDur) : 0;
+    if (cardDur && isFinite(cardDur) && cardDur > 0) {
+      return cardDur;
+    }
+    if (state.stagedVoiceDuration && isFinite(state.stagedVoiceDuration) && state.stagedVoiceDuration > 0) {
+      return state.stagedVoiceDuration;
+    }
+    return 0;
+  }
+
+  function handleAudioMetadataLoaded(aud) {
+    if (!aud) return;
+    const card = aud.closest('.attachment-card-audio, .staged-card');
+    if (!card) return;
+    const timeLbl = card.querySelector('.js-audio-time') || card.querySelector('.js-audio-duration-display');
+    const dur = getEffectiveAudioDuration(card, aud);
+    if (dur > 0) {
+      card.dataset.audioDur = String(dur);
+      if (timeLbl && (!aud.currentTime || aud.currentTime === 0)) {
+        timeLbl.textContent = `0:00 / ${formatAudioTime(dur)}`;
+      }
+    }
+    // Chromium fix: WebM blobs created via MediaRecorder report duration: Infinity.
+    // Nudging currentTime to the end forces Chromium to determine the true duration.
+    if (aud.duration === Infinity) {
+      const onNudge = () => {
+        aud.removeEventListener('timeupdate', onNudge);
+        aud.removeEventListener('seeked', onNudge);
+        aud.currentTime = 0;
+        const resolvedDur = getEffectiveAudioDuration(card, aud);
+        if (resolvedDur > 0) {
+          card.dataset.audioDur = String(resolvedDur);
+          if (timeLbl && (!aud.currentTime || aud.currentTime === 0)) {
+            timeLbl.textContent = `0:00 / ${formatAudioTime(resolvedDur)}`;
+          }
+        }
+      };
+      aud.addEventListener('timeupdate', onNudge);
+      aud.addEventListener('seeked', onNudge);
+      try {
+        aud.currentTime = 1e101;
+      } catch (_) {}
+    }
+  }
+
     // =========================================================================
     // Обработчики превью вложений (Лайтбокс, Аудиоплеер, Сворачивание документов)
     // =========================================================================
@@ -3444,6 +3582,23 @@
         closeImageLightbox();
       }
     });
+
+    // Слушатели событий медиа через фазу перехвата (capture), чтобы ловить события на динамически создаваемых <audio>
+    document.addEventListener('loadedmetadata', (e) => {
+      if (e.target && e.target.matches && e.target.matches('audio.js-audio-element')) {
+        handleAudioMetadataLoaded(e.target);
+      }
+    }, true);
+    document.addEventListener('durationchange', (e) => {
+      if (e.target && e.target.matches && e.target.matches('audio.js-audio-element')) {
+        handleAudioMetadataLoaded(e.target);
+      }
+    }, true);
+    document.addEventListener('canplay', (e) => {
+      if (e.target && e.target.matches && e.target.matches('audio.js-audio-element')) {
+        handleAudioMetadataLoaded(e.target);
+      }
+    }, true);
 
     document.addEventListener('click', (e) => {
       // 1. Клик по превью фото для открытия лайтбокса
@@ -3469,7 +3624,17 @@
         const slider = card.querySelector('.js-audio-seek');
         const durationDisplay = card.querySelector('.js-audio-time') || card.querySelector('.js-audio-duration-display');
 
+        // Гарантируем корректный src
+        if (!audio.src && card.dataset.audioSrc) {
+          audio.src = card.dataset.audioSrc;
+        }
+
         if (audio.paused) {
+          const dur = getEffectiveAudioDuration(card, audio);
+          if (dur > 0 && (audio.currentTime >= dur - 0.08 || audio.currentTime >= dur)) {
+            audio.currentTime = 0;
+          }
+
           // Останавливаем любое другое играющее аудио
           document.querySelectorAll('audio.js-audio-element').forEach((other) => {
             if (other !== audio && !other.paused) {
@@ -3491,23 +3656,29 @@
             }
           });
 
-          audio.play().then(() => {
-            card.classList.add('playing');
-            if (playIcon) playIcon.style.display = 'none';
-            if (pauseIcon) pauseIcon.style.display = 'block';
-          }).catch(() => {});
-
           audio.ontimeupdate = () => {
             const cur = audio.currentTime || 0;
-            const dur = audio.duration;
-            if (slider && dur && isFinite(dur)) {
-              slider.value = (cur / dur) * 100;
+            const currentDur = getEffectiveAudioDuration(card, audio);
+            if (slider && currentDur > 0) {
+              slider.value = Math.min(100, Math.max(0, (cur / currentDur) * 100));
             }
             if (durationDisplay) {
-              if (dur && isFinite(dur)) {
-                durationDisplay.textContent = `${formatAudioTime(cur)} / ${formatAudioTime(dur)}`;
+              if (currentDur > 0) {
+                durationDisplay.textContent = `${formatAudioTime(cur)} / ${formatAudioTime(currentDur)}`;
               } else {
                 durationDisplay.textContent = formatAudioTime(cur);
+              }
+            }
+            // Автоматическая остановка для WebM с Infinity duration в Chromium
+            if (currentDur > 0 && cur >= currentDur - 0.08) {
+              audio.pause();
+              audio.currentTime = 0;
+              card.classList.remove('playing');
+              if (playIcon) playIcon.style.display = 'block';
+              if (pauseIcon) pauseIcon.style.display = 'none';
+              if (slider) slider.value = 0;
+              if (durationDisplay) {
+                durationDisplay.textContent = `0:00 / ${formatAudioTime(currentDur)}`;
               }
             }
           };
@@ -3517,10 +3688,32 @@
             if (playIcon) playIcon.style.display = 'block';
             if (pauseIcon) pauseIcon.style.display = 'none';
             if (slider) slider.value = 0;
-            if (durationDisplay && audio.duration && isFinite(audio.duration)) {
-              durationDisplay.textContent = `0:00 / ${formatAudioTime(audio.duration)}`;
+            const endDur = getEffectiveAudioDuration(card, audio);
+            if (durationDisplay && endDur > 0) {
+              durationDisplay.textContent = `0:00 / ${formatAudioTime(endDur)}`;
             }
           };
+
+          const p = audio.play();
+          if (p && typeof p.then === 'function') {
+            p.then(() => {
+              card.classList.add('playing');
+              if (playIcon) playIcon.style.display = 'none';
+              if (pauseIcon) pauseIcon.style.display = 'block';
+            }).catch((err) => {
+              console.warn('Audio play error, attempting load retry:', err);
+              audio.load();
+              audio.play().then(() => {
+                card.classList.add('playing');
+                if (playIcon) playIcon.style.display = 'none';
+                if (pauseIcon) pauseIcon.style.display = 'block';
+              }).catch((e2) => console.error('Audio play retry error:', e2));
+            });
+          } else {
+            card.classList.add('playing');
+            if (playIcon) playIcon.style.display = 'none';
+            if (pauseIcon) pauseIcon.style.display = 'block';
+          }
         } else {
           audio.pause();
           card.classList.remove('playing');
@@ -3548,7 +3741,7 @@
         return;
       }
 
-      // 4. Клик по кнопке подробной инспекции документа в чате ("Что в модели")
+      // 4. Клик по кнопке подробной инспекции документа в чате ("Просмотреть")
       const chatDocBtn = e.target.closest('.js-chat-inspect-doc');
       if (chatDocBtn) {
         e.preventDefault();
@@ -3571,11 +3764,19 @@
       const audio = card ? card.querySelector('.js-audio-element') : null;
       const durationDisplay = card ? (card.querySelector('.js-audio-time') || card.querySelector('.js-audio-duration-display')) : null;
       if (!audio) return;
-      if (audio.duration && isFinite(audio.duration)) {
-        const target = (Number(slider.value) / 100) * audio.duration;
-        audio.currentTime = target;
-        if (durationDisplay) {
-          durationDisplay.textContent = `${formatAudioTime(target)} / ${formatAudioTime(audio.duration)}`;
+      const dur = getEffectiveAudioDuration(card, audio);
+      if (dur > 0) {
+        const frac = Math.min(100, Math.max(0, Number(slider.value))) / 100;
+        const target = Math.max(0, Math.min(dur, frac * dur));
+        if (isFinite(target)) {
+          try {
+            audio.currentTime = target;
+          } catch (err) {
+            console.warn('Audio seek error:', err);
+          }
+          if (durationDisplay) {
+            durationDisplay.textContent = `${formatAudioTime(target)} / ${formatAudioTime(dur)}`;
+          }
         }
       }
     });

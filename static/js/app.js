@@ -21,6 +21,7 @@
     stagedFiles: [],
     stagedCameraShots: [],
     stagedVoiceBlob: null,
+    stagedVoiceAudioBuffer: null,
     stagedVoicePreviewUrl: null,
     stagedVoiceDuration: 0,
     recordingStartTime: 0,
@@ -710,8 +711,10 @@
       bar.querySelectorAll('[data-remove-voice]').forEach((btn) => {
         btn.addEventListener('click', () => {
           state.stagedVoiceBlob = null;
+          state.stagedVoiceAudioBuffer = null;
           state.stagedVoiceTranscript = '';
           state.stagedVoiceDuration = 0;
+          if (typeof stopWebAudio === 'function') stopWebAudio(true);
           if (state.stagedVoicePreviewUrl) {
             try { URL.revokeObjectURL(state.stagedVoicePreviewUrl); } catch (_) {}
             state.stagedVoicePreviewUrl = null;
@@ -1705,8 +1708,10 @@
     state.stagedFiles = [];
     state.stagedCameraShots = [];
     state.stagedVoiceBlob = null;
+    state.stagedVoiceAudioBuffer = null;
     state.stagedVoiceTranscript = '';
     state.stagedVoiceDuration = 0;
+    if (typeof stopWebAudio === 'function') stopWebAudio(true);
     if (state.stagedVoicePreviewUrl) {
       try { URL.revokeObjectURL(state.stagedVoicePreviewUrl); } catch (_) {}
       state.stagedVoicePreviewUrl = null;
@@ -2274,7 +2279,9 @@
           stopStream(stream);
           stopMicSpectrogram();
           if (chunks.length > 0) {
-            const blob = new Blob(chunks, { type: mimeType || 'audio/webm' });
+            const rawMime = mr.mimeType || mimeType || 'audio/webm';
+            const cleanMime = rawMime.split(';')[0].trim() || 'audio/webm';
+            const blob = new Blob(chunks, { type: cleanMime });
             const recElapsed = state.recordingStartTime
               ? Math.max(0.3, (Date.now() - state.recordingStartTime) / 1000)
               : 0;
@@ -2292,10 +2299,12 @@
               const AudioCtx = window.AudioContext || window.webkitAudioContext;
               if (!AudioCtx) return;
               const actx = new AudioCtx();
-              actx.decodeAudioData(buf).then((ab) => {
+              actx.decodeAudioData(buf.slice(0)).then((ab) => {
                 if (ab && isFinite(ab.duration) && ab.duration > 0) {
                   blob._duration = ab.duration;
+                  blob._audioBuffer = ab;
                   state.stagedVoiceDuration = ab.duration;
+                  state.stagedVoiceAudioBuffer = ab;
                   document.querySelectorAll('.staged-card-audio').forEach((c) => {
                     c.dataset.audioDur = String(ab.duration);
                     const tl = c.querySelector('.js-audio-time');
@@ -3018,6 +3027,7 @@
               actx.decodeAudioData(buf).then((ab) => {
                 if (ab && isFinite(ab.duration) && ab.duration > 0) {
                   f._duration = ab.duration;
+                  f._audioBuffer = ab;
                   renderStagingBar();
                 }
                 actx.close().catch(() => {});
@@ -3545,26 +3555,148 @@
         timeLbl.textContent = `0:00 / ${formatAudioTime(dur)}`;
       }
     }
-    // Chromium fix: WebM blobs created via MediaRecorder report duration: Infinity.
-    // Nudging currentTime to the end forces Chromium to determine the true duration.
-    if (aud.duration === Infinity) {
-      const onNudge = () => {
-        aud.removeEventListener('timeupdate', onNudge);
-        aud.removeEventListener('seeked', onNudge);
-        aud.currentTime = 0;
-        const resolvedDur = getEffectiveAudioDuration(card, aud);
-        if (resolvedDur > 0) {
-          card.dataset.audioDur = String(resolvedDur);
-          if (timeLbl && (!aud.currentTime || aud.currentTime === 0)) {
-            timeLbl.textContent = `0:00 / ${formatAudioTime(resolvedDur)}`;
+  }
+
+  // =========================================================================
+  // Web Audio API движок воспроизведения (безотказный фоллбэк для любых браузеров)
+  // =========================================================================
+  const webAudioPlayer = {
+    ctx: null,
+    sourceNode: null,
+    audioBuffer: null,
+    startTime: 0,
+    pausedAt: 0,
+    isPlaying: false,
+    card: null,
+    rafId: null,
+  };
+
+  function getSharedAudioContext() {
+    if (!webAudioPlayer.ctx || webAudioPlayer.ctx.state === 'closed') {
+      const AudioCtx = window.AudioContext || window.webkitAudioContext;
+      if (AudioCtx) webAudioPlayer.ctx = new AudioCtx();
+    }
+    return webAudioPlayer.ctx;
+  }
+
+  function stopWebAudio(resetToZero = false) {
+    if (webAudioPlayer.rafId) {
+      cancelAnimationFrame(webAudioPlayer.rafId);
+      webAudioPlayer.rafId = null;
+    }
+    if (webAudioPlayer.sourceNode) {
+      try { webAudioPlayer.sourceNode.stop(); } catch (_) {}
+      try { webAudioPlayer.sourceNode.disconnect(); } catch (_) {}
+      webAudioPlayer.sourceNode = null;
+    }
+    if (resetToZero) {
+      webAudioPlayer.pausedAt = 0;
+    } else if (webAudioPlayer.ctx && webAudioPlayer.isPlaying) {
+      webAudioPlayer.pausedAt = Math.max(0, webAudioPlayer.ctx.currentTime - webAudioPlayer.startTime);
+    }
+    webAudioPlayer.isPlaying = false;
+    if (webAudioPlayer.card) {
+      webAudioPlayer.card.classList.remove('playing');
+      delete webAudioPlayer.card.dataset.webAudioPlaying;
+      const playIcon = webAudioPlayer.card.querySelector('.play-icon');
+      const pauseIcon = webAudioPlayer.card.querySelector('.pause-icon');
+      const slider = webAudioPlayer.card.querySelector('.js-audio-seek');
+      const durationDisplay = webAudioPlayer.card.querySelector('.js-audio-time') || webAudioPlayer.card.querySelector('.js-audio-duration-display');
+      if (playIcon) playIcon.style.display = 'block';
+      if (pauseIcon) pauseIcon.style.display = 'none';
+      if (resetToZero && slider) slider.value = 0;
+      const dur = webAudioPlayer.audioBuffer ? webAudioPlayer.audioBuffer.duration : 0;
+      if (resetToZero && durationDisplay && dur > 0) {
+        durationDisplay.textContent = `0:00 / ${formatAudioTime(dur)}`;
+      }
+    }
+  }
+
+  function startWebAudioBuffer(ab, card, slider, durationDisplay, playIcon, pauseIcon) {
+    const actx = getSharedAudioContext();
+    if (!actx || !ab) return;
+    if (actx.state === 'suspended') {
+      actx.resume().catch(() => {});
+    }
+
+    stopWebAudio(false);
+
+    const dur = ab.duration;
+    let offset = webAudioPlayer.pausedAt || 0;
+    if (offset >= dur - 0.05) offset = 0;
+
+    const srcNode = actx.createBufferSource();
+    srcNode.buffer = ab;
+    srcNode.connect(actx.destination);
+    webAudioPlayer.sourceNode = srcNode;
+    webAudioPlayer.audioBuffer = ab;
+    webAudioPlayer.startTime = actx.currentTime - offset;
+    webAudioPlayer.isPlaying = true;
+    webAudioPlayer.card = card;
+
+    card.classList.add('playing');
+    card.dataset.webAudioPlaying = '1';
+    if (playIcon) playIcon.style.display = 'none';
+    if (pauseIcon) pauseIcon.style.display = 'block';
+
+    srcNode.start(0, offset);
+
+    const tick = () => {
+      if (!webAudioPlayer.isPlaying || webAudioPlayer.card !== card) return;
+      const cur = Math.max(0, actx.currentTime - webAudioPlayer.startTime);
+      if (cur >= dur) {
+        stopWebAudio(true);
+        return;
+      }
+      if (slider) slider.value = Math.min(100, Math.max(0, (cur / dur) * 100));
+      if (durationDisplay) durationDisplay.textContent = `${formatAudioTime(cur)} / ${formatAudioTime(dur)}`;
+      webAudioPlayer.rafId = requestAnimationFrame(tick);
+    };
+    webAudioPlayer.rafId = requestAnimationFrame(tick);
+
+    srcNode.onended = () => {
+      if (webAudioPlayer.sourceNode === srcNode && webAudioPlayer.isPlaying) {
+        stopWebAudio(true);
+      }
+    };
+  }
+
+  function playViaWebAudio(card, audio, slider, durationDisplay, playIcon, pauseIcon) {
+    // 1. Попытка взять готовый декодированный AudioBuffer
+    let ab = state.stagedVoiceAudioBuffer || (state.stagedVoiceBlob && state.stagedVoiceBlob._audioBuffer);
+    if (!ab && card) {
+      const rmBtn = card.querySelector('[data-remove-file]');
+      const fileIdx = rmBtn ? Number(rmBtn.dataset.removeFile) : -1;
+      if (fileIdx >= 0 && state.stagedFiles[fileIdx]) {
+        ab = state.stagedFiles[fileIdx]._audioBuffer;
+      }
+    }
+
+    if (ab) {
+      startWebAudioBuffer(ab, card, slider, durationDisplay, playIcon, pauseIcon);
+      return;
+    }
+
+    // 2. Декодируем аудиофайл по URL/blob через fetch
+    const audioUrl = (audio && audio.src) || (card && card.dataset.audioSrc);
+    if (audioUrl) {
+      fetch(audioUrl)
+        .then((r) => r.arrayBuffer())
+        .then((buf) => {
+          const actx = getSharedAudioContext();
+          if (!actx) return;
+          return actx.decodeAudioData(buf);
+        })
+        .then((decodedAb) => {
+          if (decodedAb) {
+            if (state.stagedVoiceBlob) state.stagedVoiceBlob._audioBuffer = decodedAb;
+            state.stagedVoiceAudioBuffer = decodedAb;
+            startWebAudioBuffer(decodedAb, card, slider, durationDisplay, playIcon, pauseIcon);
           }
-        }
-      };
-      aud.addEventListener('timeupdate', onNudge);
-      aud.addEventListener('seeked', onNudge);
-      try {
-        aud.currentTime = 1e101;
-      } catch (_) {}
+        })
+        .catch((err) => {
+          console.error('Ошибка воспроизведения через Web Audio API:', err);
+        });
     }
   }
 
@@ -3624,18 +3756,23 @@
         const slider = card.querySelector('.js-audio-seek');
         const durationDisplay = card.querySelector('.js-audio-time') || card.querySelector('.js-audio-duration-display');
 
-        // Гарантируем корректный src
-        if (!audio.src && card.dataset.audioSrc) {
-          audio.src = card.dataset.audioSrc;
+        // Если сейчас играет Web Audio API на этой карточке — ставим на паузу
+        if (webAudioPlayer.isPlaying && webAudioPlayer.card === card) {
+          stopWebAudio(false);
+          return;
+        }
+
+        // Если карточка была на паузе в Web Audio режиме — продолжаем воспроизведение
+        if (card.dataset.webAudioPlaying !== undefined) {
+          playViaWebAudio(card, audio, slider, durationDisplay, playIcon, pauseIcon);
+          return;
         }
 
         if (audio.paused) {
-          const dur = getEffectiveAudioDuration(card, audio);
-          if (dur > 0 && (audio.currentTime >= dur - 0.08 || audio.currentTime >= dur)) {
-            audio.currentTime = 0;
-          }
+          // Останавливаем Web Audio на любой другой карточке
+          stopWebAudio(true);
 
-          // Останавливаем любое другое играющее аудио
+          // Останавливаем любое другое HTML5 аудио
           document.querySelectorAll('audio.js-audio-element').forEach((other) => {
             if (other !== audio && !other.paused) {
               other.pause();
@@ -3655,6 +3792,15 @@
               }
             }
           });
+
+          const dur = getEffectiveAudioDuration(card, audio);
+          if (dur > 0 && (audio.currentTime >= dur - 0.08 || audio.currentTime >= dur)) {
+            audio.currentTime = 0;
+          }
+
+          if (!audio.src && card.dataset.audioSrc) {
+            audio.src = card.dataset.audioSrc;
+          }
 
           audio.ontimeupdate = () => {
             const cur = audio.currentTime || 0;
@@ -3694,20 +3840,22 @@
             }
           };
 
-          const p = audio.play();
-          if (p && typeof p.then === 'function') {
-            p.then(() => {
+          // Попытка воспроизведения через нативный HTML5 audio
+          let playPromise;
+          try {
+            playPromise = audio.play();
+          } catch (syncErr) {
+            playPromise = Promise.reject(syncErr);
+          }
+
+          if (playPromise && typeof playPromise.then === 'function') {
+            playPromise.then(() => {
               card.classList.add('playing');
               if (playIcon) playIcon.style.display = 'none';
               if (pauseIcon) pauseIcon.style.display = 'block';
             }).catch((err) => {
-              console.warn('Audio play error, attempting load retry:', err);
-              audio.load();
-              audio.play().then(() => {
-                card.classList.add('playing');
-                if (playIcon) playIcon.style.display = 'none';
-                if (pauseIcon) pauseIcon.style.display = 'block';
-              }).catch((e2) => console.error('Audio play retry error:', e2));
+              console.warn('HTML5 Audio play failed, starting Web Audio API fallback:', err);
+              playViaWebAudio(card, audio, slider, durationDisplay, playIcon, pauseIcon);
             });
           } else {
             card.classList.add('playing');
@@ -3769,10 +3917,19 @@
         const frac = Math.min(100, Math.max(0, Number(slider.value))) / 100;
         const target = Math.max(0, Math.min(dur, frac * dur));
         if (isFinite(target)) {
-          try {
-            audio.currentTime = target;
-          } catch (err) {
-            console.warn('Audio seek error:', err);
+          if (webAudioPlayer.card === card || card.dataset.webAudioPlaying !== undefined) {
+            webAudioPlayer.pausedAt = target;
+            if (webAudioPlayer.isPlaying) {
+              const playIcon = card.querySelector('.play-icon');
+              const pauseIcon = card.querySelector('.pause-icon');
+              playViaWebAudio(card, audio, slider, durationDisplay, playIcon, pauseIcon);
+            }
+          } else {
+            try {
+              audio.currentTime = target;
+            } catch (err) {
+              console.warn('Audio seek error:', err);
+            }
           }
           if (durationDisplay) {
             durationDisplay.textContent = `${formatAudioTime(target)} / ${formatAudioTime(dur)}`;

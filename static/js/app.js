@@ -1694,11 +1694,15 @@
       formData.append('attachments', file);
     });
     if (voiceBlobSnapshot) {
-      formData.append('attachments', voiceBlobSnapshot, 'voice_input.webm');
+      const ext = (voiceBlobSnapshot.type && voiceBlobSnapshot.type.includes('wav')) ? 'wav' : 'webm';
+      formData.append('attachments', voiceBlobSnapshot, `voice_input.${ext}`);
     }
     if (voiceTranscriptSnapshot) {
       formData.append('voice_transcript', voiceTranscriptSnapshot);
     }
+
+    // Сохраняем URL предпросмотра для оптимистичного сообщения ДО очистки состояния
+    const savedVoicePreviewUrl = state.stagedVoicePreviewUrl;
 
     // Очищаем поле ввода и панель вложений сразу
     if (typeof overrideQuery !== 'string' && queryInput) {
@@ -1711,11 +1715,8 @@
     state.stagedVoiceAudioBuffer = null;
     state.stagedVoiceTranscript = '';
     state.stagedVoiceDuration = 0;
+    state.stagedVoicePreviewUrl = null;
     if (typeof stopWebAudio === 'function') stopWebAudio(true);
-    if (state.stagedVoicePreviewUrl) {
-      try { URL.revokeObjectURL(state.stagedVoicePreviewUrl); } catch (_) {}
-      state.stagedVoicePreviewUrl = null;
-    }
     renderStagingBar();
 
     // 1. Мгновенно отображаем сообщение пользователя в чате (Optimistic UI), чтобы оно не исчезало
@@ -1733,11 +1734,11 @@
       const isAud = (f.type && f.type.startsWith('audio/')) || /\.(wav|mp3|ogg|m4a|flac|webm|aac)$/i.test(f.name);
       if (isImg) {
         const objUrl = f._previewUrl || URL.createObjectURL(f);
-        tempObjectUrls.push(objUrl);
+        if (objUrl.startsWith('blob:')) tempObjectUrls.push(objUrl);
         optimisticAttachments.push({ type: 'image', url: objUrl, name: f.name, size_bytes: f.size });
       } else if (isAud) {
         const objUrl = f._previewUrl || URL.createObjectURL(f);
-        tempObjectUrls.push(objUrl);
+        if (objUrl.startsWith('blob:')) tempObjectUrls.push(objUrl);
         optimisticAttachments.push({
           type: 'audio',
           url: objUrl,
@@ -1751,8 +1752,8 @@
       }
     });
     if (voiceBlobSnapshot) {
-      const vUrl = state.stagedVoicePreviewUrl || URL.createObjectURL(voiceBlobSnapshot);
-      tempObjectUrls.push(vUrl);
+      const vUrl = savedVoicePreviewUrl || URL.createObjectURL(voiceBlobSnapshot);
+      if (vUrl.startsWith('blob:')) tempObjectUrls.push(vUrl);
       optimisticAttachments.push({
         type: 'audio',
         url: vUrl,
@@ -2212,6 +2213,44 @@
     }
   }
 
+  function encodeWavBlob(samples, sampleRate = 16000) {
+    const numChannels = 1;
+    const bitsPerSample = 16;
+    const byteRate = sampleRate * numChannels * (bitsPerSample / 8);
+    const blockAlign = numChannels * (bitsPerSample / 8);
+    const dataSize = samples.length * 2;
+    const buffer = new ArrayBuffer(44 + dataSize);
+    const view = new DataView(buffer);
+
+    const writeStr = (offset, str) => {
+      for (let i = 0; i < str.length; i++) {
+        view.setUint8(offset + i, str.charCodeAt(i));
+      }
+    };
+
+    writeStr(0, 'RIFF');
+    view.setUint32(4, 36 + dataSize, true);
+    writeStr(8, 'WAVE');
+    writeStr(12, 'fmt ');
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true); // PCM
+    view.setUint16(22, numChannels, true);
+    view.setUint32(24, sampleRate, true);
+    view.setUint32(28, byteRate, true);
+    view.setUint16(32, blockAlign, true);
+    view.setUint16(34, bitsPerSample, true);
+    writeStr(36, 'data');
+    view.setUint32(40, dataSize, true);
+
+    let offset = 44;
+    for (let i = 0; i < samples.length; i++, offset += 2) {
+      const s = Math.max(-1, Math.min(1, samples[i]));
+      view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+    }
+
+    return new Blob([buffer], { type: 'audio/wav' });
+  }
+
   async function toggleVoiceRecording() {
     if (state.isRecording) {
       await stopVoiceRecordingAndWait();
@@ -2257,6 +2296,29 @@
       });
       startMicSpectrogram(stream);
 
+      // Параллельный захват чистого PCM аудиопотока для мгновенного создания стандартного WAV
+      let recAudioCtx = null;
+      let recProcessor = null;
+      let recSource = null;
+      const pcmChunks = [];
+      try {
+        const AudioCtx = window.AudioContext || window.webkitAudioContext;
+        if (AudioCtx) {
+          recAudioCtx = new AudioCtx();
+          recSource = recAudioCtx.createMediaStreamSource(stream);
+          recProcessor = recAudioCtx.createScriptProcessor(4096, 1, 1);
+          recProcessor.onaudioprocess = (ev) => {
+            if (!state.isRecording) return;
+            const ch = ev.inputBuffer.getChannelData(0);
+            pcmChunks.push(new Float32Array(ch));
+          };
+          recSource.connect(recProcessor);
+          recProcessor.connect(recAudioCtx.destination);
+        }
+      } catch (err) {
+        console.warn('PCM stream capture init notice:', err);
+      }
+
       const chunks = [];
       let mimeType = 'audio/webm';
       if (typeof MediaRecorder.isTypeSupported === 'function') {
@@ -2278,47 +2340,89 @@
         mr.onstop = () => {
           stopStream(stream);
           stopMicSpectrogram();
-          if (chunks.length > 0) {
+
+          const sampleRate = (recAudioCtx && recAudioCtx.sampleRate) || 16000;
+          if (recProcessor) {
+            try { recProcessor.disconnect(); } catch (_) {}
+            recProcessor = null;
+          }
+          if (recSource) {
+            try { recSource.disconnect(); } catch (_) {}
+            recSource = null;
+          }
+          if (recAudioCtx) {
+            try { recAudioCtx.close(); } catch (_) {}
+            recAudioCtx = null;
+          }
+
+          let blob = null;
+          let calculatedDur = 0;
+
+          if (pcmChunks.length > 0) {
+            let totalLen = 0;
+            for (let i = 0; i < pcmChunks.length; i++) totalLen += pcmChunks[i].length;
+            const merged = new Float32Array(totalLen);
+            let off = 0;
+            for (let i = 0; i < pcmChunks.length; i++) {
+              merged.set(pcmChunks[i], off);
+              off += pcmChunks[i].length;
+            }
+            blob = encodeWavBlob(merged, sampleRate);
+            calculatedDur = totalLen / sampleRate;
+          } else if (chunks.length > 0) {
             const rawMime = mr.mimeType || mimeType || 'audio/webm';
-            const cleanMime = rawMime.split(';')[0].trim() || 'audio/webm';
-            const blob = new Blob(chunks, { type: cleanMime });
+            blob = new Blob(chunks, { type: rawMime.split(';')[0].trim() || 'audio/webm' });
+          }
+
+          if (blob) {
             const recElapsed = state.recordingStartTime
               ? Math.max(0.3, (Date.now() - state.recordingStartTime) / 1000)
               : 0;
-            blob._duration = recElapsed;
+            const finalDur = calculatedDur > 0 ? calculatedDur : recElapsed;
+            blob._duration = finalDur;
             state.stagedVoiceBlob = blob;
-            state.stagedVoiceDuration = recElapsed;
+            state.stagedVoiceDuration = finalDur;
             if (state.stagedVoicePreviewUrl) {
               try { URL.revokeObjectURL(state.stagedVoicePreviewUrl); } catch (_) {}
             }
             state.stagedVoicePreviewUrl = URL.createObjectURL(blob);
             renderStagingBar();
 
-            // Точное декодирование PCM длительности через Web Audio API
-            blob.arrayBuffer().then((buf) => {
-              const AudioCtx = window.AudioContext || window.webkitAudioContext;
-              if (!AudioCtx) return;
-              const actx = new AudioCtx();
-              actx.decodeAudioData(buf.slice(0)).then((ab) => {
-                if (ab && isFinite(ab.duration) && ab.duration > 0) {
-                  blob._duration = ab.duration;
-                  blob._audioBuffer = ab;
-                  state.stagedVoiceDuration = ab.duration;
-                  state.stagedVoiceAudioBuffer = ab;
+            // Отправляем аудио на сервер в /api/transcode-audio/ для получения гарантированного эталонного WAV
+            const tcData = new FormData();
+            tcData.append('file', blob, blob.type === 'audio/wav' ? 'voice.wav' : 'voice.webm');
+            fetch('/api/transcode-audio/', { method: 'POST', body: tcData })
+              .then((r) => r.json())
+              .then((res) => {
+                if (res && res.ok && res.wav_data_url) {
+                  if (res.duration && res.duration > 0) {
+                    state.stagedVoiceDuration = res.duration;
+                    blob._duration = res.duration;
+                  }
+                  if (res.transcript && !state.stagedVoiceTranscript) {
+                    state.stagedVoiceTranscript = res.transcript;
+                    const qIn = el('queryInput');
+                    if (qIn && !qIn.value.trim()) qIn.value = res.transcript;
+                  }
+                  state.stagedVoicePreviewUrl = res.wav_data_url;
                   document.querySelectorAll('.staged-card-audio').forEach((c) => {
-                    c.dataset.audioDur = String(ab.duration);
-                    const tl = c.querySelector('.js-audio-time');
+                    c.dataset.audioSrc = res.wav_data_url;
+                    if (res.duration) c.dataset.audioDur = String(res.duration);
                     const aud = c.querySelector('.js-audio-element');
+                    if (aud) {
+                      aud.src = res.wav_data_url;
+                      try { aud.load(); } catch (_) {}
+                    }
+                    const tl = c.querySelector('.js-audio-time');
                     if (tl && (!aud || aud.paused)) {
-                      tl.textContent = `0:00 / ${formatAudioTime(ab.duration)}`;
+                      tl.textContent = `0:00 / ${formatAudioTime(state.stagedVoiceDuration)}`;
                     }
                   });
                 }
-                actx.close().catch(() => {});
-              }).catch(() => {
-                actx.close().catch(() => {});
+              })
+              .catch((err) => {
+                console.warn('Серверный транскодинг аудио завершился с предупреждением:', err);
               });
-            }).catch(() => {});
           }
           resolve();
         };
@@ -3020,21 +3124,18 @@
         if (isAud) {
           try {
             f._previewUrl = URL.createObjectURL(f);
-            f.arrayBuffer().then((buf) => {
-              const AudioCtx = window.AudioContext || window.webkitAudioContext;
-              if (!AudioCtx) return;
-              const actx = new AudioCtx();
-              actx.decodeAudioData(buf).then((ab) => {
-                if (ab && isFinite(ab.duration) && ab.duration > 0) {
-                  f._duration = ab.duration;
-                  f._audioBuffer = ab;
+            const tcData = new FormData();
+            tcData.append('file', f);
+            fetch('/api/transcode-audio/', { method: 'POST', body: tcData })
+              .then((r) => r.json())
+              .then((res) => {
+                if (res && res.ok && res.wav_data_url) {
+                  f._previewUrl = res.wav_data_url;
+                  f._duration = res.duration || 0;
                   renderStagingBar();
                 }
-                actx.close().catch(() => {});
-              }).catch(() => {
-                actx.close().catch(() => {});
-              });
-            }).catch(() => {});
+              })
+              .catch(() => {});
           } catch (_) {}
         } else {
           fetchDocPreview(f);
@@ -3695,7 +3796,38 @@
           }
         })
         .catch((err) => {
-          console.error('Ошибка воспроизведения через Web Audio API:', err);
+          console.warn('Web Audio API локальное декодирование не удалось, запрашиваем серверный WAV:', err);
+          const tfd = new FormData();
+          tfd.append('audio_b64', audioUrl);
+          fetch('/api/transcode-audio/', { method: 'POST', body: tfd })
+            .then((r) => r.json())
+            .then((data) => {
+              if (data && data.ok && data.wav_data_url) {
+                if (card) {
+                  card.dataset.audioSrc = data.wav_data_url;
+                  if (data.duration) card.dataset.audioDur = String(data.duration);
+                }
+                if (audio) {
+                  audio.src = data.wav_data_url;
+                  try { audio.load(); } catch (_) {}
+                  audio.play().then(() => {
+                    card.classList.add('playing');
+                    if (playIcon) playIcon.style.display = 'none';
+                    if (pauseIcon) pauseIcon.style.display = 'block';
+                  }).catch(() => {
+                    fetch(data.wav_data_url)
+                      .then((r2) => r2.arrayBuffer())
+                      .then((buf2) => getSharedAudioContext()?.decodeAudioData(buf2))
+                      .then((wavAb) => {
+                        if (wavAb) startWebAudioBuffer(wavAb, card, slider, durationDisplay, playIcon, pauseIcon);
+                      }).catch((e2) => console.error('Ошибка воспроизведения транскодированного WAV:', e2));
+                  });
+                }
+              }
+            })
+            .catch((tcErr) => {
+              console.error('Ошибка вызова api_transcode_audio:', tcErr);
+            });
         });
     }
   }
@@ -3798,8 +3930,10 @@
             audio.currentTime = 0;
           }
 
-          if (!audio.src && card.dataset.audioSrc) {
-            audio.src = card.dataset.audioSrc;
+          const desiredSrc = card.dataset.audioSrc || audio.src;
+          if (desiredSrc && (audio.src !== desiredSrc || !audio.src || audio.error)) {
+            audio.src = desiredSrc;
+            try { audio.load(); } catch (_) {}
           }
 
           audio.ontimeupdate = () => {

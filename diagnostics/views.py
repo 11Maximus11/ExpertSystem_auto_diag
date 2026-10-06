@@ -694,6 +694,66 @@ def api_preview_document(request: HttpRequest) -> JsonResponse:
     )
 
 
+@csrf_exempt
+@require_http_methods(["POST"])
+def api_transcode_audio(request: HttpRequest) -> JsonResponse:
+    """
+    Транскодирует любой аудиофайл или запись (WebM, OGG, MP3, WAV, AAC, M4A)
+    в чистый стандартный 16-битный PCM WAV моно (16 кГц) для гарантированного
+    воспроизведения в любом браузере и точного отображения длительности.
+    """
+    audio_bytes = None
+    filename = "audio.wav"
+
+    if request.FILES.get("file"):
+        uploaded = request.FILES["file"]
+        audio_bytes = uploaded.read()
+        filename = uploaded.name or "audio.wav"
+    elif request.FILES.get("audio"):
+        uploaded = request.FILES["audio"]
+        audio_bytes = uploaded.read()
+        filename = uploaded.name or "audio.wav"
+    else:
+        b64_raw = request.POST.get("audio_b64") or request.POST.get("voice_b64")
+        if not b64_raw and request.content_type and "application/json" in request.content_type:
+            try:
+                body = json.loads(request.body.decode("utf-8") or "{}")
+                b64_raw = body.get("audio_b64") or body.get("voice_b64")
+                filename = body.get("filename") or filename
+            except Exception:
+                pass
+        if b64_raw:
+            raw = b64_raw.split(",", 1)[-1] if "," in b64_raw else b64_raw
+            try:
+                audio_bytes = base64.b64decode(raw)
+            except Exception:
+                pass
+
+    if not audio_bytes:
+        return JsonResponse({"error": "Аудиофайл не передан"}, status=400)
+
+    voice_res = process_voice_input(
+        audio_bytes=audio_bytes,
+        filename=filename,
+        voice_mode="direct_audio",
+    )
+    wav_bytes = voice_res.get("wav_bytes") or b""
+    duration_sec = voice_res.get("duration_sec", 0.0)
+    wav_b64 = base64.b64encode(wav_bytes).decode("ascii") if wav_bytes else ""
+    wav_data_url = f"data:audio/wav;base64,{wav_b64}" if wav_b64 else ""
+
+    return JsonResponse(
+        {
+            "ok": bool(wav_bytes),
+            "filename": filename,
+            "duration": duration_sec,
+            "size_bytes": len(wav_bytes),
+            "wav_data_url": wav_data_url,
+            "transcript": voice_res.get("transcript", ""),
+        }
+    )
+
+
 # =========================================================================
 # REST API: Главный эндпоинт диагностики (Текст + Фото + Камера + Документы + DTC + Голос)
 # =========================================================================
@@ -849,15 +909,18 @@ def api_ask_expert(request: HttpRequest) -> JsonResponse:
                 backend=active_settings.llm_backend,
                 client_transcript=client_transcript,
             )
-            data_url, b64, mime = _bytes_to_base64_data_uri(f_bytes, f_name, fallback_mime="audio/webm")
+            wav_bytes = voice_info.get("wav_bytes") or f_bytes
+            wav_b64 = base64.b64encode(wav_bytes).decode("ascii") if wav_bytes else ""
+            wav_data_url = f"data:audio/wav;base64,{wav_b64}" if wav_b64 else ""
             saved_attachments.append(
                 {
                     "type": "audio",
                     "name": f_name,
-                    "url": data_url,
-                    "base64": b64,
-                    "mime_type": mime,
-                    "size_bytes": len(f_bytes),
+                    "url": wav_data_url,
+                    "base64": wav_b64,
+                    "mime_type": "audio/wav",
+                    "size_bytes": len(wav_bytes),
+                    "duration": voice_info.get("duration_sec", 0.0),
                     "mode": voice_info["mode_label"],
                     "transcript": voice_info["transcript"] or f"Прямой аудиовход Gemma 4 ({voice_info.get('duration_sec', 0.0):.1f} с)",
                 }
@@ -892,7 +955,6 @@ def api_ask_expert(request: HttpRequest) -> JsonResponse:
         raw_vb64 = voice_b64.split(",", 1)[-1] if "," in voice_b64 else voice_b64
         try:
             v_bytes = base64.b64decode(raw_vb64)
-            data_url = voice_b64 if voice_b64.startswith("data:") else f"data:audio/webm;base64,{raw_vb64}"
             model_name = (
                 active_settings.airllm_model_id
                 if active_settings.llm_backend == "airllm_vulkan"
@@ -906,14 +968,18 @@ def api_ask_expert(request: HttpRequest) -> JsonResponse:
                 backend=active_settings.llm_backend,
                 client_transcript=client_transcript,
             )
+            wav_bytes = voice_info.get("wav_bytes") or v_bytes
+            wav_b64 = base64.b64encode(wav_bytes).decode("ascii") if wav_bytes else raw_vb64
+            wav_data_url = f"data:audio/wav;base64,{wav_b64}" if wav_b64 else ""
             saved_attachments.append(
                 {
                     "type": "audio",
                     "name": "Голосовой запрос",
-                    "url": data_url,
-                    "base64": raw_vb64,
-                    "mime_type": "audio/webm",
-                    "size_bytes": len(v_bytes),
+                    "url": wav_data_url,
+                    "base64": wav_b64,
+                    "mime_type": "audio/wav",
+                    "size_bytes": len(wav_bytes),
+                    "duration": voice_info.get("duration_sec", 0.0),
                     "mode": voice_info["mode_label"],
                     "transcript": voice_info["transcript"] or f"Прямой аудиовход Gemma 4 ({voice_info.get('duration_sec', 0.0):.1f} с)",
                 }

@@ -120,6 +120,30 @@ def decode_audio_to_waveform_16k(
     return np.clip(waveform, -1.0, 1.0).astype(np.float32)
 
 
+def waveform_to_wav_bytes(
+    waveform: Optional[np.ndarray],
+    sample_rate: int = TARGET_SAMPLE_RATE,
+) -> bytes:
+    """
+    Конвертирует float32 waveform [-1.0, 1.0] в чистый стандартный 16-битный PCM WAV
+    для гарантированного воспроизведения в любом браузере и точного отображения длительности.
+    """
+    if waveform is None or len(waveform) == 0:
+        return b""
+    try:
+        pcm16 = (np.clip(waveform, -1.0, 1.0) * 32767.0).astype(np.int16)
+        buf = io.BytesIO()
+        with wave.open(buf, "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(sample_rate)
+            wf.writeframes(pcm16.tobytes())
+        return buf.getvalue()
+    except Exception as exc:
+        logger.warning("Ошибка кодирования waveform в WAV: %s", exc)
+        return b""
+
+
 def process_voice_input(
     audio_bytes: Optional[bytes],
     filename: str = "voice.webm",
@@ -145,6 +169,7 @@ def process_voice_input(
             "transcript": hint_text,
             "audio_attached_to_model": False,
             "audio_waveform_16k": None,
+            "wav_bytes": b"",
             "duration_sec": 0.0,
             "engine": "Browser SpeechRecognition" if hint_text else "none",
         }
@@ -152,13 +177,15 @@ def process_voice_input(
     waveform = decode_audio_to_waveform_16k(audio_bytes, filename=filename)
     duration_sec = round(float(len(waveform)) / TARGET_SAMPLE_RATE, 2) if waveform is not None else 0.0
     attached = bool(waveform is not None and len(waveform) > 0)
+    wav_bytes = waveform_to_wav_bytes(waveform) if attached else b""
 
     logger.debug(
-        "[Voice Direct Gemma 4] Файл=%s (%d байт) -> декодировано=%s, длительность=%.2f с, подсказка='%s'",
+        "[Voice Direct Gemma 4] Файл=%s (%d байт) -> декодировано=%s, длительность=%.2f с, wav_bytes=%d, подсказка='%s'",
         filename,
         len(audio_bytes),
         attached,
         duration_sec,
+        len(wav_bytes),
         hint_text[:80],
     )
 
@@ -168,6 +195,7 @@ def process_voice_input(
         "transcript": hint_text,
         "audio_attached_to_model": attached,
         "audio_waveform_16k": waveform,
+        "wav_bytes": wav_bytes,
         "duration_sec": duration_sec,
         "engine": "Google Gemma 4 Unified (embed_audio 16kHz)",
     }

@@ -269,8 +269,19 @@ class AIdealAutoComprehensiveTests(TransactionTestCase):
         # Проверяем, что вложение сохранено в БД в виде base64 data URI без записи файла на диск сервера
         user_atts = resp_json.get("user_message", {}).get("attachments", [])
         self.assertGreater(len(user_atts), 0)
-        self.assertTrue(user_atts[0]["url"].startswith("data:"))
+        self.assertTrue(user_atts[0]["url"].startswith("data:audio/wav;base64,"))
         self.assertIn("base64", user_atts[0])
+        self.assertEqual(user_atts[0]["mime_type"], "audio/wav")
+        self.assertEqual(user_atts[0]["duration"], 1.0)
+
+        # Тест эндпоинта /api/transcode-audio/
+        transcode_upload = SimpleUploadedFile("engine_sound.wav", raw_wav_bytes, content_type="audio/wav")
+        tc_resp = self.client.post("/api/transcode-audio/", data={"file": transcode_upload})
+        self.assertEqual(tc_resp.status_code, 200)
+        tc_data = tc_resp.json()
+        self.assertTrue(tc_data.get("ok"))
+        self.assertTrue(tc_data.get("wav_data_url", "").startswith("data:audio/wav;base64,"))
+        self.assertEqual(tc_data.get("duration"), 1.0)
 
         # Тест document_service с логом ошибок и телеметрией
         log_content = "OBD-II Scan Log: P0300 Random/Multiple Cylinder Misfire, P0796 Pressure Control Solenoid, Engine_Temp=92.5 C".encode("utf-8")

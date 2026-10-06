@@ -658,6 +658,43 @@ def api_worker_status(request: HttpRequest, session_id: uuid.UUID) -> JsonRespon
 
 
 # =========================================================================
+# REST API: Быстрый предпросмотр содержимого технического документа для модели
+# =========================================================================
+@csrf_exempt
+@require_http_methods(["POST"])
+def api_preview_document(request: HttpRequest) -> JsonResponse:
+    """
+    Быстрый предпросмотр извлечённых данных технического документа:
+    возвращает текст для модели, режим обработки (full/smart_sampled),
+    коды ошибок DTC и миниатюры извлечённых схем/фотографий без создания сообщений в БД.
+    """
+    uploaded_file = request.FILES.get("file")
+    if not uploaded_file:
+        return JsonResponse({"error": "Файл не передан"}, status=400)
+
+    f_bytes = uploaded_file.read()
+    f_name = uploaded_file.name or "document.txt"
+    parsed = parse_uploaded_document(f_bytes, filename=f_name)
+
+    return JsonResponse(
+        {
+            "filename": f_name,
+            "extension": parsed.get("extension", ""),
+            "size_bytes": len(f_bytes),
+            "char_length": parsed.get("char_length", len(f_bytes)),
+            "is_fully_processed": parsed.get("is_fully_processed", True),
+            "processing_mode": parsed.get("processing_mode", "full"),
+            "detected_dtc_codes": parsed.get("detected_dtc_codes", []),
+            "key_metrics": parsed.get("key_metrics", []),
+            "llm_ready_text": parsed.get("llm_ready_text", parsed.get("extracted_text", "")),
+            "preview_excerpt": parsed.get("preview_excerpt", ""),
+            "embedded_images_count": len(parsed.get("embedded_images_data_urls", [])),
+            "embedded_images": parsed.get("embedded_images_data_urls", []),
+        }
+    )
+
+
+# =========================================================================
 # REST API: Главный эндпоинт диагностики (Текст + Фото + Камера + Документы + DTC + Голос)
 # =========================================================================
 @csrf_exempt

@@ -752,6 +752,58 @@
     </div>
   </div>
 
+  <!-- ====================================================================
+       МОДАЛЬНОЕ ОКНО: ПРЕДПРОСМОТР СОДЕРЖИМОГО ДОКУМЕНТА ДЛЯ МОДЕЛИ (GEMMA 4)
+       ==================================================================== -->
+  <div class="modal-backdrop doc-preview-modal-backdrop" id="documentPreviewModal" role="dialog" aria-modal="true" aria-hidden="true" style="display:none;">
+    <div class="doc-preview-modal-card">
+      <div class="doc-preview-modal-header">
+        <div class="doc-preview-modal-title-box">
+          <div class="doc-badge-pill staged-icon-pdf" id="docPreviewBadge">DOC</div>
+          <div style="min-width:0;">
+            <h3 class="doc-preview-modal-title" id="docPreviewTitle">Документ</h3>
+            <div class="doc-preview-modal-subtitle" id="docPreviewSubtitle">Точные данные, передаваемые в контекст Gemma 4</div>
+          </div>
+        </div>
+        <button type="button" class="btn-icon-top doc-preview-close" id="btnCloseDocPreviewModal" aria-label="Закрыть предпросмотр">✕</button>
+      </div>
+
+      <div class="doc-preview-modal-stats">
+        <div class="doc-status-pill doc-status-full" id="docPreviewModePill">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+          <span id="docPreviewModeText">Полный разбор</span>
+        </div>
+        <div class="doc-stat-pill">
+          <span>Символов: <strong id="docPreviewChars">0</strong></span>
+        </div>
+        <div class="doc-stat-pill" id="docPreviewDtcWrap" style="display:none;">
+          <span>Коды DTC: <strong id="docPreviewDtcCount">0</strong></span>
+        </div>
+        <div class="doc-stat-pill" id="docPreviewImagesWrap" style="display:none;">
+          <span>Схем/фото: <strong id="docPreviewImagesCount">0</strong></span>
+        </div>
+      </div>
+
+      <div class="doc-preview-modal-body">
+        <div class="doc-preview-section-header">
+          <span class="doc-preview-section-title">Что отправляется в модель (LLM prompt text):</span>
+          <button type="button" class="btn-copy-preview" id="btnCopyDocPreviewText" title="Скопировать текст для модели">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+            <span id="btnCopyDocPreviewLabel">Копировать</span>
+          </button>
+        </div>
+        <pre class="doc-preview-code-box" id="docPreviewCodeBox">Загрузка данных документа...</pre>
+
+        <div class="doc-preview-images-section" id="docPreviewImagesSection" style="display:none;">
+          <div class="doc-preview-section-header" style="margin-top:14px;">
+            <span class="doc-preview-section-title">Извлечённые схемы и иллюстрации (Gemma Vision):</span>
+          </div>
+          <div class="doc-preview-images-grid" id="docPreviewImagesGrid"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <script id="initialHardwareTelemetry" type="application/json">{{ hw_telemetry_json|safe }}</script>
   <script src="{% static 'js/app.js' %}"></script>
 </body>

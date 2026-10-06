@@ -27,6 +27,7 @@ urlpatterns = [
     path("api/dtc/<str:code>/", views.api_dtc_detail, name="api_dtc_detail"),
     # API настроек Vulkan / AirLLM / Междиалоговой памяти
     path("api/settings/", views.api_system_settings, name="api_system_settings"),
+    path("api/preview-document/", views.api_preview_document, name="api_preview_document"),
     # API авторизации и пользователей (Requirement #4)
     path("api/auth/register/", views.api_auth_register, name="api_auth_register"),
     path("api/auth/login/", views.api_auth_login, name="api_auth_login"),

@@ -643,4 +643,29 @@ class AIdealAutoComprehensiveTests(TransactionTestCase):
         status_after = self.client.get("/api/auth/status/")
         self.assertFalse(status_after.json()["is_authenticated"])
 
+    def test_13_api_preview_document(self):
+        """Проверка быстрого API предпросмотра содержимого технического документа для модели."""
+        from django.core.files.uploadedfile import SimpleUploadedFile
+
+        # 1. Запрос без файла -> 400
+        resp_no_file = self.client.post("/api/preview-document/")
+        self.assertEqual(resp_no_file.status_code, 400)
+
+        # 2. Передача лог-файла с кодом ошибки
+        log_content = b"=== OBD-II Diagnostic Report ===\nDTC Error: P0300 Random Cylinder Misfire Detected\nEngine RPM: 2450\nCoolant Temp: 92C"
+        test_file = SimpleUploadedFile("engine_diagnostic.log", log_content, content_type="text/plain")
+
+        resp = self.client.post("/api/preview-document/", {"file": test_file})
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+
+        self.assertEqual(data["filename"], "engine_diagnostic.log")
+        self.assertEqual(data["extension"], ".log")
+        self.assertEqual(data["size_bytes"], len(log_content))
+        self.assertTrue(data["is_fully_processed"])
+        self.assertEqual(data["processing_mode"], "full")
+        self.assertIn("P0300", data["detected_dtc_codes"])
+        self.assertIn("P0300 Random Cylinder Misfire", data["llm_ready_text"])
+        self.assertEqual(data["embedded_images_count"], 0)
+
 

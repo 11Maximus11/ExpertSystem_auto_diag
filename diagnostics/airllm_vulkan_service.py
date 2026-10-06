@@ -992,7 +992,12 @@ class AirLLMVulkanOrchestrator:
             if dtc_cards:
                 extra_notes.append("Коды DTC: " + ", ".join(dtc_cards.keys()))
             if doc_analyses:
-                extra_notes.append("Вложенный документ: " + doc_analyses[0].get("filename", ""))
+                doc_summaries = []
+                for d in doc_analyses:
+                    mode_lbl = "полный текст" if d.get("is_fully_processed", True) else "умная выборка"
+                    doc_snippet = d.get("llm_ready_text") or d.get("raw_excerpt") or d.get("text_snippet") or ""
+                    doc_summaries.append(f"Вложен документ {d['filename']} ({mode_lbl}): {doc_snippet[:3500]}")
+                extra_notes.append("\n".join(doc_summaries))
             if has_native_audio:
                 extra_notes.append("Прикреплена аудиозапись мастера (Gemma 4 embed_audio)")
             notes_str = f" [Дополнительные данные: {'; '.join(extra_notes)}]" if extra_notes else ""
@@ -1038,8 +1043,9 @@ class AirLLMVulkanOrchestrator:
             if dialog_summary:
                 user_prompt_text = f"[Сжатая выжимка ранней истории: {dialog_summary}]\n{user_prompt_text}"
         else:
-            extra_docs_text = "\n".join(
-                f"Документ {d['filename']}: {d.get('raw_excerpt', d.get('text_snippet', ''))[:1200]}"
+            extra_docs_text = "\n\n".join(
+                f"=== Документ: {d['filename']} ({'Полный текст без сокращений' if d.get('is_fully_processed', True) else 'Интеллектуальная диагностическая выборка'}) ===\n"
+                f"{d.get('llm_ready_text', d.get('extracted_text', d.get('raw_excerpt', '')))}"
                 for d in doc_analyses
             )
             rag_context = self.rag_engine.prepare_llm_context(

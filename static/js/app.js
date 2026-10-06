@@ -303,53 +303,177 @@
   window.showCustomDialog = showCustomDialog;
 
   // =========================================================================
-  // 1. Отрисовка очереди вложений (Staging Bar: Коды DTC, Фото, Документы, Голос)
+  // 1. Утилиты предпросмотра файлов и очереди вложений (Staging Bar)
   // =========================================================================
+  function formatFileSize(bytes) {
+    if (!bytes || isNaN(bytes)) return '';
+    if (bytes < 1024) return bytes + ' Б';
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' КБ';
+    return (bytes / (1024 * 1024)).toFixed(1) + ' МБ';
+  }
+
+  function getFileExtAndClass(filename) {
+    const parts = String(filename || '').split('.');
+    const ext = parts.length > 1 ? parts.pop().toLowerCase() : 'txt';
+    let badgeClass = 'staged-icon-generic';
+    if (['pdf'].includes(ext)) badgeClass = 'staged-icon-pdf';
+    else if (['doc', 'docx'].includes(ext)) badgeClass = 'staged-icon-docx';
+    else if (['xls', 'xlsx'].includes(ext)) badgeClass = 'staged-icon-xlsx';
+    else if (['log', 'txt', 'ini', 'cfg', 'conf'].includes(ext)) badgeClass = 'staged-icon-log';
+    else if (['csv', 'tsv'].includes(ext)) badgeClass = 'staged-icon-csv';
+    else if (['json'].includes(ext)) badgeClass = 'staged-icon-json';
+    else if (['obd'].includes(ext)) badgeClass = 'staged-icon-generic';
+    return { ext: ext.toUpperCase(), badgeClass };
+  }
+
+  function openImageLightbox(src, title) {
+    const modal = el('imageLightboxModal');
+    const imgEl = el('imageLightboxImg');
+    const titleEl = el('imageLightboxTitle');
+    if (!modal || !imgEl) return;
+    imgEl.src = src;
+    if (titleEl) titleEl.textContent = title || 'Просмотр изображения';
+    modal.style.display = 'flex';
+    modal.setAttribute('aria-hidden', 'false');
+  }
+
+  function closeImageLightbox() {
+    const modal = el('imageLightboxModal');
+    const imgEl = el('imageLightboxImg');
+    if (!modal) return;
+    modal.style.display = 'none';
+    modal.setAttribute('aria-hidden', 'true');
+    if (imgEl) imgEl.src = '';
+  }
+
   function renderStagingBar() {
     const bars = [el('stagingBar'), el('arStagingBar')].filter(Boolean);
     if (!bars.length) return;
-    const chips = [];
+    const cards = [];
 
+    // 1. Коды ошибок DTC
     state.stagedCodes.forEach((code, idx) => {
-      chips.push(
-        `<span class="staged-chip">
-          <span>DTC: ${escapeHtml(code)}</span>
-          <button type="button" data-remove-code="${idx}" style="border:none;background:none;color:inherit;font-weight:700;">×</button>
+      cards.push(
+        `<span class="staged-card staged-card-dtc">
+          <span class="staged-card-icon-wrap staged-icon-generic">DTC</span>
+          <div class="staged-card-body">
+            <span class="staged-card-title">${escapeHtml(code)}</span>
+            <span class="staged-card-meta">Код ошибки</span>
+          </div>
+          <button type="button" class="staged-card-remove" data-remove-code="${idx}" title="Удалить код" aria-label="Удалить">✕</button>
         </span>`
       );
     });
 
-    state.stagedCameraShots.forEach((_, idx) => {
-      chips.push(
-        `<span class="staged-chip">
-          <span>Снимок камеры #${idx + 1}</span>
-          <button type="button" data-remove-shot="${idx}" style="border:none;background:none;color:inherit;font-weight:700;">×</button>
+    // 2. Снимки с камеры
+    state.stagedCameraShots.forEach((shot, idx) => {
+      cards.push(
+        `<span class="staged-card">
+          <div class="staged-card-thumb-wrap js-open-lightbox" data-lightbox-src="${escapeHtml(shot)}" data-lightbox-title="Снимок камеры #${idx + 1}" title="Увеличить снимок">
+            <img src="${escapeHtml(shot)}" alt="Снимок #${idx + 1}" />
+          </div>
+          <div class="staged-card-body">
+            <span class="staged-card-title">Снимок камеры #${idx + 1}</span>
+            <span class="staged-card-meta">Камера • JPEG</span>
+          </div>
+          <button type="button" class="staged-card-remove" data-remove-shot="${idx}" title="Удалить снимок" aria-label="Удалить">✕</button>
         </span>`
       );
     });
 
+    // 3. Загруженные файлы (фото, аудио, документы)
     state.stagedFiles.forEach((f, idx) => {
-      chips.push(
-        `<span class="staged-chip">
-          <span>Файл: ${escapeHtml(f.name)}</span>
-          <button type="button" data-remove-file="${idx}" style="border:none;background:none;color:inherit;font-weight:700;">×</button>
-        </span>`
-      );
+      const isImg = (f.type && f.type.startsWith('image/')) || /\.(jpe?g|png|webp|bmp|gif)$/i.test(f.name);
+      const isAud = (f.type && f.type.startsWith('audio/')) || /\.(wav|mp3|ogg|m4a|flac|webm|aac)$/i.test(f.name);
+
+      if (isImg) {
+        if (!f._previewUrl) {
+          try { f._previewUrl = URL.createObjectURL(f); } catch (_) {}
+        }
+        cards.push(
+          `<span class="staged-card">
+            <div class="staged-card-thumb-wrap js-open-lightbox" data-lightbox-src="${escapeHtml(f._previewUrl || '')}" data-lightbox-title="${escapeHtml(f.name)}" title="Увеличить фото">
+              <img src="${escapeHtml(f._previewUrl || '')}" alt="${escapeHtml(f.name)}" />
+            </div>
+            <div class="staged-card-body">
+              <span class="staged-card-title" title="${escapeHtml(f.name)}">${escapeHtml(f.name)}</span>
+              <span class="staged-card-meta">${formatFileSize(f.size) || 'Фото'}</span>
+            </div>
+            <button type="button" class="staged-card-remove" data-remove-file="${idx}" title="Удалить файл" aria-label="Удалить">✕</button>
+          </span>`
+        );
+      } else if (isAud) {
+        if (!f._previewUrl) {
+          try { f._previewUrl = URL.createObjectURL(f); } catch (_) {}
+        }
+        cards.push(
+          `<span class="staged-card">
+            <div class="staged-card-icon-wrap staged-icon-audio">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+              </svg>
+            </div>
+            <div class="staged-card-body">
+              <span class="staged-card-title" title="${escapeHtml(f.name)}">${escapeHtml(f.name)}</span>
+              <span class="staged-card-meta">${formatFileSize(f.size)} • Аудио</span>
+            </div>
+            ${f._previewUrl ? `
+              <button type="button" class="staged-card-audio-ctrl js-audio-play-toggle" title="Прослушать" aria-label="Прослушать">
+                <svg class="play-icon" width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21"/></svg>
+                <svg class="pause-icon" width="13" height="13" viewBox="0 0 24 24" fill="currentColor" style="display:none;"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
+              </button>
+              <audio src="${escapeHtml(f._previewUrl)}" preload="metadata" class="js-audio-element" style="display:none;"></audio>
+            ` : ''}
+            <button type="button" class="staged-card-remove" data-remove-file="${idx}" title="Удалить аудио" aria-label="Удалить">✕</button>
+          </span>`
+        );
+      } else {
+        const { ext, badgeClass } = getFileExtAndClass(f.name);
+        cards.push(
+          `<span class="staged-card">
+            <div class="staged-card-icon-wrap ${badgeClass}">${escapeHtml(ext.slice(0, 4))}</div>
+            <div class="staged-card-body">
+              <span class="staged-card-title" title="${escapeHtml(f.name)}">${escapeHtml(f.name)}</span>
+              <span class="staged-card-meta">${formatFileSize(f.size)} • Документ</span>
+            </div>
+            <button type="button" class="staged-card-remove" data-remove-file="${idx}" title="Удалить документ" aria-label="Удалить">✕</button>
+          </span>`
+        );
+      }
     });
 
+    // 4. Записанный диктофоном голос
     if (state.stagedVoiceBlob) {
-      chips.push(
-        `<span class="staged-chip">
-          <span>Голосовая запись готова ${state.stagedVoiceTranscript ? '(' + escapeHtml(state.stagedVoiceTranscript.slice(0, 28)) + '...)' : ''}</span>
-          <button type="button" data-remove-voice="1" style="border:none;background:none;color:inherit;font-weight:700;">×</button>
+      if (!state.stagedVoicePreviewUrl) {
+        try { state.stagedVoicePreviewUrl = URL.createObjectURL(state.stagedVoiceBlob); } catch (_) {}
+      }
+      cards.push(
+        `<span class="staged-card">
+          <div class="staged-card-icon-wrap staged-icon-audio">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+            </svg>
+          </div>
+          <div class="staged-card-body">
+            <span class="staged-card-title">Голосовая запись</span>
+            <span class="staged-card-meta">${formatFileSize(state.stagedVoiceBlob.size)} • Готово</span>
+          </div>
+          ${state.stagedVoicePreviewUrl ? `
+            <button type="button" class="staged-card-audio-ctrl js-audio-play-toggle" title="Прослушать" aria-label="Прослушать">
+              <svg class="play-icon" width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21"/></svg>
+              <svg class="pause-icon" width="13" height="13" viewBox="0 0 24 24" fill="currentColor" style="display:none;"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
+            </button>
+            <audio src="${escapeHtml(state.stagedVoicePreviewUrl)}" preload="metadata" class="js-audio-element" style="display:none;"></audio>
+          ` : ''}
+          <button type="button" class="staged-card-remove" data-remove-voice="1" title="Удалить запись" aria-label="Удалить">✕</button>
         </span>`
       );
     }
 
-    const htmlContent = chips.join('');
+    const htmlContent = cards.join('');
     bars.forEach((bar) => {
       bar.innerHTML = htmlContent;
-      bar.style.display = chips.length ? 'flex' : 'none';
+      bar.style.display = cards.length ? 'flex' : 'none';
 
       bar.querySelectorAll('[data-remove-code]').forEach((btn) => {
         btn.addEventListener('click', () => {
@@ -365,7 +489,10 @@
       });
       bar.querySelectorAll('[data-remove-file]').forEach((btn) => {
         btn.addEventListener('click', () => {
-          state.stagedFiles.splice(Number(btn.dataset.removeFile), 1);
+          const removed = state.stagedFiles.splice(Number(btn.dataset.removeFile), 1);
+          if (removed[0] && removed[0]._previewUrl) {
+            try { URL.revokeObjectURL(removed[0]._previewUrl); } catch (_) {}
+          }
           renderStagingBar();
         });
       });
@@ -373,10 +500,157 @@
         btn.addEventListener('click', () => {
           state.stagedVoiceBlob = null;
           state.stagedVoiceTranscript = '';
+          if (state.stagedVoicePreviewUrl) {
+            try { URL.revokeObjectURL(state.stagedVoicePreviewUrl); } catch (_) {}
+            state.stagedVoicePreviewUrl = null;
+          }
           renderStagingBar();
         });
       });
     });
+  }
+
+  function renderAttachmentsHtml(attachments) {
+    if (!Array.isArray(attachments) || !attachments.length) return '';
+    let html = '<div class="attachments-grid">';
+
+    attachments.forEach((att) => {
+      if (att.type === 'image' && att.url) {
+        html += `
+          <div class="attachment-card-photo js-open-lightbox" data-lightbox-src="${escapeHtml(att.url)}" data-lightbox-title="${escapeHtml(att.name || 'Фотография поломки')}">
+            <img src="${escapeHtml(att.url)}" alt="${escapeHtml(att.name || 'Фото узла')}" loading="lazy" />
+            <div class="attachment-photo-overlay">
+              <span class="attachment-photo-name">${escapeHtml(att.name || 'Фото узла')}</span>
+              <div class="attachment-photo-zoom-icon" title="Увеличить">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                  <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="11" y1="8" x2="11" y2="14"/><line x1="8" y1="11" x2="14" y2="11"/>
+                </svg>
+              </div>
+            </div>
+          </div>
+        `;
+      } else if (att.type === 'audio') {
+        const modeLabel = att.mode && !att.mode.toLowerCase().includes('ggml') ? att.mode : 'Gemma 4 Native Audio';
+        html += `
+          <div class="attachment-card-audio">
+            <div class="attachment-card-audio-header">
+              <div style="display:flex; align-items:center; gap:6px;">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/>
+                  <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+                  <line x1="12" y1="19" x2="12" y2="22"/>
+                </svg>
+                <span style="font-weight:600; font-size:0.78rem;">${escapeHtml(att.name || 'Голосовая запись')}</span>
+              </div>
+              <span class="attachment-audio-badge">${escapeHtml(modeLabel)}</span>
+            </div>
+            <div class="attachment-card-audio-ctrls">
+              ${att.url ? `
+                <button type="button" class="btn-audio-play-toggle js-audio-play-toggle" aria-label="Воспроизвести запись" title="Слушать">
+                  <svg class="play-icon" width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21"/></svg>
+                  <svg class="pause-icon" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="display:none;"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
+                </button>
+                <audio src="${escapeHtml(att.url)}" preload="metadata" class="js-audio-element" style="display:none;"></audio>
+              ` : ''}
+              <div class="audio-waveform-bars" aria-hidden="true">
+                <span class="audio-wave-bar" style="height:8px;"></span>
+                <span class="audio-wave-bar" style="height:14px;"></span>
+                <span class="audio-wave-bar" style="height:20px;"></span>
+                <span class="audio-wave-bar" style="height:10px;"></span>
+                <span class="audio-wave-bar" style="height:16px;"></span>
+                <span class="audio-wave-bar" style="height:22px;"></span>
+                <span class="audio-wave-bar" style="height:12px;"></span>
+                <span class="audio-wave-bar" style="height:18px;"></span>
+                <span class="audio-wave-bar" style="height:9px;"></span>
+              </div>
+              <span class="audio-duration-txt js-audio-duration-display">0:00</span>
+            </div>
+            ${att.transcript ? `<div class="audio-transcript-note">«${escapeHtml(att.transcript)}»</div>` : ''}
+          </div>
+        `;
+      } else {
+        // Document
+        const { ext, badgeClass } = getFileExtAndClass(att.name);
+        const isFull = att.is_fully_processed !== false;
+        const statusBadgeHtml = isFull
+          ? `<span class="doc-status-pill doc-status-full" title="Документ полностью передан в контекст модели">
+               <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+               <span>Полный разбор</span>
+             </span>`
+          : `<span class="doc-status-pill doc-status-sampled" title="Выполнена интеллектуальная выборка ошибок и ключевой телеметрии">
+               <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+               <span>Умная выборка</span>
+             </span>`;
+
+        const dtcList = Array.isArray(att.detected_codes) && att.detected_codes.length
+          ? `<div style="display:flex; gap:4px; flex-wrap:wrap; margin-top:2px;">
+               ${att.detected_codes.map((c) => `<span class="dtc-pill" style="font-size:0.68rem; padding:1px 6px;">${escapeHtml(c)}</span>`).join('')}
+             </div>`
+          : '';
+
+        const extractedImgs = Array.isArray(att.extracted_images) && att.extracted_images.length
+          ? `<div class="doc-extracted-gallery">
+               <div class="doc-extracted-gallery-label">
+                 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                   <rect width="18" height="18" x="3" y="3" rx="2" ry="2"/>
+                   <circle cx="9" cy="9" r="2"/><path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/>
+                 </svg>
+                 <span>Извлечено схем и фото: ${att.extracted_images.length}</span>
+               </div>
+               <div class="doc-extracted-gallery-grid">
+                 ${att.extracted_images.map((imgUrl, i) => `
+                   <div class="doc-extracted-thumb js-open-lightbox" data-lightbox-src="${escapeHtml(imgUrl)}" data-lightbox-title="Схема #${i + 1} из ${escapeHtml(att.name || 'документа')}" title="Увеличить">
+                     <img src="${escapeHtml(imgUrl)}" alt="Схема #${i + 1}" loading="lazy" />
+                   </div>
+                 `).join('')}
+               </div>
+             </div>`
+          : '';
+
+        const excerptBlock = att.preview_excerpt
+          ? `<div class="doc-preview-collapse">
+               <button type="button" class="doc-preview-toggle-btn js-toggle-doc-preview">
+                 <span>Предпросмотр фрагмента</span>
+                 <svg class="chevron-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                   <polyline points="6 9 12 15 18 9"/>
+                 </svg>
+               </button>
+               <div class="doc-preview-content">${escapeHtml(att.preview_excerpt)}</div>
+             </div>`
+          : '';
+
+        html += `
+          <div class="attachment-card-doc">
+            <div class="attachment-card-doc-header">
+              <span class="doc-badge-pill ${badgeClass}">${escapeHtml(ext)}</span>
+              ${statusBadgeHtml}
+            </div>
+            <div class="attachment-doc-title-row">
+              <span class="attachment-doc-name" title="${escapeHtml(att.name || 'Файл')}">${escapeHtml(att.name || 'Документ')}</span>
+              <span class="attachment-doc-size">${formatFileSize(att.size_bytes)}</span>
+            </div>
+            ${dtcList}
+            ${extractedImgs}
+            ${excerptBlock}
+            <div class="attachment-doc-footer">
+              ${att.url ? `
+                <a href="${escapeHtml(att.url)}" download="${escapeHtml(att.name || 'document')}" class="btn-doc-download" target="_blank" rel="noopener">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                    <polyline points="7 10 12 15 17 10"/>
+                    <line x1="12" y1="15" x2="12" y2="3"/>
+                  </svg>
+                  <span>Скачать файл</span>
+                </a>
+              ` : '<span></span>'}
+            </div>
+          </div>
+        `;
+      }
+    });
+
+    html += '</div>';
+    return html;
   }
 
   // =========================================================================
@@ -535,28 +809,7 @@
         ? `<div class="dtc-badge-row">${msg.dtc_codes.map((c) => `<span class="dtc-pill">${escapeHtml(c)}</span>`).join('')}</div>`
         : '';
 
-    let attachmentsHtml = '';
-    if (Array.isArray(msg.attachments) && msg.attachments.length) {
-      attachmentsHtml = `<div class="attachments-grid">`;
-      msg.attachments.forEach((att) => {
-        if (att.type === 'image' && att.url) {
-          attachmentsHtml += `<img src="${escapeHtml(att.url)}" alt="${escapeHtml(att.name || 'Фото поломки')}" class="attachment-thumb" />`;
-        } else if (att.type === 'audio') {
-          const modeLabel = att.mode && !att.mode.toLowerCase().includes('ggml') ? att.mode : 'Gemma 4 Native Audio';
-          attachmentsHtml += `<div class="attachment-audio-wrapper">
-            <span class="attachment-doc-chip">🎙️ Аудио (${escapeHtml(modeLabel)}): ${escapeHtml(att.transcript || '')}</span>
-            ${att.url ? `<audio controls src="${escapeHtml(att.url)}" class="attachment-audio-player" preload="none"></audio>` : ''}
-          </div>`;
-        } else {
-          if (att.url) {
-            attachmentsHtml += `<a href="${escapeHtml(att.url)}" download="${escapeHtml(att.name || 'document')}" class="attachment-doc-chip attachment-doc-link" target="_blank" rel="noopener">📄 ${escapeHtml(att.name || 'Документ')}</a>`;
-          } else {
-            attachmentsHtml += `<span class="attachment-doc-chip">📄 Документ: ${escapeHtml(att.name || 'Файл')}</span>`;
-          }
-        }
-      });
-      attachmentsHtml += `</div>`;
-    }
+    const attachmentsHtml = renderAttachmentsHtml(msg.attachments);
 
     const bodyHtml =
       msg.role === 'assistant' ? buildStructuredCardHtml(msg) : `<div>${formatMarkdownLite(msg.content)}</div>`;
@@ -1193,19 +1446,30 @@
       });
     });
     filesSnapshot.forEach((f) => {
-      if (f.type && f.type.startsWith('image/')) {
-        const objUrl = URL.createObjectURL(f);
+      const isImg = (f.type && f.type.startsWith('image/')) || /\.(jpe?g|png|webp|bmp|gif)$/i.test(f.name);
+      const isAud = (f.type && f.type.startsWith('audio/')) || /\.(wav|mp3|ogg|m4a|flac|webm|aac)$/i.test(f.name);
+      if (isImg) {
+        const objUrl = f._previewUrl || URL.createObjectURL(f);
         tempObjectUrls.push(objUrl);
-        optimisticAttachments.push({ type: 'image', url: objUrl, name: f.name });
+        optimisticAttachments.push({ type: 'image', url: objUrl, name: f.name, size_bytes: f.size });
+      } else if (isAud) {
+        const objUrl = f._previewUrl || URL.createObjectURL(f);
+        tempObjectUrls.push(objUrl);
+        optimisticAttachments.push({ type: 'audio', url: objUrl, name: f.name, size_bytes: f.size, mode: 'Gemma 4 Native Audio' });
       } else {
-        optimisticAttachments.push({ type: 'document', name: f.name });
+        optimisticAttachments.push({ type: 'document', name: f.name, size_bytes: f.size, is_fully_processed: true });
       }
     });
     if (voiceBlobSnapshot) {
+      const vUrl = state.stagedVoicePreviewUrl || URL.createObjectURL(voiceBlobSnapshot);
+      tempObjectUrls.push(vUrl);
       optimisticAttachments.push({
         type: 'audio',
+        url: vUrl,
+        name: 'Голосовой запрос',
+        size_bytes: voiceBlobSnapshot.size,
         mode: 'Gemma 4 Native Audio',
-        transcript: voiceTranscriptSnapshot || 'Голосовой запрос',
+        transcript: voiceTranscriptSnapshot || 'Голосовой запрос мастера',
       });
     }
 
@@ -2908,6 +3172,118 @@
         }
       } catch (err) {
         console.error('Ошибка при удалении аккаунта:', err);
+      }
+    });
+
+    // =========================================================================
+    // Обработчики превью вложений (Лайтбокс, Аудиоплеер, Сворачивание документов)
+    // =========================================================================
+    el('btnCloseImageLightbox')?.addEventListener('click', closeImageLightbox);
+    el('imageLightboxModal')?.addEventListener('click', (e) => {
+      if (e.target === el('imageLightboxModal')) {
+        closeImageLightbox();
+      }
+    });
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        closeImageLightbox();
+      }
+    });
+
+    document.addEventListener('click', (e) => {
+      // 1. Клик по превью фото для открытия лайтбокса
+      const lightboxTrigger = e.target.closest('.js-open-lightbox');
+      if (lightboxTrigger) {
+        e.preventDefault();
+        const src = lightboxTrigger.dataset.lightboxSrc;
+        const title = lightboxTrigger.dataset.lightboxTitle;
+        if (src) openImageLightbox(src, title);
+        return;
+      }
+
+      // 2. Клик по кнопке Play/Pause аудиоплеера
+      const playBtn = e.target.closest('.js-audio-play-toggle');
+      if (playBtn) {
+        e.preventDefault();
+        const card = playBtn.closest('.attachment-card-audio, .staged-card');
+        const audio = card ? card.querySelector('.js-audio-element') : null;
+        if (!audio) return;
+
+        const playIcon = playBtn.querySelector('.play-icon');
+        const pauseIcon = playBtn.querySelector('.pause-icon');
+        const durationDisplay = card.querySelector('.js-audio-duration-display');
+
+        if (audio.paused) {
+          // Останавливаем любое другое играющее аудио
+          document.querySelectorAll('audio.js-audio-element').forEach((other) => {
+            if (other !== audio && !other.paused) {
+              other.pause();
+              other.currentTime = 0;
+              const otherCard = other.closest('.attachment-card-audio, .staged-card');
+              if (otherCard) {
+                otherCard.classList.remove('playing');
+                const oBtn = otherCard.querySelector('.js-audio-play-toggle');
+                if (oBtn) {
+                  const pI = oBtn.querySelector('.play-icon');
+                  const paI = oBtn.querySelector('.pause-icon');
+                  if (pI) pI.style.display = 'block';
+                  if (paI) paI.style.display = 'none';
+                }
+              }
+            }
+          });
+
+          audio.play().then(() => {
+            card.classList.add('playing');
+            if (playIcon) playIcon.style.display = 'none';
+            if (pauseIcon) pauseIcon.style.display = 'block';
+          }).catch(() => {});
+
+          audio.ontimeupdate = () => {
+            if (durationDisplay) {
+              const cur = Math.floor(audio.currentTime);
+              const mins = Math.floor(cur / 60);
+              const secs = String(cur % 60).padStart(2, '0');
+              durationDisplay.textContent = `${mins}:${secs}`;
+            }
+          };
+
+          audio.onended = () => {
+            card.classList.remove('playing');
+            if (playIcon) playIcon.style.display = 'block';
+            if (pauseIcon) pauseIcon.style.display = 'none';
+            if (durationDisplay && audio.duration) {
+              const tot = Math.floor(audio.duration);
+              const mins = Math.floor(tot / 60);
+              const secs = String(tot % 60).padStart(2, '0');
+              durationDisplay.textContent = `${mins}:${secs}`;
+            }
+          };
+        } else {
+          audio.pause();
+          card.classList.remove('playing');
+          if (playIcon) playIcon.style.display = 'block';
+          if (pauseIcon) pauseIcon.style.display = 'none';
+        }
+        return;
+      }
+
+      // 3. Разворачивание/сворачивание предпросмотра документа
+      const toggleDocBtn = e.target.closest('.js-toggle-doc-preview');
+      if (toggleDocBtn) {
+        e.preventDefault();
+        const wrap = toggleDocBtn.closest('.doc-preview-collapse');
+        if (wrap) {
+          const content = wrap.querySelector('.doc-preview-content');
+          if (content) {
+            content.classList.toggle('open');
+            const chevron = toggleDocBtn.querySelector('.chevron-icon');
+            if (chevron) {
+              chevron.style.transform = content.classList.contains('open') ? 'rotate(180deg)' : 'none';
+            }
+          }
+        }
+        return;
       }
     });
   }

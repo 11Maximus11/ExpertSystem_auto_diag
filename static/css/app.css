@@ -2836,7 +2836,545 @@ body.ar-glasses-mode .ar-hud-overlay {
   color: #fca5a5;
   font-size: 0.82rem;
   line-height: 1.4;
+/* ==========================================================================
+   СТИЛИЗОВАННЫЕ ПРЕВЬЮ ВЛОЖЕНИЙ (STAGING & CHAT FEED) И ЛАЙТБОКС
+   ========================================================================== */
+
+/* Карточки предпросмотра в строке вложений (Staging Bar) */
+.staged-card {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px 4px 6px;
+  border-radius: 10px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-medium);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+  font-size: 0.78rem;
+  max-width: 260px;
+  animation: fadeIn 0.18s ease;
+}
+
+.staged-card:hover {
+  border-color: var(--border-strong);
+}
+
+.staged-card-thumb-wrap {
+  width: 38px;
+  height: 38px;
+  border-radius: 6px;
+  overflow: hidden;
+  border: 1px solid var(--border-subtle);
+  flex-shrink: 0;
+  cursor: pointer;
+  position: relative;
+  background: #000;
+}
+
+.staged-card-thumb-wrap img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.staged-card-icon-wrap {
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  font-weight: 700;
+  font-size: 0.72rem;
+  font-family: var(--font-mono);
+  color: #fff;
+}
+
+.staged-icon-pdf { background: linear-gradient(135deg, #ef4444, #b91c1c); }
+.staged-icon-docx { background: linear-gradient(135deg, #3b82f6, #1d4ed8); }
+.staged-icon-xlsx { background: linear-gradient(135deg, #10b981, #047857); }
+.staged-icon-log, .staged-icon-txt { background: linear-gradient(135deg, #64748b, #334155); }
+.staged-icon-csv { background: linear-gradient(135deg, #0ea5e9, #0284c7); }
+.staged-icon-json { background: linear-gradient(135deg, #f59e0b, #d97706); }
+.staged-icon-audio { background: linear-gradient(135deg, #ec4899, #be185d); }
+.staged-icon-generic { background: linear-gradient(135deg, #8b5cf6, #6d28d9); }
+
+.staged-card-body {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1;
+}
+
+.staged-card-title {
+  font-weight: 600;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 0.76rem;
+}
+
+.staged-card-meta {
+  color: var(--text-muted);
+  font-size: 0.68rem;
+  font-family: var(--font-mono);
+}
+
+.staged-card-audio-ctrl {
+  background: rgba(255, 255, 255, 0.08);
+  border: none;
+  border-radius: 50%;
+  width: 26px;
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  color: var(--text-primary);
+  transition: all 0.15s ease;
+  flex-shrink: 0;
+}
+
+.staged-card-audio-ctrl:hover {
+  background: var(--accent-orange);
+  color: #fff;
+}
+
+.staged-card-remove {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: none;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-muted);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  line-height: 1;
+  transition: all 0.15s ease;
+  flex-shrink: 0;
+  margin-left: 2px;
+}
+
+.staged-card-remove:hover {
+  background: rgba(239, 68, 68, 0.25);
+  color: #f87171;
+}
+
+/* Карточки в чате (Chat Feed Attachment Cards) */
+.attachment-card-photo {
+  position: relative;
+  width: 170px;
+  height: 120px;
+  border-radius: 10px;
+  overflow: hidden;
+  border: 1px solid var(--border-medium);
+  background: #000;
+  cursor: pointer;
+  transition: transform 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.attachment-card-photo:hover {
+  transform: translateY(-2px);
+  border-color: var(--accent-orange);
+  box-shadow: 0 4px 14px rgba(249, 115, 22, 0.25);
+}
+
+.attachment-card-photo img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transition: transform 0.3s ease;
+}
+
+.attachment-card-photo:hover img {
+  transform: scale(1.04);
+}
+
+.attachment-photo-overlay {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.75) 0%, rgba(0, 0, 0, 0) 50%);
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  padding: 8px;
+  color: #fff;
+  font-size: 0.72rem;
+  opacity: 0.9;
+}
+
+.attachment-photo-zoom-icon {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* Карточка аудиофайла в чате */
+.attachment-card-audio {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 14px;
+  border-radius: 12px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-medium);
+  min-width: 260px;
+  max-width: 380px;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.2);
+}
+
+.attachment-card-audio-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 0.76rem;
+}
+
+.attachment-audio-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 6px;
+  background: rgba(236, 72, 153, 0.15);
+  color: #f472b6;
+  font-family: var(--font-mono);
+  font-size: 0.70rem;
+}
+
+.attachment-card-audio-ctrls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.btn-audio-play-toggle {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: var(--accent-orange);
+  border: none;
+  color: #fff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: transform 0.15s ease, background-color 0.15s ease;
+  flex-shrink: 0;
+}
+
+.btn-audio-play-toggle:hover {
+  transform: scale(1.06);
+  background: #ea580c;
+}
+
+.audio-waveform-bars {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  flex: 1;
+  height: 24px;
+}
+
+.audio-wave-bar {
+  flex: 1;
+  background: var(--text-muted);
+  border-radius: 2px;
+  height: 6px;
+  transition: height 0.15s ease, background-color 0.15s ease;
+}
+
+.attachment-card-audio.playing .audio-wave-bar:nth-child(odd) {
+  animation: audioPulse 0.6s infinite alternate;
+  background: var(--accent-orange);
+}
+
+.attachment-card-audio.playing .audio-wave-bar:nth-child(even) {
+  animation: audioPulse 0.8s infinite alternate 0.2s;
+  background: #fb923c;
+}
+
+@keyframes audioPulse {
+  0% { height: 4px; }
+  100% { height: 22px; }
+}
+
+.audio-duration-txt {
+  font-size: 0.74rem;
+  font-family: var(--font-mono);
+  color: var(--text-secondary);
+  flex-shrink: 0;
+}
+
+.audio-transcript-note {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  font-style: italic;
+  padding-top: 4px;
+  border-top: 1px dashed var(--border-subtle);
+  line-height: 1.35;
+}
+
+/* Карточка документа в чате */
+.attachment-card-doc {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-medium);
+  min-width: 270px;
+  max-width: 440px;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.2);
+}
+
+.attachment-card-doc-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.doc-badge-pill {
+  font-size: 0.68rem;
+  font-weight: 700;
+  font-family: var(--font-mono);
+  padding: 3px 8px;
+  border-radius: 6px;
+  color: #fff;
+  text-transform: uppercase;
+}
+
+.doc-status-pill {
+  font-size: 0.68rem;
+  padding: 2px 7px;
+  border-radius: 6px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-family: var(--font-mono);
+}
+
+.doc-status-full {
+  background: rgba(16, 185, 129, 0.16);
+  color: #34d399;
+  border: 1px solid rgba(16, 185, 129, 0.35);
+}
+
+.doc-status-sampled {
+  background: rgba(245, 158, 11, 0.16);
+  color: #fbbf24;
+  border: 1px solid rgba(245, 158, 11, 0.35);
+}
+
+.attachment-doc-title-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.attachment-doc-name {
+  font-weight: 600;
+  font-size: 0.83rem;
+  color: var(--text-primary);
+  word-break: break-all;
+}
+
+.attachment-doc-size {
+  font-size: 0.72rem;
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+/* Извлеченные из документа изображения */
+.doc-extracted-gallery {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  border-radius: 8px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+}
+
+.doc-extracted-gallery-label {
+  font-size: 0.70rem;
+  color: var(--text-secondary);
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.doc-extracted-gallery-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.doc-extracted-thumb {
+  width: 54px;
+  height: 54px;
+  border-radius: 6px;
+  overflow: hidden;
+  border: 1px solid var(--border-strong);
+  cursor: pointer;
+  background: #000;
+  position: relative;
+  transition: transform 0.15s ease, border-color 0.15s ease;
+}
+
+.doc-extracted-thumb:hover {
+  transform: scale(1.05);
+  border-color: var(--accent-orange);
+}
+
+.doc-extracted-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+/* Разворачиваемый предпросмотр содержимого документа */
+.doc-preview-collapse {
+  border-radius: 8px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  overflow: hidden;
+}
+
+.doc-preview-toggle-btn {
+  width: 100%;
+  padding: 6px 10px;
+  background: transparent;
+  border: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 0.74rem;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+}
+
+.doc-preview-toggle-btn:hover {
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text-primary);
+}
+
+.doc-preview-content {
+  padding: 8px 10px;
+  font-size: 0.72rem;
+  font-family: var(--font-mono);
+  color: var(--text-secondary);
+  background: rgba(0, 0, 0, 0.2);
+  border-top: 1px solid var(--border-subtle);
+  max-height: 120px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  line-height: 1.35;
   display: none;
+}
+
+.doc-preview-content.open {
+  display: block;
+}
+
+.attachment-doc-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding-top: 4px;
+}
+
+.btn-doc-download {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 0.74rem;
+  color: var(--accent-orange);
+  text-decoration: none;
+  font-weight: 500;
+  transition: color 0.15s ease;
+}
+
+.btn-doc-download:hover {
+  color: #ea580c;
+  text-decoration: underline;
+}
+
+/* Lightbox Modal */
+.image-lightbox-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  background: rgba(9, 13, 22, 0.88);
+  backdrop-filter: blur(12px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 18px;
+}
+
+.image-lightbox-card {
+  max-width: 92vw;
+  max-height: 90vh;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-strong);
+  border-radius: 16px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 25px 60px rgba(0, 0, 0, 0.7);
+  animation: modalPopIn 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.image-lightbox-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 18px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--bg-elevated);
+}
+
+.image-lightbox-title-box {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.86rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.image-lightbox-body {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: auto;
+  padding: 12px;
+  background: #04070e;
+}
+
+.image-lightbox-img {
+  max-width: 100%;
+  max-height: calc(88vh - 65px);
+  object-fit: contain;
+  border-radius: 8px;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.5);
 }
 
 @media (prefers-reduced-motion: reduce) {

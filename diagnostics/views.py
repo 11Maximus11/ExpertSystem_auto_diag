@@ -828,6 +828,9 @@ def api_ask_expert(request: HttpRequest) -> JsonResponse:
         else:
             doc_analysis = parse_uploaded_document(f_bytes, filename=f_name)
             doc_analyses.append(doc_analysis)
+            for idx_emb, emb_b in enumerate(doc_analysis.get("embedded_images_bytes", [])):
+                emb_info = analyze_image_bytes(emb_b, filename=f"рис_{idx_emb+1}_{f_name}.jpg")
+                image_analyses.append(emb_info)
             data_url, b64, mime = _bytes_to_base64_data_uri(f_bytes, f_name, fallback_mime="application/octet-stream")
             saved_attachments.append(
                 {
@@ -839,6 +842,11 @@ def api_ask_expert(request: HttpRequest) -> JsonResponse:
                     "size_bytes": len(f_bytes),
                     "detected_codes": doc_analysis.get("detected_dtc_codes", []),
                     "metrics": doc_analysis.get("key_metrics", []),
+                    "is_fully_processed": doc_analysis.get("is_fully_processed", True),
+                    "processing_mode": doc_analysis.get("processing_mode", "full"),
+                    "char_length": doc_analysis.get("char_length", len(f_bytes)),
+                    "preview_excerpt": doc_analysis.get("preview_excerpt", ""),
+                    "extracted_images": doc_analysis.get("embedded_images_data_urls", []),
                 }
             )
 

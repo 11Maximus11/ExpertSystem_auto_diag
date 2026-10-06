@@ -333,6 +333,48 @@ class AIdealAutoComprehensiveTests(TransactionTestCase):
         self.assertIn("P0171", parsed_csv["detected_dtc_codes"])
         self.assertIn("P0420", parsed_csv["detected_dtc_codes"])
         self.assertIn("Система слишком бедная", parsed_csv["extracted_text"])
+        self.assertTrue(parsed_csv["is_fully_processed"])
+        self.assertEqual(parsed_csv["processing_mode"], "full")
+        self.assertEqual(parsed_csv["llm_ready_text"], parsed_csv["extracted_text"])
+
+        # 5. Проверка интеллектуальной выборки для сверхдлинных документов (> 25000 символов)
+        large_log_lines = ["Header Line: OBD-II CAN-Bus Telemetry Log"]
+        for i in range(1200):
+            if i == 150:
+                large_log_lines.append(f"Line {i}: CRITICAL ERROR P0301 Cylinder 1 Misfire Detected Engine_Temp=104 C")
+            elif i == 800:
+                large_log_lines.append(f"Line {i}: WARNING P0113 Intake Air Temperature Sensor 1 Circuit High")
+            else:
+                large_log_lines.append(f"Line {i}: Telemetry normal packet rpm=2150 vbatt=14.1 speed=62.5 km/h")
+        large_log_lines.append("Tail Line: Final diagnostic state OK")
+        large_log_bytes = "\n".join(large_log_lines).encode("utf-8")
+        parsed_large = parse_uploaded_document(large_log_bytes, "huge_obd_dump.log")
+        self.assertFalse(parsed_large["is_fully_processed"])
+        self.assertEqual(parsed_large["processing_mode"], "smart_sampled")
+        self.assertIn("P0301", parsed_large["detected_dtc_codes"])
+        self.assertIn("P0113", parsed_large["detected_dtc_codes"])
+        self.assertIn("P0301", parsed_large["llm_ready_text"])
+        self.assertIn("P0113", parsed_large["llm_ready_text"])
+        self.assertIn("Header Line:", parsed_large["llm_ready_text"])
+        self.assertIn("Tail Line:", parsed_large["llm_ready_text"])
+
+        # 6. Проверка извлечения встроенных изображений из DOCX
+        import docx
+        doc_obj = docx.Document()
+        doc_obj.add_paragraph("Отчёт осмотра дроссельного узла P0122")
+        test_img = Image.new("RGB", (120, 120), color=(200, 50, 50))
+        img_bytes_io = io.BytesIO()
+        test_img.save(img_bytes_io, format="JPEG")
+        img_bytes_io.seek(0)
+        doc_obj.add_picture(img_bytes_io)
+        docx_buf = io.BytesIO()
+        doc_obj.save(docx_buf)
+        parsed_docx = parse_uploaded_document(docx_buf.getvalue(), "throttle_inspection.docx")
+        self.assertIn("P0122", parsed_docx["detected_dtc_codes"])
+        self.assertGreaterEqual(len(parsed_docx["embedded_images_bytes"]), 1)
+        self.assertGreaterEqual(len(parsed_docx["embedded_images_data_urls"]), 1)
+        self.assertTrue(parsed_docx["embedded_images_data_urls"][0].startswith("data:image/jpeg;base64,"))
+
 
     def test_10_projects_pinning_tagging_and_renaming(self):
         """Проверка создания проектов, закрепления, тегирования, переименования диалогов и удаления проектов."""

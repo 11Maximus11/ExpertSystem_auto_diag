@@ -432,7 +432,7 @@ def api_sessions(request: HttpRequest) -> JsonResponse:
             tag=tag,
         )
         res = demo_sess.to_dict()
-        res["project_id"] = int(project_id) if (project_id and str(project_id).isdigit()) else None
+        res["project_id"] = int(project_id) if (project_id and str(project_id).isdigit()) else (project_id or None)
         res["is_demo"] = True
         return JsonResponse(res, status=201)
 

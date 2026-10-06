@@ -718,6 +718,21 @@
     }
   }
 
+  function bindWelcomeChips(feed) {
+    if (!feed) return;
+    feed.querySelectorAll('.chip-scenario').forEach((btn) => {
+      btn.onclick = () => {
+        const q = btn.dataset.quickQuery;
+        const code = btn.dataset.quickCode;
+        if (code && !state.stagedCodes.includes(code)) {
+          state.stagedCodes.push(code);
+          renderStagingBar();
+        }
+        sendDiagnosticQuery(q);
+      };
+    });
+  }
+
   function renderEmptyState(feed) {
     if (!feed) return;
     feed.innerHTML = `
@@ -728,9 +743,11 @@
         <div class="diagnosis-verdict-title">
           <span>Интеллектуальный стенд автодиагностики и пошагового ремонта</span>
         </div>
-        <p style="font-size:0.88rem; color:var(--text-secondary); margin-bottom: 12px;">
-          Опишите симптом своими словами, выберите код ошибки OBD-II из словаря БД, прикрепите лог сканера,
-          запишите голосовой вопрос или сфотографируйте неисправный узел прямо через встроенную камеру / очки AR и VR.
+        <p style="font-size:0.88rem; color:var(--text-secondary); margin-bottom: 8px;">
+          Здравствуйте! Я экспертная система автодиагностики «ИИдеал Авто» на базе мультимодальной нейросети Gemma 4. Готов помочь локализовать поломку, расшифровать ошибки ЭБУ и составить пошаговый план ремонта.
+        </p>
+        <p style="font-size:0.82rem; color:var(--text-muted); margin-bottom: 12px;">
+          Опишите симптом своими словами, выберите код ошибки OBD-II из словаря, прикрепите лог сканера или фото неисправного узла, либо запишите голосовой вопрос.
         </p>
         <div style="font-size:0.78rem; font-weight:600; color:var(--text-muted); margin-bottom:6px;">Быстрые примеры неисправностей:</div>
         <div class="quick-scenarios" style="display:flex; flex-wrap:wrap; gap:6px;">
@@ -743,18 +760,7 @@
       </div>
     `;
 
-    feed.querySelectorAll('.chip-scenario').forEach((btn) => {
-      btn.addEventListener('click', () => {
-        const q = btn.dataset.quickQuery;
-        const code = btn.dataset.quickCode;
-        if (code && !state.stagedCodes.includes(code)) {
-          state.stagedCodes.push(code);
-          renderStagingBar();
-        }
-        sendDiagnosticQuery(q);
-      });
-    });
-
+    bindWelcomeChips(feed);
     updateSelectionToolbar();
   }
 
@@ -980,7 +986,16 @@
     if (arFeed) {
       arFeed.innerHTML = '';
       if (!messages || !messages.length) {
-        arFeed.innerHTML = '<div style="color:var(--text-secondary);font-size:0.85rem;">Диалог пуст. Введите вопрос или отправьте голосовой запрос/снимок узла.</div>';
+        arFeed.innerHTML = `
+          <div class="msg-card msg-assistant" data-welcome-placeholder="1">
+            <div class="msg-header">
+              <span class="msg-role-badge">AR/VR ПОМОЩНИК • ГОТОВ</span>
+            </div>
+            <p style="font-size:0.85rem; color:var(--text-secondary); margin:0;">
+              Здравствуйте! Наведите визир на узел автомобиля, сделайте снимок или задайте голосовой вопрос.
+            </p>
+          </div>
+        `;
       } else {
         messages.forEach((m) => {
           arFeed.appendChild(renderMessageElement(m));
@@ -1855,12 +1870,173 @@
     }
   }
 
+  // =========================================================================
+  // Рендеринг и обновление древовидной структуры проектов и сессий
+  // =========================================================================
+  function renderSessionItemHtml(s) {
+    const isCur = String(s.id) === String(state.currentSessionId);
+    const isPinned = Boolean(s.is_pinned);
+    return `
+      <div class="session-item clickable ${isCur ? 'active' : ''} ${isPinned ? 'pinned' : ''}" data-session-id="${s.id}">
+        <div class="session-row-main">
+          <button type="button" class="btn-pin-session ${isPinned ? 'active' : ''}" data-pin-session="${s.id}" title="${isPinned ? 'Открепить диалог' : 'Закрепить диалог'}">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="${isPinned ? 'currentColor' : 'none'}" stroke="currentColor" stroke-width="2">
+              <path d="M12 17v5"/><path d="M9 2h6l1 7H8l1-7z"/><path d="M5 9h14v2a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V9z"/>
+            </svg>
+          </button>
+          <span class="session-item-title" title="${escapeHtml(s.title || 'Новый диалог')}">${escapeHtml(s.title || 'Новый диалог')}</span>
+          <div class="session-item-actions">
+            <button type="button" class="btn-rename-session" data-rename-session="${s.id}" data-current-title="${escapeHtml(s.title || '')}" title="Переименовать диалог">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/>
+              </svg>
+            </button>
+            <button type="button" class="btn-delete-session" data-delete-session="${s.id}" title="Удалить диалог" aria-label="Удалить диалог">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+              </svg>
+            </button>
+          </div>
+        </div>
+        <div class="session-row-sub">
+          ${
+            s.tag
+              ? `<span class="session-tag-badge" data-set-tag-session="${s.id}" data-current-tag="${escapeHtml(s.tag)}">${escapeHtml(s.tag)}</span>`
+              : `<button type="button" class="btn-set-tag" data-set-tag-session="${s.id}" title="Назначить тег">+ тег</button>`
+          }
+          <span class="session-sub-meta">${escapeHtml(s.updated_at || '')}</span>
+        </div>
+      </div>
+    `;
+  }
+
+  async function refreshSidebarProjects(tagFilter) {
+    if (tagFilter !== undefined) state.activeTag = tagFilter;
+    const projectsTreeEl = el('sidebarProjectsList');
+    const unassignedListEl = el('sessionsList');
+    const arSelectEl = el('arSessionSelect');
+
+    let projects = [];
+    let sessions = [];
+
+    if (state.isDemo) {
+      projects = state.demoProjects || [];
+      sessions = state.demoSessions || [];
+    } else {
+      try {
+        const [projResp, sessResp] = await Promise.all([
+          fetch('/api/projects/'),
+          fetch('/api/sessions/' + (state.activeTag ? `?tag=${encodeURIComponent(state.activeTag)}` : '')),
+        ]);
+        if (projResp.ok) {
+          const pData = await projResp.json();
+          projects = pData.projects || [];
+        }
+        if (sessResp.ok) {
+          const sData = await sessResp.json();
+          sessions = sData.sessions || [];
+        }
+      } catch (err) {
+        console.error('Ошибка загрузки проектов и сессий:', err);
+      }
+    }
+
+    // Построение карты сессий по проектам
+    const sessionsByProj = {};
+    const unassignedSessions = [];
+
+    sessions.forEach((s) => {
+      if (state.activeTag && s.tag !== state.activeTag) return;
+      if (s.project_id !== null && s.project_id !== undefined && !Number.isNaN(s.project_id)) {
+        const key = String(s.project_id);
+        if (!sessionsByProj[key]) sessionsByProj[key] = [];
+        if (!sessionsByProj[key].some((x) => String(x.id) === String(s.id))) {
+          sessionsByProj[key].push(s);
+        }
+      } else {
+        unassignedSessions.push(s);
+      }
+    });
+
+    projects.forEach((p) => {
+      const key = String(p.id);
+      if (!sessionsByProj[key]) sessionsByProj[key] = [];
+      (p.sessions || []).forEach((s) => {
+        if (state.activeTag && s.tag !== state.activeTag) return;
+        if (!sessionsByProj[key].some((x) => String(x.id) === String(s.id))) {
+          sessionsByProj[key].push(s);
+        }
+      });
+    });
+
+    // Рендеринг древовидного меню проектов в стиле AIBPMN
+    if (projectsTreeEl) {
+      if (projects.length === 0) {
+        projectsTreeEl.innerHTML = '';
+      } else {
+        projectsTreeEl.innerHTML = projects
+          .map((p) => {
+            const pSessions = sessionsByProj[String(p.id)] || [];
+            const chatsHtml =
+              pSessions.length === 0
+                ? `<div class="sidebar-empty-hint">Нет диалогов в проекте</div>`
+                : pSessions.map((s) => renderSessionItemHtml(s)).join('');
+
+            return `
+              <div class="project-group" data-project-id="${p.id}">
+                <div class="project-header" data-project-id="${p.id}">
+                  <span class="project-title" title="${escapeHtml(p.name)}">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0; color:var(--accent-orange);">
+                      <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+                    </svg>
+                    <span class="project-title-text">${escapeHtml(p.name)}</span>
+                    <span class="project-count-pill">${pSessions.length}</span>
+                  </span>
+                  <div class="project-actions">
+                    <button type="button" class="action-btn action-add-chat" data-project-id="${p.id}" title="Новый диалог в проекте">+</button>
+                    <button type="button" class="action-btn action-edit-project" data-project-id="${p.id}" data-project-name="${escapeHtml(p.name)}" title="Переименовать проект">✎</button>
+                    <button type="button" class="action-btn action-delete-project" data-project-id="${p.id}" data-project-name="${escapeHtml(p.name)}" title="Удалить проект">✕</button>
+                  </div>
+                </div>
+                <div class="project-chats">
+                  ${chatsHtml}
+                </div>
+              </div>
+            `;
+          })
+          .join('');
+      }
+    }
+
+    // Рендеринг диалогов вне проектов
+    if (unassignedListEl) {
+      if (unassignedSessions.length === 0 && projects.length === 0) {
+        unassignedListEl.innerHTML = `<div style="padding:16px 8px; color:var(--text-muted); font-size:0.75rem; text-align:center;">Диалоги не найдены</div>`;
+      } else {
+        unassignedListEl.innerHTML = unassignedSessions.map((s) => renderSessionItemHtml(s)).join('');
+      }
+    }
+
+    // Обновление селектора сессий в AR HUD
+    if (arSelectEl) {
+      const allFiltered = sessions.filter((s) => !state.activeTag || s.tag === state.activeTag);
+      arSelectEl.innerHTML = allFiltered
+        .map(
+          (s) =>
+            `<option value="${s.id}" ${String(s.id) === String(state.currentSessionId) ? 'selected' : ''}>${escapeHtml(s.title || 'Диалог #' + s.id)}</option>`
+        )
+        .join('');
+    }
+  }
+  window._refreshSidebarProjects = refreshSidebarProjects;
+
   async function createNewSession(projectId) {
     if (state.isDemo) {
       const newId = 'demo-sess-' + Date.now();
+      const projIdVal = projectId ? (isNaN(Number(projectId)) ? projectId : Number(projectId)) : null;
       const newSess = {
         id: newId,
-        project_id: projectId ? Number(projectId) : null,
+        project_id: projIdVal,
         title: 'Новый диалог ' + (state.demoSessions.length + 1),
         tag: '',
         is_pinned: false,
@@ -1877,9 +2053,9 @@
 
     const body = {};
     if (projectId) {
-      body.project_id = Number(projectId);
+      body.project_id = isNaN(Number(projectId)) ? projectId : Number(projectId);
     } else if (state.activeProjectId) {
-      body.project_id = Number(state.activeProjectId);
+      body.project_id = isNaN(Number(state.activeProjectId)) ? state.activeProjectId : Number(state.activeProjectId);
     }
     try {
       const resp = await fetch('/api/sessions/', {
@@ -1925,152 +2101,8 @@
       });
     });
 
-    // =========================================================================
-    // Управление проектами и сессиями (Древовидная структура AIBPMN, Закрепление, Переименование, Теги)
-    // =========================================================================
-    async function refreshSidebarProjects(tagFilter) {
-      if (tagFilter !== undefined) state.activeTag = tagFilter;
-      const projectsTreeEl = el('sidebarProjectsList');
-      const unassignedListEl = el('sessionsList');
-      const arSelectEl = el('arSessionSelect');
-
-      let projects = [];
-      let sessions = [];
-
-      if (state.isDemo) {
-        projects = state.demoProjects || [];
-        sessions = state.demoSessions || [];
-      } else {
-        try {
-          const [projResp, sessResp] = await Promise.all([
-            fetch('/api/projects/'),
-            fetch('/api/sessions/' + (state.activeTag ? `?tag=${encodeURIComponent(state.activeTag)}` : '')),
-          ]);
-          if (projResp.ok) {
-            const pData = await projResp.json();
-            projects = pData.projects || [];
-          }
-          if (sessResp.ok) {
-            const sData = await sessResp.json();
-            sessions = sData.sessions || [];
-          }
-        } catch (err) {
-          console.error('Ошибка загрузки проектов и сессий:', err);
-        }
-      }
-
-      // Построение карты сессий по проектам
-      const sessionsByProj = {};
-      const unassignedSessions = [];
-
-      sessions.forEach((s) => {
-        if (state.activeTag && s.tag !== state.activeTag) return;
-        if (s.project_id) {
-          if (!sessionsByProj[s.project_id]) sessionsByProj[s.project_id] = [];
-          sessionsByProj[s.project_id].push(s);
-        } else {
-          unassignedSessions.push(s);
-        }
-      });
-
-      // Рендеринг древовидного меню проектов в стиле AIBPMN
-      if (projectsTreeEl) {
-        if (projects.length === 0) {
-          projectsTreeEl.innerHTML = '';
-        } else {
-          projectsTreeEl.innerHTML = projects
-            .map((p) => {
-              const pSessions =
-                sessionsByProj[p.id] ||
-                (p.sessions || []).filter((s) => !state.activeTag || s.tag === state.activeTag);
-              const chatsHtml =
-                pSessions.length === 0
-                  ? `<div class="sidebar-empty-hint">Нет диалогов в проекте</div>`
-                  : pSessions.map((s) => renderSessionItemHtml(s)).join('');
-
-              return `
-                <div class="project-group" data-project-id="${p.id}">
-                  <div class="project-header" data-project-id="${p.id}">
-                    <span class="project-title" title="${escapeHtml(p.name)}">
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0; color:var(--accent-orange);">
-                        <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
-                      </svg>
-                      <span class="project-title-text">${escapeHtml(p.name)}</span>
-                      <span class="project-count-pill">${pSessions.length}</span>
-                    </span>
-                    <div class="project-actions">
-                      <button type="button" class="action-btn action-add-chat" data-project-id="${p.id}" title="Новый диалог в проекте">+</button>
-                      <button type="button" class="action-btn action-edit-project" data-project-id="${p.id}" data-project-name="${escapeHtml(p.name)}" title="Переименовать проект">✎</button>
-                      <button type="button" class="action-btn action-delete-project" data-project-id="${p.id}" data-project-name="${escapeHtml(p.name)}" title="Удалить проект">✕</button>
-                    </div>
-                  </div>
-                  <div class="project-chats">
-                    ${chatsHtml}
-                  </div>
-                </div>
-              `;
-            })
-            .join('');
-        }
-      }
-
-      // Рендеринг диалогов вне проектов (без упоминания OBD-II)
-      if (unassignedListEl) {
-        if (unassignedSessions.length === 0 && projects.length === 0) {
-          unassignedListEl.innerHTML = `<div style="padding:16px 8px; color:var(--text-muted); font-size:0.75rem; text-align:center;">Диалоги не найдены</div>`;
-        } else {
-          unassignedListEl.innerHTML = unassignedSessions.map((s) => renderSessionItemHtml(s)).join('');
-        }
-      }
-
-      // Обновление селектора сессий в AR HUD
-      if (arSelectEl) {
-        const allFiltered = sessions.filter((s) => !state.activeTag || s.tag === state.activeTag);
-        arSelectEl.innerHTML = allFiltered
-          .map(
-            (s) =>
-              `<option value="${s.id}" ${String(s.id) === String(state.currentSessionId) ? 'selected' : ''}>${escapeHtml(s.title || 'Диалог #' + s.id)}</option>`
-          )
-          .join('');
-      }
-    }
-
-    function renderSessionItemHtml(s) {
-      const isCur = String(s.id) === String(state.currentSessionId);
-      const isPinned = Boolean(s.is_pinned);
-      return `
-        <div class="session-item clickable ${isCur ? 'active' : ''} ${isPinned ? 'pinned' : ''}" data-session-id="${s.id}">
-          <div class="session-row-main">
-            <button type="button" class="btn-pin-session ${isPinned ? 'active' : ''}" data-pin-session="${s.id}" title="${isPinned ? 'Открепить диалог' : 'Закрепить диалог'}">
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="${isPinned ? 'currentColor' : 'none'}" stroke="currentColor" stroke-width="2">
-                <path d="M12 17v5"/><path d="M9 2h6l1 7H8l1-7z"/><path d="M5 9h14v2a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V9z"/>
-              </svg>
-            </button>
-            <span class="session-item-title" title="${escapeHtml(s.title || 'Новый диалог')}">${escapeHtml(s.title || 'Новый диалог')}</span>
-            <div class="session-item-actions">
-              <button type="button" class="btn-rename-session" data-rename-session="${s.id}" data-current-title="${escapeHtml(s.title || '')}" title="Переименовать диалог">
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/>
-                </svg>
-              </button>
-              <button type="button" class="btn-delete-session" data-delete-session="${s.id}" title="Удалить диалог" aria-label="Удалить диалог">
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
-                </svg>
-              </button>
-            </div>
-          </div>
-          <div class="session-row-sub">
-            ${
-              s.tag
-                ? `<span class="session-tag-badge" data-set-tag-session="${s.id}" data-current-tag="${escapeHtml(s.tag)}">${escapeHtml(s.tag)}</span>`
-                : `<button type="button" class="btn-set-tag" data-set-tag-session="${s.id}" title="Назначить тег">+ тег</button>`
-            }
-            <span class="session-sub-meta">${escapeHtml(s.updated_at || '')}</span>
-          </div>
-        </div>
-      `;
-    }
+    // Привязка кликов к сценариям на приветственной карточке
+    bindWelcomeChips(el('chatFeed'));
 
     // Создание новой сессии
     el('btnNewSession')?.addEventListener('click', async () => {

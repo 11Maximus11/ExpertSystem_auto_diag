@@ -242,7 +242,28 @@
 
       <!-- Лента сообщений и карточек ремонта -->
       <div class="chat-feed" id="chatFeed" role="log" aria-live="polite">
-        <!-- Заполняется динамически через JS -->
+        <div class="msg-card msg-assistant" data-welcome-placeholder="1">
+          <div class="msg-header">
+            <span class="msg-role-badge">ИИДЕАЛ АВТО • ГОТОВ К ДИАГНОСТИКЕ</span>
+          </div>
+          <div class="diagnosis-verdict-title">
+            <span>Интеллектуальный стенд автодиагностики и пошагового ремонта</span>
+          </div>
+          <p style="font-size:0.88rem; color:var(--text-secondary); margin-bottom: 8px;">
+            Здравствуйте! Я экспертная система автодиагностики «ИИдеал Авто» на базе мультимодальной нейросети Gemma 4. Готов помочь локализовать поломку, расшифровать ошибки ЭБУ и составить пошаговый план ремонта.
+          </p>
+          <p style="font-size:0.82rem; color:var(--text-muted); margin-bottom: 12px;">
+            Опишите симптом своими словами, выберите код ошибки OBD-II из словаря, прикрепите лог сканера или фото неисправного узла, либо запишите голосовой вопрос.
+          </p>
+          <div style="font-size:0.78rem; font-weight:600; color:var(--text-muted); margin-bottom:6px;">Быстрые примеры неисправностей:</div>
+          <div class="quick-scenarios" style="display:flex; flex-wrap:wrap; gap:6px;">
+            <button type="button" class="chip-scenario" data-quick-query="Двигатель троит на холостых, мигает Check Engine, ошибка P0300" data-quick-code="P0300">P0300 Троит ДВС</button>
+            <button type="button" class="chip-scenario" data-quick-query="Жёсткие пинки АКПП при переключении с 1 на 2 передачу, код P0796" data-quick-code="P0796">P0796 Пинки АКПП</button>
+            <button type="button" class="chip-scenario" data-quick-query="Педаль тормоза стала мягкой и проваливается, ошибка C0050" data-quick-code="C0050">C0050 Тормоза</button>
+            <button type="button" class="chip-scenario" data-quick-query="Потеря связи по шине CAN с блоком управления, ошибка U1900" data-quick-code="U1900">U1900 CAN-шина</button>
+            <button type="button" class="chip-scenario" data-quick-query="Пневмоподвеска не поднимает кузов, ошибка компрессора C1731" data-quick-code="C1731">C1731 Пневма</button>
+          </div>
+        </div>
       </div>
 
       <!-- Нижний док мультимодального ввода -->
@@ -464,8 +485,13 @@
       </div>
       <div class="ar-window-content">
         <div id="arAssistantFeed" style="margin-bottom: 12px; max-height: calc(65vh - 120px); overflow-y:auto;">
-          <div style="color: var(--text-secondary); font-size: 0.85rem;">
-            Наведите визир на узел авто или введите вопрос. Чеклисты синхронизированы с сессией.
+          <div class="msg-card msg-assistant" data-welcome-placeholder="1">
+            <div class="msg-header">
+              <span class="msg-role-badge">AR/VR ПОМОЩНИК • ГОТОВ</span>
+            </div>
+            <p style="font-size:0.85rem; color:var(--text-secondary); margin:0;">
+              Здравствуйте! Наведите визир на узел автомобиля, сделайте снимок или задайте голосовой вопрос.
+            </p>
           </div>
         </div>
 

@@ -342,6 +342,10 @@ select:focus-visible {
   overflow: hidden;
 }
 
+.sidebar-backdrop {
+  display: none;
+}
+
 .panel-sidebar,
 .panel-inspector {
   background: var(--bg-surface);

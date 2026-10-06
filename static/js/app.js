@@ -1477,6 +1477,14 @@
     if (!feed) return;
     const doScroll = () => {
       feed.scrollTop = feed.scrollHeight;
+      const lastChild = feed.lastElementChild;
+      if (lastChild && typeof lastChild.scrollIntoView === 'function') {
+        try {
+          lastChild.scrollIntoView({ behavior: 'smooth', block: 'end' });
+        } catch (_) {
+          feed.scrollTop = feed.scrollHeight;
+        }
+      }
       if (window.scrollX !== 0) {
         window.scrollTo(0, window.scrollY);
       }
@@ -1485,8 +1493,9 @@
       doScroll();
     } else {
       requestAnimationFrame(doScroll);
-      setTimeout(doScroll, 80);
-      setTimeout(doScroll, 260);
+      setTimeout(doScroll, 50);
+      setTimeout(doScroll, 160);
+      setTimeout(doScroll, 350);
     }
   }
 

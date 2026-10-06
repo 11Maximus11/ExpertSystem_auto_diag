@@ -339,7 +339,7 @@ class ContextSummarizerWorkerManager:
     def _update_cross_dialog_memory(self, cancel_event: threading.Event):
         """
         Обновляет единую междиалоговую выжимку по всем сессиям пользователя,
-        если активирована настройка `cross_dialog_memory_enabled`.
+        если активирована настройка `cross_dialog_memory_enabled`, сохраняя вручную заданные заметки.
         """
         if cancel_event.is_set():
             return
@@ -354,7 +354,13 @@ class ContextSummarizerWorkerManager:
         if not recent_sessions or cancel_event.is_set():
             return
 
-        global_blocks: List[str] = []
+        existing_manual_lines = [
+            ln.strip()
+            for ln in (settings_obj.global_memory_summary or "").splitlines()
+            if ln.strip() and not ln.strip().startswith("• Сессия «")
+        ]
+
+        global_blocks: List[str] = list(existing_manual_lines)
         for sess in recent_sessions:
             if cancel_event.is_set():
                 return

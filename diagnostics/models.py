@@ -149,8 +149,8 @@ class DiagnosticProject(models.Model):
     def __str__(self) -> str:
         return self.name
 
-    def to_dict(self):
-        return {
+    def to_dict(self, include_sessions: bool = False):
+        data = {
             "id": self.id,
             "name": self.name,
             "description": self.description,
@@ -158,6 +158,9 @@ class DiagnosticProject(models.Model):
             "created_at": self.created_at.strftime("%Y-%m-%d %H:%M"),
             "updated_at": self.updated_at.strftime("%Y-%m-%d %H:%M"),
         }
+        if include_sessions:
+            data["sessions"] = [s.to_dict() for s in self.sessions.all()]
+        return data
 
 
 class DialogSession(models.Model):
@@ -230,21 +233,24 @@ class DialogSession(models.Model):
         verbose_name_plural = "Диагностические сессии"
 
     def to_dict(self):
+        from django.utils import timezone
+        now_str = timezone.now().strftime("%d.%m.%Y %H:%M")
+        is_saved = not self._state.adding and bool(self.pk)
         return {
             "id": str(self.id),
             "title": self.title,
             "is_pinned": self.is_pinned,
             "tag": self.tag,
-            "project_id": self.project_id,
-            "project_name": self.project.name if self.project else None,
+            "project_id": self.project_id if is_saved else None,
+            "project_name": (self.project.name if self.project else None) if is_saved else None,
             "vehicle_info": self.vehicle_info,
             "summary": self.summary,
             "worker_status": self.worker_status,
             "worker_version": self.worker_version,
             "attached_dtc_codes": self.attached_dtc_codes,
-            "message_count": self.messages.count(),
-            "updated_at": self.updated_at.strftime("%d.%m.%Y %H:%M"),
-            "created_at": self.created_at.strftime("%d.%m.%Y %H:%M"),
+            "message_count": self.messages.count() if is_saved else 0,
+            "updated_at": self.updated_at.strftime("%d.%m.%Y %H:%M") if self.updated_at else now_str,
+            "created_at": self.created_at.strftime("%d.%m.%Y %H:%M") if self.created_at else now_str,
         }
 
     @property

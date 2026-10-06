@@ -39,8 +39,16 @@ from .models import ChatMessage, DialogSession, DiagnosticProject, SystemSetting
 from .voice_service import process_voice_input
 
 
+# Временный in-memory буфер ответов для демо-режима (без записи в БД SQLite)
+_DEMO_RAM_MESSAGES: Dict[int, Dict[str, Any]] = {}
+_DEMO_NEXT_MSG_ID: int = 900000
+
+
 def _ensure_default_session(user=None) -> DialogSession:
-    """Гарантирует наличие хотя бы одной диагностической сессии для пользователя."""
+    """
+    Гарантирует наличие диагностической сессии для авторизованного пользователя.
+    В демо-режиме (без авторизации) возвращает несохраненный объект в памяти, не записывая ничего в БД.
+    """
     if user and user.is_authenticated:
         session = DialogSession.objects.filter(user=user).first()
         if not session:
@@ -50,13 +58,12 @@ def _ensure_default_session(user=None) -> DialogSession:
                 vehicle_info="",
             )
         return session
-    session = DialogSession.objects.filter(user__isnull=True).first()
-    if not session:
-        session = DialogSession.objects.create(
-            title="Диагностика #1",
-            vehicle_info="",
-        )
-    return session
+    # Демо-режим: не сохраняем сессию в базу данных
+    return DialogSession(
+        id=uuid.uuid4(),
+        title="Демо-диагностика",
+        vehicle_info="",
+    )
 
 
 def _bytes_to_base64_data_uri(
@@ -144,13 +151,24 @@ def index_view(request: HttpRequest) -> HttpResponse:
     current_session = _ensure_default_session(user=current_user)
 
     if current_user:
-        sessions = list(DialogSession.objects.filter(user=current_user).select_related("project").all()[:40])
-        projects = [p.to_dict() for p in DiagnosticProject.objects.filter(user=current_user)]
-        all_tags = list(DialogSession.objects.filter(user=current_user).exclude(tag="").values_list("tag", flat=True).distinct())
+        sessions = list(DialogSession.objects.filter(user=current_user).select_related("project").all()[:60])
+        projects = [
+            p.to_dict(include_sessions=True)
+            for p in DiagnosticProject.objects.filter(user=current_user).prefetch_related("sessions")
+        ]
+        all_tags = list(
+            DialogSession.objects.filter(user=current_user)
+            .exclude(tag="")
+            .values_list("tag", flat=True)
+            .distinct()
+        )
     else:
-        sessions = list(DialogSession.objects.filter(user__isnull=True).select_related("project").all()[:40])
-        projects = [p.to_dict() for p in DiagnosticProject.objects.filter(user__isnull=True)]
-        all_tags = list(DialogSession.objects.filter(user__isnull=True).exclude(tag="").values_list("tag", flat=True).distinct())
+        # В демо-режиме ничего не храним на сервере и очищаем возможные анонимные записи
+        DialogSession.objects.filter(user__isnull=True).delete()
+        DiagnosticProject.objects.filter(user__isnull=True).delete()
+        sessions = []
+        projects = []
+        all_tags = []
 
     systems_list = orchestrator.rag_engine.get_all_systems()
     hw_telemetry = orchestrator.get_hardware_and_model_telemetry(active_settings)
@@ -167,6 +185,7 @@ def index_view(request: HttpRequest) -> HttpResponse:
         "hw_telemetry_json": json.dumps(hw_telemetry, ensure_ascii=False),
         "ar_mode_initial": ar_mode_initial,
         "current_user": current_user,
+        "is_demo": current_user is None,
     }
     return render(request, "diagnostics/index.html", context)
 
@@ -179,11 +198,11 @@ def ar_mode_view(request: HttpRequest) -> HttpResponse:
 
 
 def pwa_manifest_view(request: HttpRequest) -> JsonResponse:
-    """Манифест Progressive Web App (PWA) для ИИдеал Авто с поддержкой мобильных устройств и AR-очков."""
+    """Манифест Progressive Web App (PWA) для ИИДЕАЛ АВТО с поддержкой мобильных устройств и AR-очков."""
     manifest = {
-        "name": "ИИдеал Авто (AIdeal Auto) — Экспертная автодиагностика (Vulkan + AirLLM Gemma 4 12B)",
-        "short_name": "ИИдеал Авто",
-        "description": "Экспертная ИИ-система диагностики и ремонта автомобилей на базе Gemma 4 12B с режимом AR-очков",
+        "name": "ИИДЕАЛ АВТО — Экспертная автодиагностика",
+        "short_name": "ИИДЕАЛ АВТО",
+        "description": "Экспертная ИИ-система диагностики и ремонта автомобилей с режимом AR/VR",
         "start_url": "/",
         "scope": "/",
         "display": "standalone",
@@ -213,7 +232,7 @@ def pwa_manifest_view(request: HttpRequest) -> JsonResponse:
                 "url": "/",
             },
             {
-                "name": "Режим AR-очков RayNeo",
+                "name": "Режим AR HUD",
                 "short_name": "AR HUD",
                 "url": "/ar/",
             },
@@ -235,19 +254,23 @@ def service_worker_view(request: HttpRequest) -> HttpResponse:
 
 
 # =========================================================================
-# REST API: Управление проектами диагностики (Requirement #2)
+# REST API: Управление проектами диагностики (по образцу AIBPMN)
 # =========================================================================
 @csrf_exempt
 @require_http_methods(["GET", "POST"])
 def api_projects(request: HttpRequest) -> JsonResponse:
-    """Список проектов диагностики и создание нового проекта."""
+    """Список проектов диагностики с их чатами и создание нового проекта."""
     user = request.user if request.user.is_authenticated else None
     if request.method == "GET":
         if user:
             projects = DiagnosticProject.objects.filter(user=user).prefetch_related("sessions").all()
-        else:
-            projects = DiagnosticProject.objects.filter(user__isnull=True).prefetch_related("sessions").all()
-        return JsonResponse({"projects": [p.to_dict() for p in projects]})
+            unassigned = DialogSession.objects.filter(user=user, project__isnull=True).all()[:60]
+            return JsonResponse({
+                "projects": [p.to_dict(include_sessions=True) for p in projects],
+                "unassigned_sessions": [s.to_dict() for s in unassigned],
+                "is_demo": False,
+            })
+        return JsonResponse({"projects": [], "unassigned_sessions": [], "is_demo": True})
 
     try:
         payload = json.loads(request.body.decode("utf-8") or "{}")
@@ -255,37 +278,74 @@ def api_projects(request: HttpRequest) -> JsonResponse:
         payload = {}
 
     name = str(payload.get("name", "")).strip()
-    if not name:
-        base_count = DiagnosticProject.objects.filter(user=user).count() if user else DiagnosticProject.objects.count()
-        name = f"Проект #{base_count + 1}"
     description = str(payload.get("description", "")).strip()
 
+    if not user:
+        # В демо-режиме не сохраняем проект в БД
+        demo_id = int(uuid.uuid4().int % 900000 + 100000)
+        return JsonResponse(
+            {
+                "id": demo_id,
+                "name": name or "Демо-проект",
+                "description": description,
+                "sessions_count": 0,
+                "sessions": [],
+                "is_demo": True,
+            },
+            status=201,
+        )
+
+    if not name:
+        base_count = DiagnosticProject.objects.filter(user=user).count()
+        name = f"Проект #{base_count + 1}"
+
     proj = DiagnosticProject.objects.create(user=user, name=name, description=description)
-    return JsonResponse(proj.to_dict(), status=201)
+    return JsonResponse(proj.to_dict(include_sessions=True), status=201)
 
 
 @csrf_exempt
-@require_http_methods(["GET", "PATCH", "DELETE"])
+@require_http_methods(["GET", "POST", "PATCH", "DELETE"])
 def api_project_detail(request: HttpRequest, project_id: int) -> JsonResponse:
-    """Детали проекта, переименование или удаление."""
+    """Детали проекта, переименование (POST/PATCH) или удаление (DELETE) вместе с сессиями."""
     user = request.user if request.user.is_authenticated else None
-    if user:
-        proj = DiagnosticProject.objects.filter(pk=project_id, user=user).first()
-    else:
-        proj = DiagnosticProject.objects.filter(pk=project_id).first()
+    if not user:
+        if request.method == "DELETE":
+            return JsonResponse({"success": True, "deleted_id": project_id, "is_demo": True})
+        try:
+            payload = json.loads(request.body.decode("utf-8") or "{}")
+        except Exception:
+            payload = {}
+        return JsonResponse({
+            "success": True,
+            "project": {
+                "id": project_id,
+                "name": str(payload.get("name", "Демо-проект")).strip()[:200],
+                "description": str(payload.get("description", "")).strip(),
+                "sessions": [],
+                "is_demo": True,
+            },
+        })
+
+    proj = DiagnosticProject.objects.filter(pk=project_id, user=user).first()
     if not proj:
         return JsonResponse({"error": "Проект не найден"}, status=404)
 
     if request.method == "GET":
-        data = proj.to_dict()
-        data["sessions"] = [s.to_dict() for s in proj.sessions.all()]
-        return JsonResponse({"project": data})
+        return JsonResponse({"project": proj.to_dict(include_sessions=True)})
 
     if request.method == "DELETE":
+        for sess in proj.sessions.all():
+            context_worker_manager.preempt_if_running(str(sess.id))
+        proj.sessions.all().delete()
         proj.delete()
-        return JsonResponse({"success": True, "deleted_id": project_id})
+        next_sess = _ensure_default_session(user=user)
+        return JsonResponse({
+            "success": True,
+            "deleted_id": project_id,
+            "active_session_id": str(next_sess.id),
+        })
 
-    if request.method == "PATCH":
+    if request.method in ("PATCH", "POST"):
         try:
             payload = json.loads(request.body.decode("utf-8") or "{}")
         except Exception:
@@ -295,7 +355,7 @@ def api_project_detail(request: HttpRequest, project_id: int) -> JsonResponse:
         if "description" in payload:
             proj.description = str(payload["description"]).strip()
         proj.save()
-        return JsonResponse({"success": True, "project": proj.to_dict()})
+        return JsonResponse({"success": True, "project": proj.to_dict(include_sessions=True)})
 
 
 # =========================================================================
@@ -306,14 +366,25 @@ def api_project_detail(request: HttpRequest, project_id: int) -> JsonResponse:
 def api_sessions(request: HttpRequest) -> JsonResponse:
     user = request.user if request.user.is_authenticated else None
     if request.method == "GET":
-        if user:
-            qs = DialogSession.objects.filter(user=user).select_related("project")
-            all_tags = list(DialogSession.objects.filter(user=user).exclude(tag="").values_list("tag", flat=True).distinct())
-            projects = [p.to_dict() for p in DiagnosticProject.objects.filter(user=user)]
-        else:
-            qs = DialogSession.objects.filter(user__isnull=True).select_related("project")
-            all_tags = list(DialogSession.objects.filter(user__isnull=True).exclude(tag="").values_list("tag", flat=True).distinct())
-            projects = [p.to_dict() for p in DiagnosticProject.objects.filter(user__isnull=True)]
+        if not user:
+            return JsonResponse({
+                "sessions": [],
+                "all_tags": [],
+                "projects": [],
+                "is_demo": True,
+            })
+
+        qs = DialogSession.objects.filter(user=user).select_related("project")
+        all_tags = list(
+            DialogSession.objects.filter(user=user)
+            .exclude(tag="")
+            .values_list("tag", flat=True)
+            .distinct()
+        )
+        projects = [
+            p.to_dict(include_sessions=True)
+            for p in DiagnosticProject.objects.filter(user=user).prefetch_related("sessions")
+        ]
 
         project_id = request.GET.get("project_id")
         if project_id:
@@ -339,6 +410,7 @@ def api_sessions(request: HttpRequest) -> JsonResponse:
             "sessions": [s.to_dict() for s in sessions],
             "all_tags": all_tags,
             "projects": projects,
+            "is_demo": False,
         })
 
     try:
@@ -346,18 +418,30 @@ def api_sessions(request: HttpRequest) -> JsonResponse:
     except Exception:
         payload = {}
 
-    count = (DialogSession.objects.filter(user=user).count() if user else DialogSession.objects.count()) + 1
-    title = str(payload.get("title", "")).strip() or f"Диагностика #{count}"
-    vehicle_info = str(payload.get("vehicle_info", "")).strip() or "Автомобиль OBD-II"
+    vehicle_info = str(payload.get("vehicle_info", "")).strip()
     tag = str(payload.get("tag", "")).strip()[:60]
-
     project_id = payload.get("project_id")
+
+    if not user:
+        # Демо-режим: создаем несохраненную сессию только в памяти
+        demo_title = str(payload.get("title", "")).strip() or "Демо-диагностика"
+        demo_sess = DialogSession(
+            id=uuid.uuid4(),
+            title=demo_title,
+            vehicle_info=vehicle_info,
+            tag=tag,
+        )
+        res = demo_sess.to_dict()
+        res["project_id"] = int(project_id) if (project_id and str(project_id).isdigit()) else None
+        res["is_demo"] = True
+        return JsonResponse(res, status=201)
+
+    count = DialogSession.objects.filter(user=user).count() + 1
+    title = str(payload.get("title", "")).strip() or f"Диагностика #{count}"
+
     project = None
     if project_id and str(project_id).isdigit():
-        if user:
-            project = DiagnosticProject.objects.filter(pk=int(project_id), user=user).first()
-        else:
-            project = DiagnosticProject.objects.filter(pk=int(project_id)).first()
+        project = DiagnosticProject.objects.filter(pk=int(project_id), user=user).first()
 
     session = DialogSession.objects.create(
         user=user,
@@ -375,16 +459,52 @@ def api_session_detail(request: HttpRequest, session_id: uuid.UUID) -> JsonRespo
     user = request.user if request.user.is_authenticated else None
     if user:
         session = DialogSession.objects.select_related("project").filter(pk=session_id, user=user).first()
-        if not session:
-            # При необходимости связываем ничейную сессию с авторизованным пользователем
-            session = DialogSession.objects.select_related("project").filter(pk=session_id, user__isnull=True).first()
-            if session:
-                session.user = user
-                session.save(update_fields=["user"])
     else:
         session = DialogSession.objects.select_related("project").filter(pk=session_id).first()
 
     if not session:
+        if not user:
+            # Демо-режим: сессия хранится только в браузере клиента
+            if request.method == "DELETE":
+                return JsonResponse({"deleted": True, "active_session_id": str(uuid.uuid4()), "is_demo": True})
+            if request.method == "PATCH":
+                try:
+                    payload = json.loads(request.body.decode("utf-8") or "{}")
+                except Exception:
+                    payload = {}
+                return JsonResponse({
+                    "success": True,
+                    "session": {
+                        "id": str(session_id),
+                        "title": str(payload.get("title", "Демо-диагностика")).strip()[:200],
+                        "is_pinned": bool(payload.get("is_pinned", False)),
+                        "tag": str(payload.get("tag", "")).strip()[:60],
+                        "project_id": payload.get("project_id"),
+                        "vehicle_info": str(payload.get("vehicle_info", "")).strip()[:200],
+                        "summary": "",
+                        "messages": [],
+                        "is_demo": True,
+                    },
+                })
+            active_settings = SystemSettings.get_active()
+            return JsonResponse({
+                "id": str(session_id),
+                "title": "Демо-диагностика",
+                "is_pinned": False,
+                "tag": "",
+                "project_id": None,
+                "project_name": None,
+                "vehicle_info": "",
+                "summary": "",
+                "worker_status": "idle",
+                "worker_version": 0,
+                "worker_last_duration_ms": 0,
+                "worker_live": {"is_running": False, "version": 0, "dynamic_budget": {}},
+                "cross_dialog_memory_enabled": active_settings.cross_dialog_memory_enabled,
+                "global_memory_summary": active_settings.global_memory_summary,
+                "messages": [],
+                "is_demo": True,
+            })
         return JsonResponse({"error": "Сессия не найдена"}, status=404)
 
     if request.method == "DELETE":
@@ -409,7 +529,7 @@ def api_session_detail(request: HttpRequest, session_id: uuid.UUID) -> JsonRespo
             if p_id is None or p_id == "" or p_id == 0 or p_id == "none":
                 session.project = None
             elif str(p_id).isdigit():
-                session.project = DiagnosticProject.objects.filter(pk=int(p_id)).first()
+                session.project = DiagnosticProject.objects.filter(pk=int(p_id), user=user).first()
         if "vehicle_info" in payload:
             session.vehicle_info = str(payload["vehicle_info"]).strip()[:200]
         if "summary" in payload:
@@ -459,8 +579,11 @@ def api_session_detail(request: HttpRequest, session_id: uuid.UUID) -> JsonRespo
 @require_http_methods(["POST"])
 def api_session_pin(request: HttpRequest, session_id: uuid.UUID) -> JsonResponse:
     """Переключение закрепления чата (Pin/Unpin)."""
-    session = DialogSession.objects.filter(pk=session_id).first()
+    user = request.user if request.user.is_authenticated else None
+    session = DialogSession.objects.filter(pk=session_id, user=user).first() if user else DialogSession.objects.filter(pk=session_id).first()
     if not session:
+        if not user:
+            return JsonResponse({"id": str(session_id), "is_pinned": True, "is_demo": True})
         return JsonResponse({"error": "Сессия не найдена"}, status=404)
     session.is_pinned = not session.is_pinned
     session.save(update_fields=["is_pinned", "updated_at"])
@@ -471,14 +594,17 @@ def api_session_pin(request: HttpRequest, session_id: uuid.UUID) -> JsonResponse
 @require_http_methods(["POST"])
 def api_session_tag(request: HttpRequest, session_id: uuid.UUID) -> JsonResponse:
     """Установка или очистка тега чата."""
-    session = DialogSession.objects.filter(pk=session_id).first()
-    if not session:
-        return JsonResponse({"error": "Сессия не найдена"}, status=404)
+    user = request.user if request.user.is_authenticated else None
+    session = DialogSession.objects.filter(pk=session_id, user=user).first() if user else DialogSession.objects.filter(pk=session_id).first()
     try:
         payload = json.loads(request.body.decode("utf-8") or "{}")
     except Exception:
         payload = {}
     tag = str(payload.get("tag", request.POST.get("tag", ""))).strip()[:60]
+    if not session:
+        if not user:
+            return JsonResponse({"id": str(session_id), "tag": tag, "is_demo": True})
+        return JsonResponse({"error": "Сессия не найдена"}, status=404)
     session.tag = tag
     session.save(update_fields=["tag", "updated_at"])
     return JsonResponse({"id": str(session.id), "tag": session.tag})
@@ -488,14 +614,17 @@ def api_session_tag(request: HttpRequest, session_id: uuid.UUID) -> JsonResponse
 @require_http_methods(["POST"])
 def api_session_rename(request: HttpRequest, session_id: uuid.UUID) -> JsonResponse:
     """Переименование названия чата."""
-    session = DialogSession.objects.filter(pk=session_id).first()
-    if not session:
-        return JsonResponse({"error": "Сессия не найдена"}, status=404)
+    user = request.user if request.user.is_authenticated else None
+    session = DialogSession.objects.filter(pk=session_id, user=user).first() if user else DialogSession.objects.filter(pk=session_id).first()
     try:
         payload = json.loads(request.body.decode("utf-8") or "{}")
     except Exception:
         payload = {}
     title = str(payload.get("title", request.POST.get("title", ""))).strip()[:200]
+    if not session:
+        if not user:
+            return JsonResponse({"id": str(session_id), "title": title or "Демо-диагностика", "is_demo": True})
+        return JsonResponse({"error": "Сессия не найдена"}, status=404)
     if title:
         session.title = title
         session.save(update_fields=["title", "updated_at"])
@@ -536,14 +665,14 @@ def api_worker_status(request: HttpRequest, session_id: uuid.UUID) -> JsonRespon
 def api_ask_expert(request: HttpRequest) -> JsonResponse:
     """
     Обрабатывает запрос пользователя:
-    1. Мгновенно сбрасывает фоновый воркер суммаризации контекста, если тот еще выполняется
-       (Requirement #3 — не заставляем пользователя ждать!).
+    1. Мгновенно сбрасывает фоновый воркер суммаризации контекста, если тот еще выполняется.
     2. Принимает как multipart/form-data, так и application/json.
-    3. Выполняет анализ фото/документов/голоса, запускает Function Calling + AirLLM/Vulkan,
-       возвращает строгий JSON с инвентарем и чекбоксами задач.
-    4. Запускает новый фоновый воркер выжимки контекста.
+    3. В демо-режиме (без авторизации) выполняет полный анализ ИИ и возвращает ответ,
+       НЕ сохраняя диалог, сообщения и файлы в БД.
     """
+    global _DEMO_NEXT_MSG_ID
     content_type = request.content_type or ""
+    demo_history_raw = []
     if "application/json" in content_type:
         try:
             body = json.loads(request.body.decode("utf-8") or "{}")
@@ -558,6 +687,7 @@ def api_ask_expert(request: HttpRequest) -> JsonResponse:
             camera_b64_list.append(body["image"])
         voice_b64 = body.get("voice_b64", "")
         client_transcript = str(body.get("voice_transcript", "")).strip()
+        demo_history_raw = body.get("demo_history", [])
         uploaded_files = []
     else:
         session_id = request.POST.get("session_id")
@@ -576,6 +706,11 @@ def api_ask_expert(request: HttpRequest) -> JsonResponse:
             camera_b64_list = [camera_b64_str] if camera_b64_str else []
         voice_b64 = request.POST.get("voice_b64", "")
         client_transcript = request.POST.get("voice_transcript", "").strip()
+        demo_hist_str = request.POST.get("demo_history", "[]")
+        try:
+            demo_history_raw = json.loads(demo_hist_str) if demo_hist_str else []
+        except Exception:
+            demo_history_raw = []
         uploaded_files = request.FILES.getlist("attachments")
 
     user = request.user if request.user.is_authenticated else None
@@ -583,15 +718,25 @@ def api_ask_expert(request: HttpRequest) -> JsonResponse:
     if session and user and session.user is None:
         session.user = user
         session.save(update_fields=["user"])
+
+    # Если пользователь не авторизован и сессии нет в БД — работаем в чистом демо-режиме без записи в БД
+    is_demo_request = (user is None) and (session is None)
+
     if not session:
         session = _ensure_default_session(user=user)
+        if session_id and is_demo_request:
+            try:
+                session.id = uuid.UUID(str(session_id))
+            except Exception:
+                pass
 
-    # ШАГ 1 (Requirement #3): Мгновенный принудительный сброс старого воркера контекста без ожидания!
-    worker_was_preempted = context_worker_manager.preempt_if_running(str(session.id))
+    # ШАГ 1: Мгновенный принудительный сброс старого воркера контекста без ожидания!
+    worker_was_preempted = False if is_demo_request else context_worker_manager.preempt_if_running(str(session.id))
 
     if vehicle_info and vehicle_info != session.vehicle_info:
         session.vehicle_info = vehicle_info
-        session.save(update_fields=["vehicle_info", "updated_at"])
+        if not is_demo_request:
+            session.save(update_fields=["vehicle_info", "updated_at"])
 
     active_settings = SystemSettings.get_active()
 
@@ -760,6 +905,80 @@ def api_ask_expert(request: HttpRequest) -> JsonResponse:
     if not query:
         return JsonResponse({"error": "Пустой запрос. Введите описание, выберите код ошибки или прикрепите фото/голос."}, status=400)
 
+    from django.utils import timezone
+    now_hm = timezone.now().strftime("%H:%M")
+
+    if is_demo_request:
+        # Демо-режим: собираем несохраненные сообщения контекста из demo_history_raw
+        recent_msgs = []
+        if isinstance(demo_history_raw, list):
+            for h_item in demo_history_raw[-10:]:
+                if isinstance(h_item, dict):
+                    recent_msgs.append(
+                        ChatMessage(
+                            session=session,
+                            role=str(h_item.get("role", "user")),
+                            content=str(h_item.get("content", "")),
+                            structured_data=h_item.get("structured_data"),
+                            dtc_codes=h_item.get("dtc_codes") or [],
+                        )
+                    )
+        short_title = query[:48] + ("..." if len(query) > 48 else "")
+        session.title = short_title
+
+        structured_response = orchestrator.diagnose_and_respond(
+            query=query,
+            session=session,
+            settings_obj=active_settings,
+            recent_messages=recent_msgs,
+            attached_codes=attached_codes,
+            image_analyses=image_analyses,
+            doc_analyses=doc_analyses,
+            voice_info=voice_info,
+        )
+        structured_dict = structured_response.model_dump()
+        for tc in structured_response.tool_calls:
+            logger.debug(f"[Function Calling Debug] fn {tc.tool_name}({tc.arguments}) -> {tc.result_summary}")
+
+        _DEMO_NEXT_MSG_ID += 1
+        user_msg_id = _DEMO_NEXT_MSG_ID
+        _DEMO_NEXT_MSG_ID += 1
+        assistant_msg_id = _DEMO_NEXT_MSG_ID
+
+        assistant_payload = {
+            "id": assistant_msg_id,
+            "role": "assistant",
+            "content": structured_response.mentor_reply,
+            "structured_data": structured_dict,
+            "dtc_codes": [f.code for f in structured_response.faults],
+            "created_at": now_hm,
+        }
+        # Храним максимум 60 демо-сообщений в оперативной памяти для работы чекбоксов без записи в БД
+        if len(_DEMO_RAM_MESSAGES) > 60:
+            oldest_key = next(iter(_DEMO_RAM_MESSAGES))
+            _DEMO_RAM_MESSAGES.pop(oldest_key, None)
+        _DEMO_RAM_MESSAGES[assistant_msg_id] = assistant_payload
+
+        return JsonResponse(
+            {
+                "session_id": str(session.id),
+                "session_title": session.title,
+                "worker_preempted": False,
+                "worker_version": 0,
+                "worker_status": "idle",
+                "is_demo": True,
+                "user_message": {
+                    "id": user_msg_id,
+                    "role": "user",
+                    "content": query,
+                    "attachments": _sanitize_attachments(saved_attachments),
+                    "dtc_codes": attached_codes,
+                    "created_at": now_hm,
+                },
+                "assistant_message": assistant_payload,
+            }
+        )
+
     # Обновляем заголовок новой сессии по первому осмысленному запросу
     if session.messages.count() == 0 and session.title.startswith("Диагностика #"):
         short_title = query[:48] + ("..." if len(query) > 48 else "")
@@ -800,7 +1019,7 @@ def api_ask_expert(request: HttpRequest) -> JsonResponse:
         dtc_codes=[f.code for f in structured_response.faults],
     )
 
-    # ШАГ 4 (Requirement #3): После ответа пользователю запускаем новый фоновый воркер выжимки контекста!
+    # ШАГ 4: После ответа пользователю запускаем новый фоновый воркер выжимки контекста!
     new_worker_version = context_worker_manager.start_background_update(str(session.id))
 
     return JsonResponse(
@@ -810,6 +1029,7 @@ def api_ask_expert(request: HttpRequest) -> JsonResponse:
             "worker_preempted": worker_was_preempted,
             "worker_version": new_worker_version,
             "worker_status": "running",
+            "is_demo": False,
             "user_message": {
                 "id": user_msg.id,
                 "role": "user",
@@ -840,11 +1060,8 @@ def api_toggle_task(request: HttpRequest, message_id: int) -> JsonResponse:
     Переключает состояние чекбокса пошагового плана ремонта (`step_number`)
     или позиции инвентаря (`inventory_id`) в сообщении эксперта и запускает
     фоновое обновление выжимки диалога, чтобы ИИ знал текущий прогресс ремонта.
+    Поддерживает как сообщения в БД, так и in-memory сообщения демо-режима.
     """
-    msg = ChatMessage.objects.filter(pk=message_id).select_related("session").first()
-    if not msg or not isinstance(msg.structured_data, dict):
-        return JsonResponse({"error": "Сообщение или чеклист не найдены"}, status=404)
-
     try:
         payload = json.loads(request.body.decode("utf-8") or "{}")
     except Exception:
@@ -853,6 +1070,46 @@ def api_toggle_task(request: HttpRequest, message_id: int) -> JsonResponse:
     item_type = payload.get("type", "step")  # "step" | "inventory"
     target_id = payload.get("id")
     checked = bool(payload.get("checked", False))
+
+    msg = ChatMessage.objects.filter(pk=message_id).select_related("session").first()
+    if not msg or not isinstance(msg.structured_data, dict):
+        # Проверяем in-memory буфер демо-режима
+        demo_msg = _DEMO_RAM_MESSAGES.get(message_id)
+        if demo_msg and isinstance(demo_msg.get("structured_data"), dict):
+            sdata = dict(demo_msg["structured_data"])
+            if item_type == "step":
+                steps = sdata.get("repair_steps", [])
+                for step in steps:
+                    if str(step.get("step_number")) == str(target_id):
+                        step["completed"] = checked
+                sdata["repair_steps"] = steps
+            elif item_type == "inventory":
+                inv_list = sdata.get("inventory", [])
+                for inv in inv_list:
+                    if str(inv.get("id")) == str(target_id):
+                        inv["checked"] = checked
+                sdata["inventory"] = inv_list
+            demo_msg["structured_data"] = sdata
+            total_steps = len(sdata.get("repair_steps", []))
+            done_steps = sum(1 for s in sdata.get("repair_steps", []) if s.get("completed"))
+            total_inv = len(sdata.get("inventory", []))
+            done_inv = sum(1 for i in sdata.get("inventory", []) if i.get("checked"))
+            return JsonResponse(
+                {
+                    "message_id": message_id,
+                    "type": item_type,
+                    "id": target_id,
+                    "checked": checked,
+                    "is_demo": True,
+                    "progress": {
+                        "steps_done": done_steps,
+                        "steps_total": total_steps,
+                        "inventory_done": done_inv,
+                        "inventory_total": total_inv,
+                    },
+                }
+            )
+        return JsonResponse({"error": "Сообщение или чеклист не найдены"}, status=404)
 
     sdata = dict(msg.structured_data)
     if item_type == "step":
@@ -935,6 +1192,11 @@ def api_system_settings(request: HttpRequest) -> JsonResponse:
         except Exception:
             payload = {}
 
+        is_demo_req = bool(
+            (not request.user.is_authenticated)
+            and (payload.get("is_demo") or request.headers.get("X-Demo-Mode") == "1")
+        )
+
         if "llm_backend" in payload:
             active.llm_backend = str(payload["llm_backend"])
         if "airllm_model_id" in payload:
@@ -946,7 +1208,7 @@ def api_system_settings(request: HttpRequest) -> JsonResponse:
         if "vulkan_gpu_layers" in payload:
             active.vulkan_gpu_layers = int(payload["vulkan_gpu_layers"])
         if "context_window_tokens" in payload:
-            active.context_window_tokens = max(512, min(16384, int(payload["context_window_tokens"])))
+            active.context_window_tokens = max(512, min(65536, int(payload["context_window_tokens"])))
         if "cross_dialog_memory_enabled" in payload:
             active.cross_dialog_memory_enabled = bool(payload["cross_dialog_memory_enabled"])
         if "global_memory_summary" in payload:
@@ -956,24 +1218,29 @@ def api_system_settings(request: HttpRequest) -> JsonResponse:
         if "strict_json_mode" in payload:
             active.strict_json_mode = bool(payload["strict_json_mode"])
 
-        active.save()
+        if not is_demo_req:
+            active.save()
 
     hw_telemetry = orchestrator.get_hardware_and_model_telemetry(active)
+    settings_dict = {
+        "llm_backend": active.llm_backend,
+        "airllm_model_id": active.airllm_model_id,
+        "airllm_compression": active.airllm_compression,
+        "gguf_model_rel_path": active.gguf_model_rel_path,
+        "llama_server_url": active.llama_server_url,
+        "vulkan_gpu_layers": active.vulkan_gpu_layers,
+        "context_window_tokens": active.context_window_tokens,
+        "cross_dialog_memory_enabled": active.cross_dialog_memory_enabled,
+        "global_memory_summary": active.global_memory_summary,
+        "voice_mode": active.voice_mode,
+        "strict_json_mode": active.strict_json_mode,
+    }
     return JsonResponse(
         {
-            "settings": {
-                "llm_backend": active.llm_backend,
-                "airllm_model_id": active.airllm_model_id,
-                "airllm_compression": active.airllm_compression,
-                "gguf_model_rel_path": active.gguf_model_rel_path,
-                "llama_server_url": active.llama_server_url,
-                "vulkan_gpu_layers": active.vulkan_gpu_layers,
-                "context_window_tokens": active.context_window_tokens,
-                "cross_dialog_memory_enabled": active.cross_dialog_memory_enabled,
-                "global_memory_summary": active.global_memory_summary,
-                "voice_mode": active.voice_mode,
-                "strict_json_mode": active.strict_json_mode,
-            },
+            "success": True,
+            "cross_dialog_memory_enabled": active.cross_dialog_memory_enabled,
+            "global_memory_summary": active.global_memory_summary,
+            "settings": settings_dict,
             "hardware": hw_telemetry,
         }
     )
@@ -1015,6 +1282,18 @@ def api_delete_messages(request: HttpRequest) -> JsonResponse:
             session = first_msg.session
 
     if not session:
+        if not request.user.is_authenticated:
+            for mid in message_ids:
+                _DEMO_RAM_MESSAGES.pop(mid, None)
+            return JsonResponse({
+                "success": True,
+                "is_demo": True,
+                "session_id": str(session_id or ""),
+                "deleted_count": len(message_ids),
+                "remaining_count": 0,
+                "summary": "",
+                "session_summary": "",
+            })
         return JsonResponse({"error": "Сессия не найдена"}, status=404)
 
     # Принудительно останавливаем фоновый воркер суммаризации, чтобы исключить конфликты
@@ -1061,6 +1340,16 @@ def api_delete_single_message(request: HttpRequest, message_id: int) -> JsonResp
     """Удаляет одиночное сообщение по ID и немедленно пересчитывает контекст сессии."""
     msg = ChatMessage.objects.filter(pk=message_id).select_related("session").first()
     if not msg:
+        if not request.user.is_authenticated:
+            _DEMO_RAM_MESSAGES.pop(message_id, None)
+            return JsonResponse({
+                "success": True,
+                "is_demo": True,
+                "deleted_id": message_id,
+                "remaining_count": 0,
+                "summary": "",
+                "session_summary": "",
+            })
         return JsonResponse({"error": "Сообщение не найдено"}, status=404)
 
     session = msg.session
@@ -1181,3 +1470,23 @@ def api_auth_status(request: HttpRequest) -> JsonResponse:
         "username": request.user.username if is_auth else "",
         "is_staff": request.user.is_staff if is_auth else False,
     })
+
+
+@csrf_exempt
+@require_http_methods(["POST", "DELETE"])
+def api_auth_delete_account(request: HttpRequest) -> JsonResponse:
+    """Удаление аккаунта текущего пользователя вместе со всеми его проектами и диалогами."""
+    if not request.user.is_authenticated:
+        return JsonResponse({"error": "Необходима авторизация для удаления аккаунта"}, status=401)
+
+    user = request.user
+    username = user.username
+    for sess in DialogSession.objects.filter(user=user):
+        context_worker_manager.preempt_if_running(str(sess.id))
+    DialogSession.objects.filter(user=user).delete()
+    DiagnosticProject.objects.filter(user=user).delete()
+    logout(request)
+    user.delete()
+    logger.info("Аккаунт пользователя '%s' и все его данные успешно удалены.", username)
+    return JsonResponse({"success": True, "is_authenticated": False, "deleted_username": username})
+

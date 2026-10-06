@@ -213,7 +213,7 @@ class AIdealAutoComprehensiveTests(TransactionTestCase):
 
         manifest_resp = self.client.get("/manifest.json")
         self.assertEqual(manifest_resp.status_code, 200)
-        self.assertEqual(manifest_resp.json()["short_name"], "ИИдеал Авто")
+        self.assertEqual(manifest_resp.json()["short_name"], "ИИДЕАЛ АВТО")
 
     def test_06_greeting_and_gemma4_shards_ready(self):
         """Проверка, что приветствие возвращает живой ответ (response_type='general') и 52 шарда Gemma 4 12B готовы."""
@@ -335,7 +335,14 @@ class AIdealAutoComprehensiveTests(TransactionTestCase):
         self.assertIn("Система слишком бедная", parsed_csv["extracted_text"])
 
     def test_10_projects_pinning_tagging_and_renaming(self):
-        """Проверка создания проектов, закрепления, тегирования и переименования диалогов."""
+        """Проверка создания проектов, закрепления, тегирования, переименования диалогов и удаления проектов."""
+        # Аутентификация пользователя для проверки персистентности в БД
+        self.client.post(
+            "/api/auth/register/",
+            data=json.dumps({"username": "user_park_mgr", "password": "Password123!", "password_confirm": "Password123!"}),
+            content_type="application/json",
+        )
+
         # 1. Создание проекта через API
         proj_resp = self.client.post(
             "/api/projects/",
@@ -389,21 +396,30 @@ class AIdealAutoComprehensiveTests(TransactionTestCase):
         self.assertEqual(tag_resp.status_code, 200)
         self.assertEqual(tag_resp.json()["tag"], "ДВС")
 
-        # 6. Фильтрация сессий по проекту
+        # 6. Переименование проекта (Rename project)
+        ren_proj_resp = self.client.post(
+            f"/api/projects/{proj_id}/",
+            data=json.dumps({"name": "Парк такси Skoda Octavia (Обновленный)"}),
+            content_type="application/json",
+        )
+        self.assertEqual(ren_proj_resp.status_code, 200)
+        self.assertEqual(ren_proj_resp.json()["project"]["name"], "Парк такси Skoda Octavia (Обновленный)")
+
+        # 7. Фильтрация сессий по проекту
         filter_proj_resp = self.client.get(f"/api/sessions/?project_id={proj_id}")
         self.assertEqual(filter_proj_resp.status_code, 200)
         filtered_proj_sessions = filter_proj_resp.json()["sessions"]
         self.assertEqual(len(filtered_proj_sessions), 1)
         self.assertEqual(filtered_proj_sessions[0]["id"], s1_id)
 
-        # 7. Фильтрация сессий по тегу
+        # 8. Фильтрация сессий по тегу
         filter_tag_resp = self.client.get("/api/sessions/?tag=ДВС")
         self.assertEqual(filter_tag_resp.status_code, 200)
         filtered_tag_sessions = filter_tag_resp.json()["sessions"]
         self.assertEqual(len(filtered_tag_sessions), 1)
         self.assertEqual(filtered_tag_sessions[0]["tag"], "ДВС")
 
-        # 8. Проверка получения деталей сессии (GET /api/sessions/<id>/)
+        # 9. Проверка получения деталей сессии (GET /api/sessions/<id>/)
         detail_resp = self.client.get(f"/api/sessions/{s1_id}/")
         self.assertEqual(detail_resp.status_code, 200)
         detail_json = detail_resp.json()
@@ -412,7 +428,7 @@ class AIdealAutoComprehensiveTests(TransactionTestCase):
         self.assertEqual(detail_json["tag"], "ДВС")
         self.assertIn("messages", detail_json)
 
-        # 9. Проверка обновления деталей сессии (PATCH /api/sessions/<id>/)
+        # 10. Проверка обновления деталей сессии (PATCH /api/sessions/<id>/)
         patch_resp = self.client.patch(
             f"/api/sessions/{s1_id}/",
             data=json.dumps({"summary": "Проверено состояние свечей"}),
@@ -420,11 +436,16 @@ class AIdealAutoComprehensiveTests(TransactionTestCase):
         )
         self.assertEqual(patch_resp.status_code, 200)
 
-        # 10. Проверка отдачи главной страницы
+        # 11. Проверка отдачи главной страницы
         idx_resp = self.client.get("/")
         self.assertEqual(idx_resp.status_code, 200)
         self.assertIn("projects", idx_resp.context)
         self.assertIn("all_tags", idx_resp.context)
+
+        # 12. Удаление проекта через API
+        del_proj_resp = self.client.delete(f"/api/projects/{proj_id}/")
+        self.assertEqual(del_proj_resp.status_code, 200)
+        self.assertFalse(DiagnosticProject.objects.filter(id=proj_id).exists())
 
     def test_11_user_authentication_and_multi_tenant_isolation(self):
         """Проверка регистрации, входа, выхода и изоляции диалогов/проектов между пользователями."""
@@ -513,5 +534,71 @@ class AIdealAutoComprehensiveTests(TransactionTestCase):
         ivan_session_ids = [s["id"] for s in ivan_sessions]
         self.assertIn(s1_id, ivan_session_ids)
         self.assertNotIn(olga_session_ids[0], ivan_session_ids)
+
+    def test_12_demo_mode_and_account_deletion(self):
+        """Проверка работы демо-режима без сохранения в БД и полного удаления аккаунта."""
+        # 1. Гостевой клиент (Демо-режим)
+        guest_client = Client()
+        msg_count_before = ChatMessage.objects.count()
+        sess_count_before = DialogSession.objects.count()
+        proj_count_before = DiagnosticProject.objects.count()
+
+        # Запрос к эксперту в демо-режиме
+        demo_ask = guest_client.post(
+            "/api/ask/",
+            data=json.dumps({
+                "query": "Диагностика в демо режиме",
+                "dtc_codes": ["P0300"],
+            }),
+            content_type="application/json",
+        )
+        self.assertEqual(demo_ask.status_code, 200)
+        demo_data = demo_ask.json()
+        self.assertTrue(demo_data.get("is_demo", False))
+        self.assertIn("assistant_message", demo_data)
+
+        # Проверка, что в БД ничего не сохранилось!
+        self.assertEqual(ChatMessage.objects.count(), msg_count_before)
+        self.assertEqual(DialogSession.objects.count(), sess_count_before)
+        self.assertEqual(DiagnosticProject.objects.count(), proj_count_before)
+
+        # Проект в демо-режиме
+        demo_proj = guest_client.post(
+            "/api/projects/",
+            data=json.dumps({"name": "Демо Проект"}),
+            content_type="application/json",
+        )
+        self.assertEqual(demo_proj.status_code, 201)
+        self.assertEqual(DiagnosticProject.objects.count(), proj_count_before)
+
+        # 2. Регистрация пользователя и удаление аккаунта
+        reg_resp = self.client.post(
+            "/api/auth/register/",
+            data=json.dumps({"username": "user_to_delete", "password": "DeleteMe123!", "password_confirm": "DeleteMe123!"}),
+            content_type="application/json",
+        )
+        self.assertEqual(reg_resp.status_code, 201)
+
+        # Создаем проект и сессию под этим аккаунтом
+        p_resp = self.client.post("/api/projects/", data=json.dumps({"name": "Проект для удаления"}), content_type="application/json")
+        self.assertEqual(p_resp.status_code, 201)
+        p_id = p_resp.json()["id"]
+
+        s_resp = self.client.post("/api/sessions/", data=json.dumps({"project_id": p_id, "title": "Сессия"}), content_type="application/json")
+        self.assertEqual(s_resp.status_code, 201)
+
+        # Вызов API удаления аккаунта
+        del_acc_resp = self.client.post("/api/auth/delete-account/")
+        self.assertEqual(del_acc_resp.status_code, 200)
+        self.assertTrue(del_acc_resp.json()["success"])
+
+        # Проверка, что пользователь и его данные удалены из БД
+        from django.contrib.auth.models import User
+        self.assertFalse(User.objects.filter(username="user_to_delete").exists())
+        self.assertFalse(DiagnosticProject.objects.filter(id=p_id).exists())
+
+        # Сессия сброшена, статус гостя
+        status_after = self.client.get("/api/auth/status/")
+        self.assertFalse(status_after.json()["is_authenticated"])
 
 

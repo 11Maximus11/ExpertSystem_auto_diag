@@ -241,32 +241,94 @@ select:focus-visible {
   display: flex;
   align-items: center;
   gap: 8px;
+  flex-shrink: 0;
 }
 
-.btn-ar-launch {
+.btn-header-pill {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 7px;
-  padding: 8px 13px;
-  border-radius: var(--radius-control);
+  height: 36px;
+  padding: 0 13px;
+  border-radius: 18px;
+  font-size: 0.82rem;
+  font-weight: 600;
+  white-space: nowrap;
+  box-sizing: border-box;
+  text-decoration: none;
+  border: 1px solid transparent;
+  transition: all 180ms var(--ease-out);
+}
+
+.btn-header-pill.ar-launch,
+.btn-ar-launch {
   background: linear-gradient(135deg, #f97316, #ea580c);
   color: #ffffff;
-  border: none;
-  font-weight: 600;
-  font-size: 0.82rem;
-  box-shadow: 0 2px 10px rgba(249, 115, 22, 0.3);
+  border: 1px solid rgba(249, 115, 22, 0.4);
+  box-shadow: 0 2px 10px rgba(249, 115, 22, 0.25);
+}
+
+.btn-header-pill.ar-launch:hover,
+.btn-ar-launch:hover {
+  background: linear-gradient(135deg, #ea580c, #c2410c);
+  box-shadow: 0 4px 14px rgba(249, 115, 22, 0.35);
+  color: #ffffff;
+}
+
+.btn-header-pill.account-menu {
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  border: 1px solid var(--border-subtle);
+  max-width: 180px;
+}
+
+.btn-header-pill.account-menu:hover {
+  background: var(--bg-hover);
+  border-color: var(--border-strong);
+}
+
+.btn-header-pill.auth-pill {
+  background: rgba(249, 115, 22, 0.12);
+  color: var(--accent-orange);
+  border: 1px solid rgba(249, 115, 22, 0.35);
+}
+
+.btn-header-pill.auth-pill:hover {
+  background: rgba(249, 115, 22, 0.22);
+  border-color: var(--accent-orange);
+}
+
+.btn-mobile-menu {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-primary);
+  flex-shrink: 0;
+  padding: 0;
+}
+
+.btn-mobile-menu:hover {
+  background: var(--bg-hover);
+  border-color: var(--border-strong);
 }
 
 .btn-icon-top {
-  width: 38px;
-  height: 38px;
-  border-radius: var(--radius-control);
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
   background: var(--bg-elevated);
   border: 1px solid var(--border-subtle);
   color: var(--text-secondary);
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  flex-shrink: 0;
 }
 
 /* ==========================================================================
@@ -344,6 +406,118 @@ select:focus-visible {
   justify-content: center;
   gap: 8px;
   margin-bottom: 12px;
+}
+
+/* ==========================================================================
+   Древовидная структура проектов и сессий в сайдбаре (стиль AIBPMN)
+   ========================================================================== */
+.sidebar-projects-tree {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 2px 0 6px 0;
+}
+
+.project-group {
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid var(--border-subtle);
+  overflow: hidden;
+  margin-bottom: 6px;
+}
+
+.project-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 7px 10px;
+  background: var(--bg-elevated);
+  border-bottom: 1px solid var(--border-subtle);
+  gap: 6px;
+  user-select: none;
+}
+
+.project-title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  flex: 1;
+  font-size: 0.79rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.project-title-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-count-pill {
+  font-size: 0.68rem;
+  font-family: var(--font-mono);
+  padding: 1px 6px;
+  border-radius: 10px;
+  background: rgba(249, 115, 22, 0.15);
+  color: var(--accent-orange);
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+.project-actions {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  flex-shrink: 0;
+}
+
+.action-btn {
+  width: 22px;
+  height: 22px;
+  border-radius: 5px;
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text-muted);
+  font-size: 0.74rem;
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  transition: all 150ms ease;
+}
+
+.action-btn:hover {
+  background: var(--bg-hover);
+  border-color: var(--border-subtle);
+  color: var(--text-primary);
+}
+
+.action-btn.action-add-chat:hover {
+  color: var(--accent-orange);
+  border-color: rgba(249, 115, 22, 0.35);
+}
+
+.action-btn.action-delete-project:hover {
+  color: var(--status-error);
+  border-color: rgba(239, 68, 68, 0.35);
+}
+
+.project-chats {
+  display: flex;
+  flex-direction: column;
+  padding: 4px 4px 4px 8px;
+  border-left: 2px solid rgba(249, 115, 22, 0.15);
+  margin-left: 6px;
+  gap: 4px;
+}
+
+.sidebar-empty-hint {
+  padding: 6px 8px;
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  font-style: italic;
 }
 
 .sessions-list {
@@ -1568,7 +1742,7 @@ body.ar-glasses-mode .ar-hud-overlay {
   background: var(--bg-surface);
   border-top: 1px solid var(--border-subtle);
   padding: 6px 8px calc(6px + env(safe-area-inset-bottom, 0px)) 8px;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(3, 1fr);
   gap: 4px;
   z-index: 35;
 }
@@ -1590,6 +1764,65 @@ body.ar-glasses-mode .ar-hud-overlay {
 .mobile-nav-btn.active {
   color: var(--accent-orange);
   background: rgba(249, 115, 22, 0.12);
+}
+
+/* Профиль пользователя и настройки учетной записи в модале */
+.account-profile-box {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  border-radius: 10px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  margin-bottom: 14px;
+}
+
+.account-profile-info {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.account-avatar {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, rgba(249, 115, 22, 0.25), rgba(56, 189, 248, 0.2));
+  border: 1px solid var(--border-strong);
+  color: var(--accent-orange);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  font-size: 0.85rem;
+  flex-shrink: 0;
+}
+
+.account-profile-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.btn-danger-outline {
+  padding: 6px 11px;
+  border-radius: 7px;
+  background: rgba(239, 68, 68, 0.08);
+  border: 1px solid rgba(239, 68, 68, 0.35);
+  color: var(--status-error);
+  font-size: 0.78rem;
+  font-weight: 600;
+  transition: all 160ms ease;
+  cursor: pointer;
+}
+
+.btn-danger-outline:hover {
+  background: rgba(239, 68, 68, 0.18);
+  border-color: var(--status-error);
 }
 
 /* Hover только для устройств с точным указателем (мышь/трекпад) */
@@ -1637,9 +1870,9 @@ body.ar-glasses-mode .ar-hud-overlay {
     overflow: hidden;
   }
   .brand-group {
-    gap: 8px;
+    gap: 7px;
     min-width: 0;
-    flex-shrink: 1;
+    flex: 1;
     overflow: hidden;
   }
   .brand-logo {
@@ -1649,22 +1882,19 @@ body.ar-glasses-mode .ar-hud-overlay {
     flex-shrink: 0;
   }
   .brand-title {
-    font-size: 0.92rem;
+    font-size: 0.88rem;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-    display: flex;
-    align-items: center;
-    gap: 6px;
+    display: block;
+    min-width: 0;
+    flex-shrink: 1;
   }
   .brand-subtext {
     display: none !important;
   }
   .badge-vulkan {
-    font-size: 0.65rem;
-    padding: 1px 5px;
-    white-space: nowrap;
-    flex-shrink: 0;
+    display: none !important;
   }
   .header-telemetry {
     display: none !important;
@@ -1672,33 +1902,27 @@ body.ar-glasses-mode .ar-hud-overlay {
   .header-actions {
     display: flex;
     align-items: center;
-    gap: 5px;
+    gap: 6px;
     flex-shrink: 0;
   }
-  .user-pill {
-    padding: 4px 7px;
-    font-size: 0.72rem;
-    max-width: 78px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+  .btn-mobile-menu {
+    display: inline-flex;
+    width: 34px;
+    height: 34px;
+    border-radius: 8px;
   }
-  .btn-action-ghost#btnLogout,
-  #btnOpenAuthModal {
-    padding: 4px 8px !important;
-    font-size: 0.72rem !important;
+  .btn-header-pill {
+    height: 34px;
+    padding: 0 10px;
+    font-size: 0.78rem;
+    border-radius: 17px;
+    gap: 5px;
   }
-  .btn-ar-launch {
-    padding: 6px 9px;
+  .btn-header-pill.account-menu {
+    max-width: 130px;
   }
-  .btn-ar-launch span {
-    display: none !important;
-  }
-  .btn-header-tool {
-    padding: 6px 9px;
-  }
-  .btn-header-tool span {
-    display: none !important;
+  .btn-header-pill.ar-launch span {
+    display: inline-block;
   }
   .btn-icon-top {
     width: 34px;
@@ -1710,7 +1934,25 @@ body.ar-glasses-mode .ar-hud-overlay {
     flex-shrink: 0;
   }
 
-  /* Рабочий стенд: гибкий контейнер на 100% ширины без паразитных колонок */
+  /* Затемнение фона при открытом боковом меню сайдбара */
+  .sidebar-backdrop {
+    display: block;
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.65);
+    backdrop-filter: blur(4px);
+    -webkit-backdrop-filter: blur(4px);
+    z-index: 340;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+  .sidebar-backdrop.active {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  /* Рабочий стенд: гибкий контейнер на 100% ширины */
   .workbench-grid {
     display: flex;
     flex-direction: column;
@@ -1729,18 +1971,63 @@ body.ar-glasses-mode .ar-hud-overlay {
     display: flex;
     flex-direction: column;
   }
-  .panel-sidebar,
+
+  /* Боковое левое меню сайдбара на мобильных устройствах */
+  .panel-sidebar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    width: min(320px, 86vw);
+    max-width: 86vw;
+    height: 100%;
+    z-index: 350;
+    background: var(--bg-surface);
+    border-right: 1px solid var(--border-strong);
+    display: flex;
+    flex-direction: column;
+    transform: translateX(-100%);
+    transition: transform 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+    box-shadow: none;
+    padding-top: env(safe-area-inset-top, 0px);
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+  .panel-sidebar.mobile-active {
+    transform: translateX(0);
+    box-shadow: 16px 0 40px rgba(0, 0, 0, 0.55);
+  }
+  .panel-sidebar .panel-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 14px;
+    border-bottom: 1px solid var(--border-subtle);
+  }
+  .btn-drawer-close {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 30px;
+    height: 30px;
+    border-radius: 6px;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-subtle);
+    color: var(--text-secondary);
+    font-size: 0.85rem;
+  }
+
+  /* Правая панель инспектора на мобильных */
   .panel-inspector {
     position: fixed;
     inset: 52px 0 58px 0;
     width: 100%;
     max-width: 100%;
     box-sizing: border-box;
-    z-index: 50;
+    z-index: 320;
     display: none;
+    background: var(--bg-surface);
     box-shadow: 0 0 40px rgba(0, 0, 0, 0.75);
   }
-  .panel-sidebar.mobile-active,
   .panel-inspector.mobile-active {
     display: flex;
   }
@@ -1748,7 +2035,7 @@ body.ar-glasses-mode .ar-hud-overlay {
   /* Нижняя мобильная навигация */
   .mobile-bottom-nav {
     display: grid;
-    grid-template-columns: repeat(4, 1fr);
+    grid-template-columns: repeat(3, 1fr);
     width: 100%;
     max-width: 100%;
     box-sizing: border-box;

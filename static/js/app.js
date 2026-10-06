@@ -11,8 +11,12 @@
 (function () {
   'use strict';
 
+  const isAuthInitial = document.body.dataset.isAuthenticated === 'true';
+  const initialSessionId = document.body.dataset.initialSession || 'demo-session-1';
+
   const state = {
-    currentSessionId: document.body.dataset.initialSession || '',
+    currentSessionId: initialSessionId,
+    isDemo: !isAuthInitial,
     stagedCodes: [],
     stagedFiles: [],
     stagedCameraShots: [],
@@ -30,12 +34,34 @@
     cameraStream: null,
     arCameraStream: null,
     arBgCameraStream: null,
-    arSubmode: 'rayneo', // 'rayneo' | 'passthrough'
+    arSubmode: 'rayneo', // 'rayneo' | 'passthrough' (VR режим)
     cameraFacingMode: 'environment',
+    arWinCameraFacing: 'environment',
+    arBgCameraFacing: 'environment',
+    arWinDeviceIdx: 0,
+    arBgDeviceIdx: 0,
     workerPollTimer: null,
     latestAssistantMessage: null,
     activeProjectId: '',
     activeTag: '',
+    demoProjects: [],
+    demoSessions: [
+      {
+        id: initialSessionId,
+        title: 'Демо-диагностика',
+        is_pinned: false,
+        tag: '',
+        project_id: null,
+        vehicle_info: '',
+        summary: '',
+        updated_at: new Date().toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }),
+      },
+    ],
+    demoMessagesBySession: {},
+    demoSettings: {
+      cross_dialog_memory_enabled: true,
+      global_memory_summary: '',
+    },
   };
 
   const el = (id) => document.getElementById(id);
@@ -698,14 +724,13 @@
       <div class="msg-card msg-assistant" data-welcome-placeholder="1">
         <div class="msg-header">
           <span class="msg-role-badge">ИИДЕАЛ АВТО • ГОТОВ К ДИАГНОСТИКЕ</span>
-          <span>GEMMA 4 12B + AIRLLM GPU</span>
         </div>
         <div class="diagnosis-verdict-title">
           <span>Интеллектуальный стенд автодиагностики и пошагового ремонта</span>
         </div>
         <p style="font-size:0.88rem; color:var(--text-secondary); margin-bottom: 12px;">
           Опишите симптом своими словами, выберите код ошибки OBD-II из словаря БД, прикрепите лог сканера,
-          запишите голосовой вопрос или сфотографируйте неисправный узел прямо через встроенную камеру / очки RayNeo AR.
+          запишите голосовой вопрос или сфотографируйте неисправный узел прямо через встроенную камеру / очки AR и VR.
         </p>
         <div style="font-size:0.78rem; font-weight:600; color:var(--text-muted); margin-bottom:6px;">Быстрые примеры неисправностей:</div>
         <div class="quick-scenarios" style="display:flex; flex-wrap:wrap; gap:6px;">
@@ -777,6 +802,18 @@
     );
     if (!confirmed) return;
 
+    if (state.isDemo) {
+      const list = state.demoMessagesBySession[state.currentSessionId] || [];
+      state.demoMessagesBySession[state.currentSessionId] = list.filter((m) => String(m.id) !== String(msgId));
+      cardEl?.remove();
+      updateSelectionToolbar();
+      const feed = el('chatFeed');
+      if (feed && !feed.querySelector('.msg-card:not([data-welcome-placeholder])')) {
+        renderEmptyState(feed);
+      }
+      return;
+    }
+
     try {
       const resp = await fetch(`/api/messages/${msgId}/delete/`, {
         method: 'POST',
@@ -814,6 +851,21 @@
       'Удалить все'
     );
     if (!confirmed) return;
+
+    if (state.isDemo) {
+      const idSet = new Set(ids.map(String));
+      const list = state.demoMessagesBySession[state.currentSessionId] || [];
+      state.demoMessagesBySession[state.currentSessionId] = list.filter((m) => !idSet.has(String(m.id)));
+      ids.forEach((id) => {
+        document.querySelectorAll(`.msg-card[data-message-id="${id}"]`).forEach((node) => node.remove());
+      });
+      updateSelectionToolbar();
+      const feed = el('chatFeed');
+      if (feed && !feed.querySelector('.msg-card:not([data-welcome-placeholder])')) {
+        renderEmptyState(feed);
+      }
+      return;
+    }
 
     try {
       const resp = await fetch('/api/messages/delete/', {
@@ -853,6 +905,14 @@
       'Очистить всё'
     );
     if (!confirmed) return;
+
+    if (state.isDemo) {
+      state.demoMessagesBySession[state.currentSessionId] = [];
+      const feed = el('chatFeed');
+      if (feed) renderEmptyState(feed);
+      updateWorkerUi(null, '', null, false);
+      return;
+    }
 
     try {
       const resp = await fetch('/api/messages/delete/', {
@@ -895,9 +955,62 @@
     }
   }
 
+  function renderSessionMessagesToDom(messages, sessionId) {
+    const feed = el('chatFeed');
+    if (feed) {
+      feed.innerHTML = '';
+      if (!messages || messages.length === 0) {
+        renderEmptyState(feed);
+      } else {
+        let lastAssistant = null;
+        messages.forEach((m) => {
+          feed.appendChild(renderMessageElement(m));
+          if (m.role === 'assistant') lastAssistant = m;
+        });
+        bindTaskCheckboxes(feed);
+        if (lastAssistant) {
+          updateInspectorAndArFromAssistant(lastAssistant);
+        }
+        scrollFeedToBottom(true);
+        updateSelectionToolbar();
+      }
+    }
+
+    const arFeed = el('arAssistantFeed');
+    if (arFeed) {
+      arFeed.innerHTML = '';
+      if (!messages || !messages.length) {
+        arFeed.innerHTML = '<div style="color:var(--text-secondary);font-size:0.85rem;">Диалог пуст. Введите вопрос или отправьте голосовой запрос/снимок узла.</div>';
+      } else {
+        messages.forEach((m) => {
+          arFeed.appendChild(renderMessageElement(m));
+        });
+        arFeed.scrollTop = arFeed.scrollHeight;
+      }
+    }
+
+    const arSel = el('arSessionSelect');
+    if (arSel) {
+      arSel.value = String(sessionId);
+    }
+
+    document.querySelectorAll('.session-item').forEach((item) => {
+      item.classList.toggle('active', item.dataset.sessionId === String(sessionId));
+    });
+  }
+
   async function loadSession(sessionId) {
     if (!sessionId) return;
     state.currentSessionId = sessionId;
+
+    if (state.isDemo) {
+      const demoSess = state.demoSessions.find((s) => String(s.id) === String(sessionId));
+      const messages = state.demoMessagesBySession[sessionId] || [];
+      updateWorkerUi('idle', demoSess ? demoSess.summary || '' : '', state.demoSettings.global_memory_summary || '', false);
+      renderSessionMessagesToDom(messages, sessionId);
+      return;
+    }
+
     try {
       const resp = await fetch(`/api/sessions/${sessionId}/`);
       if (!resp.ok) return;
@@ -913,48 +1026,7 @@
         false
       );
 
-      const feed = el('chatFeed');
-      const messages = data.messages || [];
-      if (feed) {
-        feed.innerHTML = '';
-        if (messages.length === 0) {
-          renderEmptyState(feed);
-        } else {
-          let lastAssistant = null;
-          messages.forEach((m) => {
-            feed.appendChild(renderMessageElement(m));
-            if (m.role === 'assistant') lastAssistant = m;
-          });
-          bindTaskCheckboxes(feed);
-          if (lastAssistant) {
-            updateInspectorAndArFromAssistant(lastAssistant);
-          }
-          scrollFeedToBottom(true);
-          updateSelectionToolbar();
-        }
-      }
-
-      const arFeed = el('arAssistantFeed');
-      if (arFeed) {
-        arFeed.innerHTML = '';
-        if (!messages.length) {
-          arFeed.innerHTML = '<div style="color:var(--text-secondary);font-size:0.85rem;">Диалог пуст. Введите вопрос или отправьте голосовой запрос/снимок узла.</div>';
-        } else {
-          messages.forEach((m) => {
-            arFeed.appendChild(renderMessageElement(m));
-          });
-          arFeed.scrollTop = arFeed.scrollHeight;
-        }
-      }
-
-      const arSel = el('arSessionSelect');
-      if (arSel) {
-        arSel.value = String(sessionId);
-      }
-
-      document.querySelectorAll('.session-item').forEach((item) => {
-        item.classList.toggle('active', item.dataset.sessionId === String(sessionId));
-      });
+      renderSessionMessagesToDom(data.messages || [], sessionId);
     } catch (err) {
       console.error('Ошибка загрузки сессии:', err);
     }
@@ -968,7 +1040,7 @@
     wrapper.className = 'msg-card msg-assistant msg-generating-card msg-card-enter';
     wrapper.innerHTML = `
       <div class="msg-header">
-        <span class="msg-role-badge">ИИДЕАЛ АВТО • ГЕНЕРАЦИЯ ОТВЕТА (GEMMA 4 12B + AIRLLM GPU)</span>
+        <span class="msg-role-badge">ИИДЕАЛ АВТО • ГЕНЕРАЦИЯ ОТВЕТА</span>
         <span class="generating-timer-pill" data-gen-timer>0.0 с</span>
       </div>
       <div class="generating-main-row">
@@ -976,7 +1048,7 @@
           <span></span><span></span><span></span><span></span>
         </div>
         <div style="min-width:0; flex:1;">
-          <div class="generating-stage-title" data-gen-title>Нейросеть AirLLM анализирует ваш запрос...</div>
+          <div class="generating-stage-title" data-gen-title>Экспертная система анализирует ваш запрос...</div>
           <div class="generating-stage-sub" data-gen-stage>Этап 1/4: Сверка с базой знаний и словарём OBD-II (RAG + Телеметрия)...</div>
         </div>
       </div>
@@ -1003,9 +1075,9 @@
         if (elapsedSec < 1.5) {
           stageEl.textContent = 'Этап 1/4: Сверка с базой знаний и словарём OBD-II (RAG + Телеметрия)...';
         } else if (elapsedSec < 4.5) {
-          stageEl.textContent = 'Этап 2/4: Анализ контекста в резидентных слоях GPU VRAM (Gemma 4 12B)...';
+          stageEl.textContent = 'Этап 2/4: Анализ симптомов, истории диалога и мультимодальных вложений...';
         } else if (elapsedSec < 11.0) {
-          stageEl.textContent = 'Этап 3/4: Послойный PCIe DMA-стриминг весов AirLLM и синтез ответа...';
+          stageEl.textContent = 'Этап 3/4: Синтез экспертного заключения и расчет индекса здоровья...';
         } else {
           stageEl.textContent = 'Этап 4/4: Валидация JSON Schema и сборка чеклиста ремонта...';
         }
@@ -1060,6 +1132,16 @@
     formData.append('query', queryText);
     formData.append('vehicle_info', vehInput ? vehInput.value.trim() : '');
     formData.append('dtc_codes', JSON.stringify(codesSnapshot));
+
+    if (state.isDemo) {
+      const demoHist = (state.demoMessagesBySession[state.currentSessionId] || []).slice(-10).map((m) => ({
+        role: m.role,
+        content: m.content,
+        structured_data: m.structured_data,
+        dtc_codes: m.dtc_codes || [],
+      }));
+      formData.append('demo_history', JSON.stringify(demoHist));
+    }
 
     shotsSnapshot.forEach((shot) => {
       formData.append('camera_image_b64', shot);
@@ -1169,6 +1251,18 @@
         return;
       }
 
+      if (state.isDemo) {
+        if (!state.demoMessagesBySession[state.currentSessionId]) {
+          state.demoMessagesBySession[state.currentSessionId] = [];
+        }
+        if (data.user_message) state.demoMessagesBySession[state.currentSessionId].push(data.user_message);
+        if (data.assistant_message) state.demoMessagesBySession[state.currentSessionId].push(data.assistant_message);
+        const demoSess = state.demoSessions.find((s) => String(s.id) === String(state.currentSessionId));
+        if (demoSess && data.session_title && (demoSess.title === 'Демо-диагностика' || demoSess.title.startsWith('Диагностика #'))) {
+          demoSess.title = data.session_title;
+        }
+      }
+
       if (data.worker_preempted) {
         updateWorkerUi('aborted_for_priority', null, null, true);
       }
@@ -1215,8 +1309,14 @@
         arFeed.scrollTop = arFeed.scrollHeight;
       }
 
-      // Запускаем опрос фонового воркера, который обновляет краткую выжимку
-      setTimeout(pollWorkerStatus, 250);
+      if (typeof window._refreshSidebarProjects === 'function') {
+        window._refreshSidebarProjects();
+      }
+
+      if (!state.isDemo) {
+        // Запускаем опрос фонового воркера, который обновляет краткую выжимку
+        setTimeout(pollWorkerStatus, 250);
+      }
     } catch (err) {
       console.error('Ошибка отправки запроса:', err);
       if (pendingAssistantEl) {
@@ -1741,6 +1841,66 @@
     } catch (_) {}
   }
 
+  async function switchArCamera(target) {
+    if (target === 'window') {
+      state.arWinCameraFacing = state.arWinCameraFacing === 'environment' ? 'user' : 'environment';
+      stopStream(state.arCameraStream);
+      const arVideo = el('arCameraVideoEl');
+      state.arCameraStream = await startCameraStream(arVideo, state.arWinCameraFacing);
+    } else if (target === 'bg') {
+      state.arBgCameraFacing = state.arBgCameraFacing === 'environment' ? 'user' : 'environment';
+      stopStream(state.arBgCameraStream);
+      const bgVideo = el('arBgVideoEl');
+      state.arBgCameraStream = await startCameraStream(bgVideo, state.arBgCameraFacing);
+    }
+  }
+
+  async function createNewSession(projectId) {
+    if (state.isDemo) {
+      const newId = 'demo-sess-' + Date.now();
+      const newSess = {
+        id: newId,
+        project_id: projectId ? Number(projectId) : null,
+        title: 'Новый диалог ' + (state.demoSessions.length + 1),
+        tag: '',
+        is_pinned: false,
+        updated_at: new Date().toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }),
+        messages: [],
+      };
+      state.demoSessions.unshift(newSess);
+      state.demoMessagesBySession[newId] = [];
+      state.currentSessionId = newId;
+      await refreshSidebarProjects();
+      await loadSession(newId);
+      return newSess;
+    }
+
+    const body = {};
+    if (projectId) {
+      body.project_id = Number(projectId);
+    } else if (state.activeProjectId) {
+      body.project_id = Number(state.activeProjectId);
+    }
+    try {
+      const resp = await fetch('/api/sessions/', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (resp.ok) {
+        const data = await resp.json();
+        if (data.id) {
+          state.currentSessionId = String(data.id);
+          await refreshSidebarProjects();
+          await loadSession(data.id);
+          return data;
+        }
+      }
+    } catch (err) {
+      console.error('Ошибка создания новой сессии:', err);
+    }
+  }
+
   // =========================================================================
   // 9. Инициализация событий и PWA Service Worker
   // =========================================================================
@@ -1766,157 +1926,312 @@
     });
 
     // =========================================================================
-    // Управление проектами и сессиями (Проекты, Закрепление, Переименование, Теги)
+    // Управление проектами и сессиями (Древовидная структура AIBPMN, Закрепление, Переименование, Теги)
     // =========================================================================
-    async function loadSessionsList(projectId, tag) {
-      if (projectId !== undefined) state.activeProjectId = projectId;
-      if (tag !== undefined) state.activeTag = tag;
+    async function refreshSidebarProjects(tagFilter) {
+      if (tagFilter !== undefined) state.activeTag = tagFilter;
+      const projectsTreeEl = el('sidebarProjectsList');
+      const unassignedListEl = el('sessionsList');
+      const arSelectEl = el('arSessionSelect');
 
-      let url = '/api/sessions/?';
-      if (state.activeProjectId) url += `project_id=${encodeURIComponent(state.activeProjectId)}&`;
-      if (state.activeTag) url += `tag=${encodeURIComponent(state.activeTag)}&`;
+      let projects = [];
+      let sessions = [];
 
-      try {
-        const resp = await fetch(url);
-        if (!resp.ok) return;
-        const data = await resp.json();
-        renderSessionsList(data.sessions || []);
-      } catch (err) {
-        console.error('Ошибка загрузки сессий:', err);
-      }
-    }
-
-    function renderSessionsList(sessions) {
-      const listEl = el('sessionsList');
-      if (!listEl) return;
-      if (sessions.length === 0) {
-        listEl.innerHTML = `<div style="padding:16px 8px; color:var(--text-muted); font-size:0.75rem; text-align:center;">Диалоги не найдены</div>`;
-        return;
-      }
-      listEl.innerHTML = sessions
-        .map((s) => `
-          <div class="session-item clickable ${s.id === state.currentSessionId ? 'active' : ''} ${s.is_pinned ? 'pinned' : ''}" data-session-id="${s.id}">
-            <div class="session-row-main">
-              <button type="button" class="btn-pin-session ${s.is_pinned ? 'active' : ''}" data-pin-session="${s.id}" title="${s.is_pinned ? 'Открепить диалог' : 'Закрепить диалог'}">
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="${s.is_pinned ? 'currentColor' : 'none'}" stroke="currentColor" stroke-width="2">
-                  <path d="M12 17v5"/><path d="M9 2h6l1 7H8l1-7z"/><path d="M5 9h14v2a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V9z"/>
-                </svg>
-              </button>
-              <span class="session-item-title" title="${escapeHtml(s.title || 'Новый диалог')}">${escapeHtml(s.title || 'Новый диалог')}</span>
-              <div class="session-item-actions">
-                <button type="button" class="btn-rename-session" data-rename-session="${s.id}" data-current-title="${escapeHtml(s.title || '')}" title="Переименовать диалог">
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/>
-                  </svg>
-                </button>
-                <button type="button" class="btn-delete-session" data-delete-session="${s.id}" title="Удалить сессию" aria-label="Удалить сессию">
-                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
-                  </svg>
-                </button>
-              </div>
-            </div>
-            <div class="session-row-sub">
-              ${
-                s.tag
-                  ? `<span class="session-tag-badge" data-set-tag-session="${s.id}" data-current-tag="${escapeHtml(s.tag)}">${escapeHtml(s.tag)}</span>`
-                  : `<button type="button" class="btn-set-tag" data-set-tag-session="${s.id}" title="Назначить тег">+ тег</button>`
-              }
-              <span class="session-sub-meta" title="${escapeHtml(s.vehicle_info || 'Автомобиль OBD-II')}">${escapeHtml(s.vehicle_info || 'Автомобиль OBD-II')}</span>
-            </div>
-          </div>
-        `)
-        .join('');
-    }
-
-    // Создание и переключение сессий
-    el('btnNewSession')?.addEventListener('click', async () => {
-      const veh = el('vehicleInfoInput')?.value || 'Автомобиль OBD-II';
-      const body = { vehicle_info: veh };
-      if (state.activeProjectId) {
-        body.project_id = Number(state.activeProjectId);
-      }
-      const resp = await fetch('/api/sessions/', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
-      if (resp.ok) {
-        const data = await resp.json();
-        if (data.id) {
-          state.currentSessionId = data.id;
-          await loadSessionsList();
-          await loadSession(data.id);
-        } else {
-          window.location.reload();
+      if (state.isDemo) {
+        projects = state.demoProjects || [];
+        sessions = state.demoSessions || [];
+      } else {
+        try {
+          const [projResp, sessResp] = await Promise.all([
+            fetch('/api/projects/'),
+            fetch('/api/sessions/' + (state.activeTag ? `?tag=${encodeURIComponent(state.activeTag)}` : '')),
+          ]);
+          if (projResp.ok) {
+            const pData = await projResp.json();
+            projects = pData.projects || [];
+          }
+          if (sessResp.ok) {
+            const sData = await sessResp.json();
+            sessions = sData.sessions || [];
+          }
+        } catch (err) {
+          console.error('Ошибка загрузки проектов и сессий:', err);
         }
       }
+
+      // Построение карты сессий по проектам
+      const sessionsByProj = {};
+      const unassignedSessions = [];
+
+      sessions.forEach((s) => {
+        if (state.activeTag && s.tag !== state.activeTag) return;
+        if (s.project_id) {
+          if (!sessionsByProj[s.project_id]) sessionsByProj[s.project_id] = [];
+          sessionsByProj[s.project_id].push(s);
+        } else {
+          unassignedSessions.push(s);
+        }
+      });
+
+      // Рендеринг древовидного меню проектов в стиле AIBPMN
+      if (projectsTreeEl) {
+        if (projects.length === 0) {
+          projectsTreeEl.innerHTML = '';
+        } else {
+          projectsTreeEl.innerHTML = projects
+            .map((p) => {
+              const pSessions =
+                sessionsByProj[p.id] ||
+                (p.sessions || []).filter((s) => !state.activeTag || s.tag === state.activeTag);
+              const chatsHtml =
+                pSessions.length === 0
+                  ? `<div class="sidebar-empty-hint">Нет диалогов в проекте</div>`
+                  : pSessions.map((s) => renderSessionItemHtml(s)).join('');
+
+              return `
+                <div class="project-group" data-project-id="${p.id}">
+                  <div class="project-header" data-project-id="${p.id}">
+                    <span class="project-title" title="${escapeHtml(p.name)}">
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0; color:var(--accent-orange);">
+                        <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+                      </svg>
+                      <span class="project-title-text">${escapeHtml(p.name)}</span>
+                      <span class="project-count-pill">${pSessions.length}</span>
+                    </span>
+                    <div class="project-actions">
+                      <button type="button" class="action-btn action-add-chat" data-project-id="${p.id}" title="Новый диалог в проекте">+</button>
+                      <button type="button" class="action-btn action-edit-project" data-project-id="${p.id}" data-project-name="${escapeHtml(p.name)}" title="Переименовать проект">✎</button>
+                      <button type="button" class="action-btn action-delete-project" data-project-id="${p.id}" data-project-name="${escapeHtml(p.name)}" title="Удалить проект">✕</button>
+                    </div>
+                  </div>
+                  <div class="project-chats">
+                    ${chatsHtml}
+                  </div>
+                </div>
+              `;
+            })
+            .join('');
+        }
+      }
+
+      // Рендеринг диалогов вне проектов (без упоминания OBD-II)
+      if (unassignedListEl) {
+        if (unassignedSessions.length === 0 && projects.length === 0) {
+          unassignedListEl.innerHTML = `<div style="padding:16px 8px; color:var(--text-muted); font-size:0.75rem; text-align:center;">Диалоги не найдены</div>`;
+        } else {
+          unassignedListEl.innerHTML = unassignedSessions.map((s) => renderSessionItemHtml(s)).join('');
+        }
+      }
+
+      // Обновление селектора сессий в AR HUD
+      if (arSelectEl) {
+        const allFiltered = sessions.filter((s) => !state.activeTag || s.tag === state.activeTag);
+        arSelectEl.innerHTML = allFiltered
+          .map(
+            (s) =>
+              `<option value="${s.id}" ${String(s.id) === String(state.currentSessionId) ? 'selected' : ''}>${escapeHtml(s.title || 'Диалог #' + s.id)}</option>`
+          )
+          .join('');
+      }
+    }
+
+    function renderSessionItemHtml(s) {
+      const isCur = String(s.id) === String(state.currentSessionId);
+      const isPinned = Boolean(s.is_pinned);
+      return `
+        <div class="session-item clickable ${isCur ? 'active' : ''} ${isPinned ? 'pinned' : ''}" data-session-id="${s.id}">
+          <div class="session-row-main">
+            <button type="button" class="btn-pin-session ${isPinned ? 'active' : ''}" data-pin-session="${s.id}" title="${isPinned ? 'Открепить диалог' : 'Закрепить диалог'}">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="${isPinned ? 'currentColor' : 'none'}" stroke="currentColor" stroke-width="2">
+                <path d="M12 17v5"/><path d="M9 2h6l1 7H8l1-7z"/><path d="M5 9h14v2a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V9z"/>
+              </svg>
+            </button>
+            <span class="session-item-title" title="${escapeHtml(s.title || 'Новый диалог')}">${escapeHtml(s.title || 'Новый диалог')}</span>
+            <div class="session-item-actions">
+              <button type="button" class="btn-rename-session" data-rename-session="${s.id}" data-current-title="${escapeHtml(s.title || '')}" title="Переименовать диалог">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/>
+                </svg>
+              </button>
+              <button type="button" class="btn-delete-session" data-delete-session="${s.id}" title="Удалить диалог" aria-label="Удалить диалог">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+                </svg>
+              </button>
+            </div>
+          </div>
+          <div class="session-row-sub">
+            ${
+              s.tag
+                ? `<span class="session-tag-badge" data-set-tag-session="${s.id}" data-current-tag="${escapeHtml(s.tag)}">${escapeHtml(s.tag)}</span>`
+                : `<button type="button" class="btn-set-tag" data-set-tag-session="${s.id}" title="Назначить тег">+ тег</button>`
+            }
+            <span class="session-sub-meta">${escapeHtml(s.updated_at || '')}</span>
+          </div>
+        </div>
+      `;
+    }
+
+    // Создание новой сессии
+    el('btnNewSession')?.addEventListener('click', async () => {
+      await createNewSession();
+      toggleMobileSidebar(false);
     });
 
-    // Делегирование событий списка диалогов (переход, закрепление, переименование, тег, удаление)
-    const sessionsListEl = el('sessionsList');
-    sessionsListEl?.addEventListener('click', async (e) => {
-      // 1. Удаление диалога
-      const delBtn = e.target.closest('[data-delete-session]');
-      if (delBtn) {
+    // Делегирование событий дерева проектов и сессий
+    const handleSessionListClicks = async (e) => {
+      // 1. Добавление чата в проект
+      const addChatBtn = e.target.closest('.action-add-chat');
+      if (addChatBtn) {
         e.stopPropagation();
-        const sid = delBtn.dataset.deleteSession;
-        const confirmed = await uiConfirm(
-          'Удалить эту сессию диагностики вместе со всей историей сообщений?',
-          'Удаление сессии',
-          true,
-          'Удалить'
-        );
-        if (!confirmed) return;
-        const resp = await fetch(`/api/sessions/${sid}/`, { method: 'DELETE' });
-        if (resp.ok) {
-          if (sid === state.currentSessionId) {
-            window.location.reload();
+        const pid = addChatBtn.dataset.projectId;
+        await createNewSession(pid);
+        toggleMobileSidebar(false);
+        return;
+      }
+
+      // 2. Редактирование / переименование проекта
+      const editProjBtn = e.target.closest('.action-edit-project');
+      if (editProjBtn) {
+        e.stopPropagation();
+        const pid = editProjBtn.dataset.projectId;
+        const curName = editProjBtn.dataset.projectName || '';
+        const newName = await uiPrompt('Введите новое название проекта:', curName, 'Переименование проекта', 'Сохранить');
+        if (newName && newName.trim() && newName.trim() !== curName) {
+          if (state.isDemo) {
+            const p = (state.demoProjects || []).find((x) => String(x.id) === String(pid));
+            if (p) p.name = newName.trim();
+            refreshSidebarProjects();
           } else {
-            loadSessionsList();
+            const resp = await fetch(`/api/projects/${pid}/`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ name: newName.trim() }),
+            });
+            if (resp.ok) {
+              refreshSidebarProjects();
+            }
           }
         }
         return;
       }
 
-      // 2. Закрепление диалога (Pin/Unpin)
-      const pinBtn = e.target.closest('[data-pin-session]');
-      if (pinBtn) {
+      // 3. Удаление проекта
+      const delProjBtn = e.target.closest('.action-delete-project');
+      if (delProjBtn) {
         e.stopPropagation();
-        const sid = pinBtn.dataset.pinSession;
-        const resp = await fetch(`/api/sessions/${sid}/pin/`, { method: 'POST' });
-        if (resp.ok) {
-          loadSessionsList();
+        const pid = delProjBtn.dataset.projectId;
+        const curName = delProjBtn.dataset.projectName || '';
+        const confirmed = await uiConfirm(`Удалить проект «${curName}» со всеми его диалогами?`, 'Удаление проекта', true, 'Удалить проект');
+        if (!confirmed) return;
+        if (state.isDemo) {
+          state.demoProjects = (state.demoProjects || []).filter((x) => String(x.id) !== String(pid));
+          state.demoSessions = (state.demoSessions || []).filter((x) => String(x.project_id) !== String(pid));
+          if (!state.demoSessions.some((s) => String(s.id) === String(state.currentSessionId))) {
+            if (state.demoSessions.length > 0) {
+              state.currentSessionId = state.demoSessions[0].id;
+              loadSession(state.currentSessionId);
+            } else {
+              await createNewSession();
+            }
+          }
+          refreshSidebarProjects();
+        } else {
+          const resp = await fetch(`/api/projects/${pid}/`, { method: 'DELETE' });
+          if (resp.ok) {
+            window.location.reload();
+          }
         }
         return;
       }
 
-      // 3. Переименование диалога
+      // 4. Удаление диалога
+      const delBtn = e.target.closest('[data-delete-session]');
+      if (delBtn) {
+        e.stopPropagation();
+        const sid = delBtn.dataset.deleteSession;
+        const confirmed = await uiConfirm(
+          'Удалить этот диалог диагностики вместе со всей историей сообщений?',
+          'Удаление диалога',
+          true,
+          'Удалить'
+        );
+        if (!confirmed) return;
+        if (state.isDemo) {
+          state.demoSessions = (state.demoSessions || []).filter((x) => String(x.id) !== String(sid));
+          delete state.demoMessagesBySession[sid];
+          if (String(sid) === String(state.currentSessionId)) {
+            if (state.demoSessions.length > 0) {
+              state.currentSessionId = state.demoSessions[0].id;
+              loadSession(state.currentSessionId);
+            } else {
+              await createNewSession();
+            }
+          }
+          refreshSidebarProjects();
+        } else {
+          const resp = await fetch(`/api/sessions/${sid}/`, { method: 'DELETE' });
+          if (resp.ok) {
+            if (String(sid) === String(state.currentSessionId)) {
+              window.location.reload();
+            } else {
+              refreshSidebarProjects();
+            }
+          }
+        }
+        return;
+      }
+
+      // 5. Закрепление диалога (Pin/Unpin)
+      const pinBtn = e.target.closest('[data-pin-session]');
+      if (pinBtn) {
+        e.stopPropagation();
+        const sid = pinBtn.dataset.pinSession;
+        if (state.isDemo) {
+          const s = (state.demoSessions || []).find((x) => String(x.id) === String(sid));
+          if (s) s.is_pinned = !s.is_pinned;
+          refreshSidebarProjects();
+        } else {
+          const resp = await fetch(`/api/sessions/${sid}/pin/`, { method: 'POST' });
+          if (resp.ok) {
+            refreshSidebarProjects();
+          }
+        }
+        return;
+      }
+
+      // 6. Переименование диалога
       const renBtn = e.target.closest('[data-rename-session]');
       if (renBtn) {
         e.stopPropagation();
         const sid = renBtn.dataset.renameSession;
         const curTitle = renBtn.dataset.currentTitle || '';
         const newTitle = await uiPrompt(
-          'Введите новое название для этой сессии диагностики:',
+          'Введите новое название для этого диалога диагностики:',
           curTitle,
           'Переименование диалога',
           'Сохранить'
         );
         if (newTitle && newTitle.trim() && newTitle.trim() !== curTitle) {
-          const resp = await fetch(`/api/sessions/${sid}/rename/`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ title: newTitle.trim() }),
-          });
-          if (resp.ok) {
-            loadSessionsList();
+          if (state.isDemo) {
+            const s = (state.demoSessions || []).find((x) => String(x.id) === String(sid));
+            if (s) s.title = newTitle.trim();
+            refreshSidebarProjects();
+          } else {
+            const resp = await fetch(`/api/sessions/${sid}/rename/`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ title: newTitle.trim() }),
+            });
+            if (resp.ok) {
+              refreshSidebarProjects();
+            }
           }
         }
         return;
       }
 
-      // 4. Открытие модального окна тега
+      // 7. Открытие модального окна тега
       const tagTrigger = e.target.closest('[data-set-tag-session]');
       if (tagTrigger) {
         e.stopPropagation();
@@ -1934,19 +2249,16 @@
         return;
       }
 
-      // 5. Переход к диалогу
+      // 8. Переход к диалогу
       const item = e.target.closest('.session-item');
       if (item && item.dataset.sessionId) {
         loadSession(item.dataset.sessionId);
+        toggleMobileSidebar(false);
       }
-    });
+    };
 
-    // Фильтр по проектам
-    const projSelect = el('projectSelect');
-    projSelect?.addEventListener('change', () => {
-      state.activeProjectId = projSelect.value;
-      loadSessionsList();
-    });
+    el('sidebarProjectsList')?.addEventListener('click', handleSessionListClicks);
+    el('sessionsList')?.addEventListener('click', handleSessionListClicks);
 
     // Создание проекта
     el('btnNewProject')?.addEventListener('click', () => {
@@ -1975,6 +2287,18 @@
         await uiAlert('Пожалуйста, укажите название для проекта или автомобиля.', 'Название обязательно', 'warning');
         return;
       }
+      if (state.isDemo) {
+        const newProj = {
+          id: 'demo-proj-' + Date.now(),
+          name,
+          description: desc,
+          sessions: [],
+        };
+        state.demoProjects.push(newProj);
+        closeProjectModal();
+        await refreshSidebarProjects();
+        return;
+      }
       try {
         const resp = await fetch('/api/projects/', {
           method: 'POST',
@@ -1982,19 +2306,10 @@
           body: JSON.stringify({ name, description: desc }),
         });
         if (resp.ok) {
-          const project = await resp.json();
           closeProjectModal();
-          if (projSelect) {
-            const opt = document.createElement('option');
-            opt.value = project.id;
-            opt.textContent = `${project.name} (0)`;
-            projSelect.appendChild(opt);
-            projSelect.value = project.id;
-            state.activeProjectId = String(project.id);
-          }
-          loadSessionsList();
+          await refreshSidebarProjects();
         } else {
-          await uiAlert('Не удалось сохранить проект в базе данных.', 'Ошибка создания проекта', 'error');
+          await uiAlert('Не удалось сохранить проект.', 'Ошибка создания проекта', 'error');
         }
       } catch (err) {
         console.error('Ошибка создания проекта:', err);
@@ -2009,7 +2324,7 @@
       tagsFilterBar.querySelectorAll('.tag-chip').forEach((c) => c.classList.remove('active'));
       chip.classList.add('active');
       state.activeTag = chip.dataset.tag || '';
-      loadSessionsList();
+      refreshSidebarProjects(state.activeTag);
     });
 
     // Модальное окно тегирования
@@ -2031,6 +2346,13 @@
       const sid = el('tagModalSessionId')?.value;
       const tag = el('sessionTagInput')?.value.trim() || '';
       if (!sid) return;
+      if (state.isDemo) {
+        const s = (state.demoSessions || []).find((x) => String(x.id) === String(sid));
+        if (s) s.tag = tag;
+        closeTagModal();
+        refreshSidebarProjects();
+        return;
+      }
       const resp = await fetch(`/api/sessions/${sid}/tag/`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -2038,13 +2360,20 @@
       });
       if (resp.ok) {
         closeTagModal();
-        loadSessionsList();
+        refreshSidebarProjects();
       }
     });
 
     el('btnClearSessionTag')?.addEventListener('click', async () => {
       const sid = el('tagModalSessionId')?.value;
       if (!sid) return;
+      if (state.isDemo) {
+        const s = (state.demoSessions || []).find((x) => String(x.id) === String(sid));
+        if (s) s.tag = '';
+        closeTagModal();
+        refreshSidebarProjects();
+        return;
+      }
       const resp = await fetch(`/api/sessions/${sid}/tag/`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -2052,7 +2381,7 @@
       });
       if (resp.ok) {
         closeTagModal();
-        loadSessionsList();
+        refreshSidebarProjects();
       }
     });
 
@@ -2121,11 +2450,13 @@
     // Голосовой ввод
     el('btnVoiceRecord')?.addEventListener('click', () => toggleVoiceRecording());
 
-    // Режим AR-очков (RayNeo Optical / Камера-фон)
+    // Режим AR-очков (RayNeo Optical / VR режим)
     el('btnEnterArMode')?.addEventListener('click', () => enterArMode('rayneo'));
     el('btnExitArMode')?.addEventListener('click', () => exitArMode());
     el('btnArModeRayneo')?.addEventListener('click', () => setArSubmode('rayneo'));
     el('btnArModePassthrough')?.addEventListener('click', () => setArSubmode('passthrough'));
+    el('btnArSwitchWinCamera')?.addEventListener('click', () => switchArCamera('window'));
+    el('btnArSwitchBgCamera')?.addEventListener('click', () => switchArCamera('bg'));
     el('btnArFullscreen')?.addEventListener('click', () => {
       if (document.documentElement.requestFullscreen) {
         document.documentElement.requestFullscreen().catch(() => {});
@@ -2184,24 +2515,34 @@
     });
 
     // =========================================================================
-    // Модальное окно настроек и междиалоговой памяти
+    // Модальное окно настроек и профиля аккаунта
     // =========================================================================
     const openSettingsModal = async () => {
       const modal = el('settingsModal');
       if (!modal) return;
-      try {
-        const resp = await fetch('/api/settings/');
-        if (resp.ok) {
-          const s = await resp.json();
-          const chk = el('chkCrossDialogMemory');
-          if (chk) chk.checked = Boolean(s.cross_dialog_memory_enabled);
-          const gta = el('globalSummaryTextarea');
-          if (gta) gta.value = s.global_memory_summary || '';
-          const wrap = el('globalMemorySectionWrap');
-          if (wrap) wrap.style.display = chk && chk.checked ? 'block' : 'none';
+      if (state.isDemo) {
+        const chk = el('chkCrossDialogMemory');
+        if (chk) chk.checked = Boolean(state.demoSettings.cross_dialog_memory_enabled);
+        const gta = el('globalSummaryTextarea');
+        if (gta) gta.value = state.demoSettings.global_memory_summary || '';
+        const wrap = el('globalMemorySectionWrap');
+        if (wrap) wrap.style.display = chk && chk.checked ? 'block' : 'none';
+      } else {
+        try {
+          const resp = await fetch('/api/settings/');
+          if (resp.ok) {
+            const data = await resp.json();
+            const s = (data && data.settings) ? data.settings : data;
+            const chk = el('chkCrossDialogMemory');
+            if (chk) chk.checked = Boolean(s.cross_dialog_memory_enabled);
+            const gta = el('globalSummaryTextarea');
+            if (gta) gta.value = s.global_memory_summary || '';
+            const wrap = el('globalMemorySectionWrap');
+            if (wrap) wrap.style.display = chk && chk.checked ? 'block' : 'none';
+          }
+        } catch (err) {
+          console.error('Ошибка загрузки настроек:', err);
         }
-      } catch (err) {
-        console.error('Ошибка загрузки настроек:', err);
       }
       modal.style.display = 'flex';
     };
@@ -2211,6 +2552,7 @@
       if (modal) modal.style.display = 'none';
     };
 
+    el('btnAccountMenu')?.addEventListener('click', openSettingsModal);
     el('btnOpenSettingsModal')?.addEventListener('click', openSettingsModal);
     el('btnOpenMemorySettingsFromSidebar')?.addEventListener('click', openSettingsModal);
     el('btnCloseSettingsModal')?.addEventListener('click', closeSettingsModal);
@@ -2222,15 +2564,22 @@
     });
 
     const saveSettings = async () => {
-      const payload = {
-        cross_dialog_memory_enabled: Boolean(el('chkCrossDialogMemory')?.checked),
-        global_memory_summary: el('globalSummaryTextarea')?.value || '',
-      };
+      const chkVal = Boolean(el('chkCrossDialogMemory')?.checked);
+      const summaryVal = el('globalSummaryTextarea')?.value || '';
+      if (state.isDemo) {
+        state.demoSettings.cross_dialog_memory_enabled = chkVal;
+        state.demoSettings.global_memory_summary = summaryVal;
+        closeSettingsModal();
+        return;
+      }
       try {
         const resp = await fetch('/api/settings/', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload),
+          body: JSON.stringify({
+            cross_dialog_memory_enabled: chkVal,
+            global_memory_summary: summaryVal,
+          }),
         });
         if (resp.ok) {
           closeSettingsModal();
@@ -2244,12 +2593,18 @@
 
     el('btnClearGlobalMemory')?.addEventListener('click', async () => {
       const confirmed = await uiConfirm(
-        'Очистить всю накопленную междиалоговую память по всем сессиям автомобиля? Это действие удалит сохранённый контекст неисправностей.',
+        'Очистить всю накопленную междиалоговую память? Сохранённый контекст неисправностей автомобиля будет сброшен.',
         'Сброс глобальной памяти',
         true,
         'Очистить память'
       );
       if (!confirmed) return;
+      if (state.isDemo) {
+        state.demoSettings.global_memory_summary = '';
+        const gta = el('globalSummaryTextarea');
+        if (gta) gta.value = '';
+        return;
+      }
       try {
         const resp = await fetch('/api/settings/', {
           method: 'POST',
@@ -2269,7 +2624,7 @@
 
     // Сохранение ручных правок выжимки диалога
     el('dialogSummaryTextarea')?.addEventListener('blur', async (e) => {
-      if (!state.currentSessionId) return;
+      if (!state.currentSessionId || state.isDemo) return;
       await fetch(`/api/sessions/${state.currentSessionId}/`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
@@ -2284,19 +2639,29 @@
       htmlEl.setAttribute('data-theme', next);
     });
 
+    // Мобильное левое меню (боковой drawer) и затемнение фона
+    const toggleMobileSidebar = (force) => {
+      const sidebar = el('panelSidebar');
+      const backdrop = el('sidebarBackdrop');
+      if (!sidebar) return;
+      const willBeActive = force !== undefined ? force : !sidebar.classList.contains('mobile-active');
+      sidebar.classList.toggle('mobile-active', willBeActive);
+      if (backdrop) backdrop.classList.toggle('active', willBeActive);
+    };
+
+    el('btnMobileMenuToggle')?.addEventListener('click', () => toggleMobileSidebar());
+    el('sidebarBackdrop')?.addEventListener('click', () => toggleMobileSidebar(false));
+
     // Мобильная нижняя навигация (Thumb-Zone)
     document.querySelectorAll('[data-mobile-view]').forEach((navBtn) => {
       navBtn.addEventListener('click', () => {
         const view = navBtn.dataset.mobileView;
         document.querySelectorAll('[data-mobile-view]').forEach((b) => b.classList.toggle('active', b === navBtn));
-        const sidebar = el('panelSidebar');
         const inspector = el('panelInspector');
-        sidebar?.classList.remove('mobile-active');
+        toggleMobileSidebar(false);
         inspector?.classList.remove('mobile-active');
 
-        if (view === 'sessions') {
-          sidebar?.classList.add('mobile-active');
-        } else if (view === 'checklist') {
+        if (view === 'checklist') {
           inspector?.classList.add('mobile-active');
           document.querySelector('[data-inspector-tab="paneChecklist"]')?.click();
         } else if (view === 'dtc') {
@@ -2306,10 +2671,10 @@
       });
     });
 
-    // Закрытие мобильных выезжающих панелей
+    // Закрытие мобильных панелей
     document.querySelectorAll('.js-close-mobile-drawer').forEach((btn) => {
       btn.addEventListener('click', () => {
-        el('panelSidebar')?.classList.remove('mobile-active');
+        toggleMobileSidebar(false);
         el('panelInspector')?.classList.remove('mobile-active');
         document.querySelectorAll('[data-mobile-view]').forEach((b) => b.classList.remove('active'));
       });
@@ -2383,6 +2748,7 @@
     const btnSubmit = el('btnSubmitAuth');
     const errBanner = el('authErrorBanner');
     const btnLogout = el('btnLogout');
+    const btnDeleteAccount = el('btnDeleteAccount');
 
     let authMode = 'login';
 
@@ -2488,6 +2854,30 @@
         window.location.reload();
       }
     });
+
+    btnDeleteAccount?.addEventListener('click', async () => {
+      const confirmed = await uiConfirm(
+        'Вы уверены, что хотите удалить свой аккаунт? Все ваши проекты, сессии и диагностические данные будут удалены безвозвратно.',
+        'Удаление аккаунта',
+        true,
+        'Удалить аккаунт навсегда'
+      );
+      if (!confirmed) return;
+      try {
+        const resp = await fetch('/api/auth/delete-account/', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+        });
+        if (resp.ok) {
+          window.location.reload();
+        } else {
+          const data = await resp.json();
+          await uiAlert(data.error || 'Ошибка удаления аккаунта', 'Ошибка', 'error');
+        }
+      } catch (err) {
+        console.error('Ошибка при удалении аккаунта:', err);
+      }
+    });
   }
 
   document.addEventListener('DOMContentLoaded', () => {
@@ -2501,6 +2891,7 @@
       { passive: true }
     );
     initEvents();
+    refreshSidebarProjects();
     loadSession(state.currentSessionId);
     loadDtcDictionary();
   });

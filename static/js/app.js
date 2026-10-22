@@ -11,8 +11,22 @@
 (function () {
   'use strict';
 
+  function generateUuidV4() {
+    if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+      try {
+        return crypto.randomUUID();
+      } catch (e) {}
+    }
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (c) {
+      const r = (Math.random() * 16) | 0,
+        v = c === 'x' ? r : (r & 0x3) | 0x8;
+      return v.toString(16);
+    });
+  }
+
   const isAuthInitial = document.body.dataset.isAuthenticated === 'true';
-  const initialSessionId = document.body.dataset.initialSession || 'demo-session-1';
+  const rawInitialSession = (document.body.dataset.initialSession || '').trim();
+  const initialSessionId = rawInitialSession && !rawInitialSession.startsWith('demo-') ? rawInitialSession : generateUuidV4();
 
   const state = {
     currentSessionId: initialSessionId,
@@ -1989,16 +2003,76 @@
   async function startCameraStream(videoElement, facingMode) {
     if (!videoElement) return null;
     try {
+      // 1. Проверяем политику безопасного контекста браузера (HTTPS vs HTTP)
+      const isLocalHost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+      if (!window.isSecureContext && !isLocalHost) {
+        const errorMsg =
+          'Браузер заблокировал доступ к камере (API navigator.mediaDevices), так как страница открыта по незащищенному HTTP (' +
+          window.location.origin +
+          ').\n\n' +
+          'Политика безопасности Android XR и Chromium требует защищенного контекста (HTTPS или localhost) для веб-камеры на внешних сетевых устройствах.\n\n' +
+          'Способ включить камеру на очках (Android XR) без настройки SSL:\n' +
+          '1. Откройте в браузере очков вкладку chrome://flags/#unsafely-treat-insecure-origin-as-secure\n' +
+          '2. Введите URL: ' + window.location.origin + '\n' +
+          '3. Переключите в Enabled и перезапустите браузер (кнопка Relaunch).';
+        console.warn(errorMsg);
+        if (typeof uiAlert === 'function') {
+          await uiAlert(errorMsg, 'Камера: требуется HTTPS или флаг в браузере очков', 'warning');
+        } else {
+          alert(errorMsg);
+        }
+        return null;
+      }
+
       if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: { ideal: facingMode || 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } },
-          audio: false,
-        });
-        videoElement.srcObject = stream;
-        return stream;
+        let stream = null;
+        // 2. Первая попытка: запрос с предпочтительной ориентацией
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({
+            video: {
+              facingMode: { ideal: facingMode || 'environment' },
+              width: { ideal: 1280 },
+              height: { ideal: 720 },
+            },
+            audio: false,
+          });
+        } catch (specErr) {
+          console.warn('Специфичные ограничения камеры не подошли, пробуем базовый video: true (актуально для VR/XR гарнитур):', specErr);
+          // Fallback для VR / Android XR гарнитур (где нет задней/передней камеры в мобильном понимании)
+          try {
+            stream = await navigator.mediaDevices.getUserMedia({
+              video: true,
+              audio: false,
+            });
+          } catch (genErr) {
+            throw genErr;
+          }
+        }
+
+        if (stream) {
+          videoElement.srcObject = stream;
+          try {
+            await videoElement.play();
+          } catch (playErr) {
+            console.warn('Автовоспроизведение видеопотока камеры:', playErr);
+          }
+          return stream;
+        }
+      } else {
+        const noApiMsg = 'API navigator.mediaDevices.getUserMedia не поддерживается данным браузером или заблокировано настройками безопасности.';
+        console.warn(noApiMsg);
+        if (typeof uiAlert === 'function') {
+          await uiAlert(noApiMsg, 'Камера недоступна', 'warning');
+        }
       }
     } catch (err) {
-      console.warn('Физическая веб-камера недоступна, доступен генератор тестового диагностического кадра:', err);
+      console.warn('Физическая веб-камера недоступна:', err);
+      const userErr = err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError'
+        ? 'Доступ к камере отклонен пользователем или разрешениями операционной системы.'
+        : 'Ошибка инициализации камеры: ' + (err.message || err.name || 'неизвестная ошибка');
+      if (typeof uiAlert === 'function') {
+        await uiAlert(userErr, 'Доступ к камере', 'warning');
+      }
     }
     return null;
   }
@@ -2738,7 +2812,7 @@
 
   async function createNewSession(projectId) {
     if (state.isDemo) {
-      const newId = 'demo-sess-' + Date.now();
+      const newId = generateUuidV4();
       const projIdVal = projectId ? (isNaN(Number(projectId)) ? projectId : Number(projectId)) : null;
       const newSess = {
         id: newId,

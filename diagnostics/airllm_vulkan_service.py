@@ -287,31 +287,50 @@ def _create_adaptive_airllm_model(
             except Exception:
                 pass
 
-            # 2. Адаптивный расчет резидентных слоев в VRAM
+            # 2. Адаптивный динамический расчет резидентных слоев в VRAM
             decoder_indices = list(range(1, 49))
             streamed_indices: List[int] = []
 
             if torch.cuda.is_available() and str(self.running_device).startswith("cuda"):
+                import gc
+                gc.collect()
                 torch.cuda.empty_cache()
-                free_b, total_b = torch.cuda.mem_get_info(0)
-                reserved_unallocated_b = torch.cuda.memory_reserved(0) - torch.cuda.memory_allocated(0)
-                usable_free_mb = (free_b + reserved_unallocated_b) // (1024 * 1024)
-                # Резерв под KV-кэш 32K окна + декомпрессию активного слоя W4A16
-                kv_and_stream_reserve_mb = 1350
-                layer_budget_mb = max(0, usable_free_mb - kv_and_stream_reserve_mb)
 
-                loaded_mb = 0.0
+                # Минимальный безопасный запас VRAM под динамический KV-кэш и рабочую область активного слоя (по умолчанию 350 МБ)
+                min_safety_headroom_mb = int(os.environ.get("VRAM_HEADROOM_MB", "350"))
+                target_gpu_layers_env = os.environ.get("VULKAN_GPU_LAYERS") or os.environ.get("AIRLLM_GPU_LAYERS")
+                max_target_layers = int(target_gpu_layers_env) if target_gpu_layers_env else 48
+
                 for idx in decoder_indices:
                     state_dict = self.load_layer_to_cpu(self.layer_names[idx])
                     shard_mb = sum(t.numel() * t.element_size() for t in state_dict.values()) / (1024 * 1024)
-                    if loaded_mb + shard_mb <= layer_budget_mb:
-                        self.move_layer_to_device(state_dict)
-                        del state_dict
-                        loaded_mb += shard_mb
-                        self.resident_gpu_layers_count += 1
-                    else:
-                        self._pinned_cpu_cache[idx] = state_dict
-                        streamed_indices.append(idx)
+
+                    torch.cuda.empty_cache()
+                    free_b, _ = torch.cuda.mem_get_info(0)
+                    reserved_unallocated_b = torch.cuda.memory_reserved(0) - torch.cuda.memory_allocated(0)
+                    curr_usable_free_mb = (free_b + reserved_unallocated_b) // (1024 * 1024)
+
+                    # Закрепляем слой в GPU VRAM, если остается безопасный запас памяти
+                    if (
+                        self.resident_gpu_layers_count < max_target_layers
+                        and (curr_usable_free_mb - shard_mb) >= min_safety_headroom_mb
+                    ):
+                        try:
+                            self.move_layer_to_device(state_dict)
+                            del state_dict
+                            self.resident_gpu_layers_count += 1
+                            continue
+                        except RuntimeError as oom_exc:
+                            logger.warning(
+                                "[AirLLM Gemma 4] Нехватка VRAM при закреплении слоя %d (%s). Переход на PCIe DMA стриминг.",
+                                idx,
+                                oom_exc,
+                            )
+                            torch.cuda.empty_cache()
+
+                    # Слой не поместился в VRAM — отправляем в быстрый PCIe DMA стриминг
+                    self._pinned_cpu_cache[idx] = state_dict
+                    streamed_indices.append(idx)
             else:
                 streamed_indices = decoder_indices
 

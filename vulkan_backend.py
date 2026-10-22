@@ -119,9 +119,6 @@ def _detect_vram_mb() -> tuple[int, int]:
     except Exception:
         pass
 
-    default_total = int(os.environ.get("MAX_VRAM_MB", os.environ.get("AUTODIAG_VRAM_MB", "8192")))
-    default_free = int(os.environ.get("FREE_VRAM_MB", str(int(default_total * 0.84))))
-
     nvidia_smi = shutil.which("nvidia-smi")
     if nvidia_smi:
         try:
@@ -145,6 +142,16 @@ def _detect_vram_mb() -> tuple[int, int]:
         except Exception:
             pass
 
+    env_total = os.environ.get("MAX_VRAM_MB", os.environ.get("AUTODIAG_VRAM_MB"))
+    if env_total and env_total.strip().lower() not in ("auto", "0", ""):
+        try:
+            default_total = int(env_total)
+        except ValueError:
+            default_total = 8192
+    else:
+        default_total = 8192
+
+    default_free = int(os.environ.get("FREE_VRAM_MB", str(int(default_total * 0.84))))
     return default_total, default_free
 
 

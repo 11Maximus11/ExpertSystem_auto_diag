@@ -31,6 +31,22 @@ Write-Host "[AIdeal Auto] Проверка и подготовка послой�
 Write-Host "[AIdeal Auto] Применение миграций базы данных..." -ForegroundColor Cyan
 & $PythonExe manage.py migrate --noinput
 
-Write-Host "[AIdeal Auto] Запуск веб-интерфейса Django + предзагрузка AirLLM в GPU VRAM на http://127.0.0.1:$Port/ (AR-режим: http://127.0.0.1:$Port/ar/)" -ForegroundColor Green
+# Определение локальных IPv4 для подключения телефона и VR очков
+$LanIps = Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object {
+    $_.InterfaceAlias -notlike "*Loopback*" -and $_.InterfaceAlias -notlike "*vEthernet*" -and $_.IPAddress -notlike "169.254*"
+} | Select-Object -ExpandProperty IPAddress
+
+Write-Host "[AIdeal Auto] Веб-интерфейс готов к подключению:" -ForegroundColor Green
+Write-Host "  -> Локально на ПК:     http://127.0.0.1:$Port/ (AR: http://127.0.0.1:$Port/ar/)" -ForegroundColor Cyan
+foreach ($ip in $LanIps) {
+    Write-Host "  -> С телефона / очков: http://${ip}:$Port/ (AR: http://${ip}:$Port/ar/)" -ForegroundColor Yellow
+}
+
+$FwRule = Get-NetFirewallRule -DisplayName "*$Port*" -ErrorAction SilentlyContinue
+if (-not $FwRule) {
+    Write-Host "[Совет] Если телефон в сети Wi-Fi не может открыть сайт, разрешите порт в Брандмауэре Windows:" -ForegroundColor DarkYellow
+    Write-Host "  New-NetFirewallRule -DisplayName 'AIdeal Auto $Port' -Direction Inbound -LocalPort $Port -Protocol TCP -Action Allow" -ForegroundColor Gray
+}
+
 & $PythonExe manage.py runserver "0.0.0.0:$Port" --noreload
 

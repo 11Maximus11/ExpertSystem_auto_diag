@@ -18,6 +18,7 @@ torchvision>=0.20.0
 transformers>=4.50.0
 accelerate>=1.2.0
 bitsandbytes>=0.45.0
+faiss-cpu>=1.8.0
 airllm>=4.0.0
 safetensors>=0.4.5
 huggingface-hub>=0.25.0

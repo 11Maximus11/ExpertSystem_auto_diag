@@ -21,7 +21,6 @@
         "GGML_VULKAN": "1",
         "LLAMA_VULKAN": "1",
         "VULKAN_DEVICE": "0",
-        "MAX_VRAM_MB": "8192",
         "LLM_CTX_SIZE": "32768",
         "AIRLLM_MODEL_ID": "google/gemma-4-12B-it-qat-w4a16-ct",
         "AIRLLM_COMPRESSION": "w4a16"
@@ -45,7 +44,6 @@
       "env": {
         "PYTHONUTF8": "1",
         "GGML_VULKAN": "1",
-        "MAX_VRAM_MB": "8192",
         "AUTODIAG_FAST_TEST": "1"
       }
     },
@@ -59,8 +57,7 @@
       "console": "integratedTerminal",
       "env": {
         "PYTHONUTF8": "1",
-        "GGML_VULKAN": "1",
-        "MAX_VRAM_MB": "8192"
+        "GGML_VULKAN": "1"
       }
     },
     {
@@ -74,7 +71,6 @@
       "env": {
         "PYTHONUTF8": "1",
         "GGML_VULKAN": "1",
-        "MAX_VRAM_MB": "8192",
         "LLM_CTX_SIZE": "32768",
         "AIRLLM_MODEL_ID": "google/gemma-4-12B-it-qat-w4a16-ct"
       }

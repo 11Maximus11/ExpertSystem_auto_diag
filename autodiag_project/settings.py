@@ -109,9 +109,42 @@ DIAGNOSTIC_SAMPLE_PATH = BASE_DIR / "VehicleDiagnosticSample.txt"
 MODELS_DIR = BASE_DIR / "models"
 AIRLLM_SHARDS_DIR = MODELS_DIR / "airllm_shards"
 
-# Настройки Vulkan и AirLLM под 8 ГБ видеопамяти
+# Настройки Vulkan и AirLLM с динамическим расчетом видеопамяти GPU
 VULKAN_ENABLED = os.environ.get("VULKAN_ACCELERATION", os.environ.get("GGML_VULKAN", "1")) == "1"
-MAX_VRAM_MB = int(os.environ.get("MAX_VRAM_MB", "8192"))
+
+def _detect_system_vram_mb() -> int:
+    """Динамически определяет объем физической видеопамяти GPU (VRAM) в МБ."""
+    env_val = os.environ.get("MAX_VRAM_MB", os.environ.get("AUTODIAG_VRAM_MB"))
+    if env_val and env_val.strip().lower() not in ("auto", "0", ""):
+        try:
+            return int(env_val)
+        except ValueError:
+            pass
+    try:
+        import torch
+        if torch.cuda.is_available():
+            _, total_b = torch.cuda.mem_get_info(0)
+            return int(total_b // (1024 * 1024))
+    except Exception:
+        pass
+    import shutil, subprocess
+    nvidia_smi = shutil.which("nvidia-smi")
+    if nvidia_smi:
+        try:
+            res = subprocess.run(
+                [nvidia_smi, "--query-gpu=memory.total", "--format=csv,noheader,nounits"],
+                capture_output=True,
+                text=True,
+                timeout=3,
+                errors="ignore",
+            )
+            if res.returncode == 0 and res.stdout.strip():
+                return int(float(res.stdout.strip().splitlines()[0]))
+        except Exception:
+            pass
+    return 8192
+
+MAX_VRAM_MB = _detect_system_vram_mb()
 DEFAULT_CTX_SIZE = int(os.environ.get("LLM_CTX_SIZE", "32768"))
 AIRLLM_DEFAULT_MODEL = os.environ.get("AIRLLM_MODEL_ID", "google/gemma-4-12B-it-qat-w4a16-ct")
 AIRLLM_DEFAULT_COMPRESSION = os.environ.get("AIRLLM_COMPRESSION", "4bit")

@@ -811,7 +811,14 @@ def api_ask_expert(request: HttpRequest) -> JsonResponse:
         uploaded_files = request.FILES.getlist("attachments")
 
     user = request.user if request.user.is_authenticated else None
-    session = DialogSession.objects.filter(pk=session_id).first() if session_id else None
+    valid_uuid = None
+    if session_id:
+        try:
+            valid_uuid = uuid.UUID(str(session_id))
+        except (ValueError, TypeError, AttributeError):
+            valid_uuid = None
+
+    session = DialogSession.objects.filter(pk=valid_uuid).first() if valid_uuid else None
     if session and user and session.user is None:
         session.user = user
         session.save(update_fields=["user"])
@@ -821,11 +828,8 @@ def api_ask_expert(request: HttpRequest) -> JsonResponse:
 
     if not session:
         session = _ensure_default_session(user=user)
-        if session_id and is_demo_request:
-            try:
-                session.id = uuid.UUID(str(session_id))
-            except Exception:
-                pass
+        if valid_uuid and is_demo_request:
+            session.id = valid_uuid
 
     # ШАГ 1: Мгновенный принудительный сброс старого воркера контекста без ожидания!
     worker_was_preempted = False if is_demo_request else context_worker_manager.preempt_if_running(str(session.id))
@@ -1386,7 +1390,11 @@ def api_delete_messages(request: HttpRequest) -> JsonResponse:
 
     session = None
     if session_id:
-        session = DialogSession.objects.filter(pk=session_id).first()
+        try:
+            val_uuid = uuid.UUID(str(session_id))
+            session = DialogSession.objects.filter(pk=val_uuid).first()
+        except (ValueError, TypeError, AttributeError):
+            session = None
     elif message_ids:
         first_msg = ChatMessage.objects.filter(id__in=message_ids).select_related("session").first()
         if first_msg:

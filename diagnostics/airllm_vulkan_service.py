@@ -296,10 +296,19 @@ def _create_adaptive_airllm_model(
                 gc.collect()
                 torch.cuda.empty_cache()
 
-                # Минимальный безопасный запас VRAM под динамический KV-кэш и рабочую область активного слоя (по умолчанию 350 МБ)
-                min_safety_headroom_mb = int(os.environ.get("VRAM_HEADROOM_MB", "350"))
+                # Минимальный безопасный запас VRAM под динамический KV-кэш и рабочую область активного слоя (по умолчанию 180 МБ)
+                min_safety_headroom_mb = int(os.environ.get("VRAM_HEADROOM_MB", "180"))
                 target_gpu_layers_env = os.environ.get("VULKAN_GPU_LAYERS") or os.environ.get("AIRLLM_GPU_LAYERS")
                 max_target_layers = int(target_gpu_layers_env) if target_gpu_layers_env else 48
+
+                free_init_b, total_init_b = torch.cuda.mem_get_info(0)
+                logger.info(
+                    "[AirLLM Gemma 4] Инициализация VRAM GPU (%s): свободно %d МБ / всего %d МБ | целевой буфер: %d МБ",
+                    torch.cuda.get_device_name(0),
+                    free_init_b // (1024 * 1024),
+                    total_init_b // (1024 * 1024),
+                    min_safety_headroom_mb,
+                )
 
                 for idx in decoder_indices:
                     state_dict = self.load_layer_to_cpu(self.layer_names[idx])
@@ -332,6 +341,17 @@ def _create_adaptive_airllm_model(
                     self._pinned_cpu_cache[idx] = state_dict
                     streamed_indices.append(idx)
             else:
+                if not torch.cuda.is_available():
+                    logger.error(
+                        "[AirLLM Gemma 4] КРИТИЧЕСКОЕ ПРЕДУПРЕЖДЕНИЕ: torch.cuda.is_available() == False! "
+                        "PyTorch запущен в режиме CPU. Для использования видеокарты RTX 4060 установите PyTorch с поддержкой CUDA: "
+                        "pip install --force-reinstall torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu126"
+                    )
+                else:
+                    logger.warning(
+                        "[AirLLM Gemma 4] Устройство '%s' не является CUDA. Все слои переведены на CPU.",
+                        self.running_device,
+                    )
                 streamed_indices = decoder_indices
 
             self._streamed_indices = streamed_indices

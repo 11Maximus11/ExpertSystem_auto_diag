@@ -1,28 +1,47 @@
+--index-url https://download.pytorch.org/whl/cu126
+--extra-index-url https://pypi.org/simple
+
+# Веб-фреймворк Django и асинхронный сервер
 django>=5.1
+fastapi>=0.115
+uvicorn>=0.30
 pydantic>=2.9
 jsonschema>=4.23
-httpx>=0.27
-openai>=1.50
 requests>=2.32
-numpy>=2.0
-rank-bm25>=0.2.2
-pillow>=10.4
-pypdf>=5.0
-python-docx>=1.1
-python-dotenv>=1.0
-uvicorn>=0.30
-fastapi>=0.115
+httpx>=0.27
 psutil>=6.0
+python-dotenv>=1.0
+
+# Машинное обучение, PyTorch (CUDA 12.6 для Python 3.13) и послойный инференс AirLLM
 torch>=2.5.0
 torchvision>=0.20.0
+torchaudio>=2.5.0
 transformers>=4.50.0
 accelerate>=1.2.0
 bitsandbytes>=0.45.0
-faiss-cpu>=1.8.0
 airllm>=4.0.0
 safetensors>=0.4.5
 huggingface-hub>=0.25.0
+tokenizers>=0.21.0
 sentencepiece>=0.2.0
 scipy>=1.14.0
-tokenizers>=0.21.0
+numpy>=2.0
 tqdm>=4.66.0
+einops>=0.8.0
+
+# Гибридный RAG-поиск (BERT + FAISS + BM25 + CrossEncoder)
+sentence-transformers>=3.0.0
+faiss-cpu>=1.8.0
+rank-bm25>=0.2.2
+scikit-learn>=1.5.0
+
+# Мультимодальная обработка: аудио, изображения, документы и отчеты
+av>=12.0.0
+pillow>=10.4
+pypdf>=5.0
+python-docx>=1.1
+python-pptx>=1.0.0
+xlsxwriter>=3.2.0
+
+# Внешние AI-провайдеры
+openai>=1.50

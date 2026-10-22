@@ -20,9 +20,21 @@ if (-not (Test-Path $PythonExe)) {
     Write-Host "[AIdeal Auto] Создание виртуального окружения .venv и установка PyTorch (CUDA) + зависимостей..." -ForegroundColor Cyan
     python -m venv .venv
     & $PythonExe -m pip install --upgrade pip
-    & $PythonExe -m pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
+    & $PythonExe -m pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu126
     & $PythonExe -m pip install triton-windows flash-linear-attention
     & $PythonExe -m pip install -r requirements.txt
+} else {
+    # Автоматическая проверка поддержки CUDA в PyTorch и наличия всех пакетов
+    $CudaStatus = & $PythonExe -c "import torch; print('CUDA_OK' if torch.cuda.is_available() else 'NO_CUDA')" 2>$null
+    if ($CudaStatus -notmatch "CUDA_OK") {
+        Write-Host "[AIdeal Auto] ВНИМАНИЕ: PyTorch в .venv установлен БЕЗ CUDA! Переустановка с CUDA 12.6..." -ForegroundColor Yellow
+        & $PythonExe -m pip install --force-reinstall --no-deps torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu126
+    }
+    $DepsCheck = & $PythonExe -c "import sentence_transformers, faiss, av" 2>$null
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "[AIdeal Auto] Установка недостающих модулей (sentence-transformers, faiss, av)..." -ForegroundColor Cyan
+        & $PythonExe -m pip install -r requirements.txt
+    }
 }
 
 Write-Host "[AIdeal Auto] Проверка и подготовка послойных шардов модели AirLLM (Google Gemma 4 12B) и RAG BERT..." -ForegroundColor Cyan

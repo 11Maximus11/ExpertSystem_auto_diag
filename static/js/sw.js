@@ -1,4 +1,4 @@
-const CACHE_NAME = 'autodiag-pro-ai-v2';
+const CACHE_NAME = 'aideal-auto-v3';
 const PRECACHE_URLS = [
   '/',
   '/manifest.json',

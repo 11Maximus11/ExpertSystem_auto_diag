@@ -42,33 +42,47 @@ def estimate_tokens_count(text: str) -> int:
     return max(1, int(len(text) / 3.2))
 
 
-def format_assistant_core_memory(msg: ChatMessage, max_chars: int = 380) -> str:
+def format_assistant_core_memory(msg: ChatMessage, max_chars: int = 1200) -> str:
     """
-    Извлекает основную техническую суть ответа модели (резюме + коды неисправностей + ключевые шаги),
-    чтобы модель в чате гарантированно помнила свои последние 5 ответов.
+    Извлекает техническую суть ответа модели (текст + диагноз + статус шагов чеклиста),
+    чтобы модель в чате помнила ход диагностики, проверенные гипотезы и выполненные шаги.
     """
     sdata = msg.structured_data if isinstance(msg.structured_data, dict) else {}
     reply = (sdata.get("mentor_reply") or msg.content or "").strip()
     faults = sdata.get("faults") or []
     steps = sdata.get("repair_steps") or []
 
-    parts: List[str] = []
-    if reply:
-        parts.append(reply[:240])
+    meta_parts: List[str] = []
     if faults:
-        fault_Str = ", ".join(
+        fault_str = ", ".join(
             f"{f.get('code', 'N/A')}: {f.get('title', '')}" for f in faults[:3] if isinstance(f, dict)
         )
-        if fault_Str:
-            parts.append(f"[Диагноз: {fault_Str}]")
+        if fault_str:
+            meta_parts.append(f"[Диагноз: {fault_str}]")
     if steps:
-        done_cnt = sum(1 for s in steps if isinstance(s, dict) and s.get("completed"))
-        step_titles = "; ".join(
-            f"{s.get('step_number')}. {s.get('title', '')}" for s in steps[:3] if isinstance(s, dict)
-        )
-        parts.append(f"[План ({done_cnt}/{len(steps)} выполнено): {step_titles}]")
+        done_steps = [
+            f"{s.get('step_number')}. {s.get('title', '')}"
+            for s in steps
+            if isinstance(s, dict) and s.get("completed")
+        ]
+        pending_steps = [
+            f"{s.get('step_number')}. {s.get('title', '')}"
+            for s in steps
+            if isinstance(s, dict) and not s.get("completed")
+        ]
+        if done_steps:
+            meta_parts.append(f"[Выполнено пользователем: {'; '.join(done_steps[:5])}]")
+        if pending_steps:
+            meta_parts.append(f"[Осталось по плану: {'; '.join(pending_steps[:5])}]")
 
-    combined = " ".join(parts).strip()
+    suffix = (" " + " ".join(meta_parts)).rstrip() if meta_parts else ""
+    reply_budget = max(240, max_chars - len(suffix) - 1)
+    if reply and len(reply) > reply_budget:
+        reply_slice = reply[:reply_budget].rsplit(" ", 1)[0].rstrip(",;:-") + "…"
+    else:
+        reply_slice = reply
+
+    combined = f"{reply_slice}{suffix}".strip()
     return combined[:max_chars]
 
 

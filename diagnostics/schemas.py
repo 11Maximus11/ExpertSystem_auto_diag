@@ -155,6 +155,10 @@ class DiagnosticStructuredResponse(BaseModel):
         default_factory=list,
         description="Список инструментов Function Calling, использованных при формировании ответа",
     )
+    vehicle_detected: str = Field(
+        default="",
+        description="Марка, модель, год выпуска или двигатель автомобиля, выявленные из диалога",
+    )
 
 
 DIAGNOSTIC_JSON_SCHEMA: Dict[str, Any] = DiagnosticStructuredResponse.model_json_schema()
@@ -192,7 +196,10 @@ DIAGNOSTIC_TOOLS_OPENAI_FORMAT: List[Dict[str, Any]] = [
                     },
                     "system": {
                         "type": "string",
-                        "enum": ["all", "engine", "transmission", "brakes", "electrical", "suspension", "battery"],
+                        "enum": [
+                            "all", "engine", "cooling", "transmission", "brakes",
+                            "electrical", "suspension", "chassis", "hybrid", "battery",
+                        ],
                         "description": "Фильтр по автомобильной системе",
                     },
                 },
@@ -210,7 +217,7 @@ DIAGNOSTIC_TOOLS_OPENAI_FORMAT: List[Dict[str, Any]] = [
                 "properties": {
                     "system": {
                         "type": "string",
-                        "description": "Система автомобиля (engine, transmission, brakes, electrical, suspension, battery)",
+                        "description": "Система автомобиля (engine, cooling, transmission, brakes, electrical, suspension, chassis, hybrid, battery)",
                     },
                     "codes": {
                         "type": "array",
@@ -225,30 +232,181 @@ DIAGNOSTIC_TOOLS_OPENAI_FORMAT: List[Dict[str, Any]] = [
 ]
 
 
+def _strip_reasoning_tokens(text: str) -> str:
+    """Удаляет скрытые теги рассуждений Gemma / Thinking перед парсингом текста и JSON."""
+    cleaned = re.sub(r"<\|channel>thought.*?<channel\|>", "", text or "", flags=re.DOTALL)
+    cleaned = re.sub(r"<think>.*?</think>", "", cleaned, flags=re.DOTALL)
+    return cleaned.strip()
+
+
+def extract_prose_and_json_block(raw_output: str) -> tuple[str, Optional[str]]:
+    """
+    Разделяет гибридный ответ модели на текстовый комментарий диагноста (`prose`)
+    и сырой JSON-блок метаданных (если модель выдала fenced ```json ... ``` или объект JSON).
+    """
+    cleaned = _strip_reasoning_tokens(raw_output)
+    if not cleaned:
+        return "", None
+
+    fence_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", cleaned, flags=re.DOTALL)
+    if fence_match:
+        prose_before = cleaned[: fence_match.start()].strip()
+        prose_after = cleaned[fence_match.end() :].strip()
+        prose = (f"{prose_before}\n\n{prose_after}".strip() if prose_before and prose_after else (prose_before or prose_after))
+        return prose, fence_match.group(1)
+
+    brace_start = cleaned.find("{")
+    brace_end = cleaned.rfind("}")
+    if brace_start != -1 and brace_end != -1 and brace_end > brace_start:
+        prose_before = cleaned[:brace_start].strip()
+        return prose_before, cleaned[brace_start : brace_end + 1]
+
+    return cleaned, None
+
+
+def _normalize_llm_payload(parsed: Dict[str, Any]) -> Dict[str, Any]:
+    """Приводит небольшие отклонения полей от LLM к строгой схеме DiagnosticStructuredResponse."""
+    valid_types = {"diagnosis", "followup", "visual_inspection", "general"}
+    rt = str(parsed.get("response_type") or "diagnosis").strip().lower()
+    parsed["response_type"] = rt if rt in valid_types else "diagnosis"
+
+    if parsed.get("follow_up_question") is None:
+        parsed["follow_up_question"] = "Подсказать подробнее по результатам проверок?"
+    else:
+        parsed["follow_up_question"] = str(parsed["follow_up_question"]).strip()
+
+    if isinstance(parsed.get("recommendations"), list):
+        parsed["recommendations"] = [str(r).strip() for r in parsed["recommendations"] if str(r).strip()]
+
+    norm_faults: List[Dict[str, Any]] = []
+    for f in parsed.get("faults") or []:
+        if not isinstance(f, dict):
+            continue
+        title = str(f.get("title") or f.get("description") or "Выявленная неисправность").strip()
+        sev = str(f.get("severity") or "warning").strip().lower()
+        if sev not in ("critical", "warning", "normal"):
+            sev = "warning"
+        try:
+            conf = max(0, min(100, int(float(f.get("confidence", 85)))))
+        except (TypeError, ValueError):
+            conf = 85
+        try:
+            hi = max(0.0, min(100.0, float(f.get("health_index", 70.0))))
+        except (TypeError, ValueError):
+            hi = 70.0
+        norm_faults.append(
+            {
+                "code": str(f.get("code") or "OBD-DIAG").strip().upper(),
+                "system": str(f.get("system") or "engine").strip().lower(),
+                "system_ru": str(f.get("system_ru") or "Система автомобиля").strip(),
+                "title": title[:160],
+                "severity": sev,
+                "confidence": conf,
+                "health_index": hi,
+                "root_cause": str(f.get("root_cause") or f.get("cause") or title).strip(),
+            }
+        )
+    if "faults" in parsed:
+        parsed["faults"] = norm_faults
+
+    norm_inv: List[Dict[str, Any]] = []
+    valid_cats = {"tool", "part", "consumable", "safety"}
+    for idx, item in enumerate(parsed.get("inventory") or [], start=1):
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "").strip()
+        if not name:
+            continue
+        cat = str(item.get("category") or "tool").strip().lower()
+        if cat not in valid_cats:
+            cat = "tool"
+        norm_inv.append(
+            {
+                "id": str(item.get("id") or f"inv_llm_{idx}").strip(),
+                "name": name,
+                "category": cat,
+                "spec": str(item.get("spec") or "").strip(),
+                "required": bool(item.get("required", True)),
+                "checked": bool(item.get("checked", False)),
+            }
+        )
+    if "inventory" in parsed:
+        parsed["inventory"] = norm_inv
+
+    norm_steps: List[Dict[str, Any]] = []
+    for idx, st in enumerate(parsed.get("repair_steps") or [], start=1):
+        if not isinstance(st, dict):
+            continue
+        title = str(st.get("title") or "").strip()
+        instr = str(st.get("instruction") or title).strip()
+        if not title and not instr:
+            continue
+        try:
+            step_num = max(1, int(st.get("step_number") or idx))
+        except (TypeError, ValueError):
+            step_num = idx
+        try:
+            est_min = max(1, int(st.get("estimated_minutes") or 15))
+        except (TypeError, ValueError):
+            est_min = 15
+        norm_steps.append(
+            {
+                "step_number": step_num,
+                "title": (title or f"Шаг {step_num}")[:140],
+                "instruction": instr or title,
+                "torque_or_spec": str(st.get("torque_or_spec") or "").strip(),
+                "safety_warning": str(st.get("safety_warning") or "").strip(),
+                "verification_hint": str(st.get("verification_hint") or "").strip(),
+                "estimated_minutes": est_min,
+                "completed": bool(st.get("completed", False)),
+            }
+        )
+    if "repair_steps" in parsed:
+        parsed["repair_steps"] = norm_steps
+
+    if parsed.get("vehicle_detected") is None:
+        parsed["vehicle_detected"] = ""
+    else:
+        parsed["vehicle_detected"] = str(parsed["vehicle_detected"]).strip()[:120]
+
+    return parsed
+
+
 def validate_and_coerce_structured_json(
     raw_output: str,
     fallback_response: Optional[DiagnosticStructuredResponse] = None,
 ) -> DiagnosticStructuredResponse:
     """
-    Извлекает JSON из ответа языковой модели, проверяет его через JSON Schema и Pydantic v2,
-    применяет автообрезку по последнему предложению и возвращает валидный DiagnosticStructuredResponse.
+    Извлекает JSON и текст диагноста из ответа языковой модели, проверяет через JSON Schema и Pydantic v2,
+    сохраняет осознанно пустые списки при `followup`/`general`, и подрезает оборванный текст по предложению.
     """
-    cleaned = (raw_output or "").strip()
-
-    fence_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", cleaned, flags=re.DOTALL)
-    if fence_match:
-        cleaned = fence_match.group(1)
-    else:
-        brace_start = cleaned.find("{")
-        brace_end = cleaned.rfind("}")
-        if brace_start != -1 and brace_end != -1 and brace_end > brace_start:
-            cleaned = cleaned[brace_start : brace_end + 1]
+    prose_part, json_str = extract_prose_and_json_block(raw_output)
 
     try:
-        parsed = json.loads(cleaned)
-        if fallback_response is not None and isinstance(parsed, dict):
+        if not json_str:
+            raise ValueError("JSON block not found")
+        json_str = re.sub(r",\s*([}\]])", r"\1", json_str)
+        parsed = json.loads(json_str)
+        if not isinstance(parsed, dict):
+            raise ValueError("Parsed JSON root is not an object")
+
+        if prose_part and not (parsed.get("mentor_reply") or "").strip():
+            parsed["mentor_reply"] = prose_part
+
+        parsed = _normalize_llm_payload(parsed)
+
+        if fallback_response is not None:
             fb_dict = fallback_response.model_dump()
+            resp_type = parsed.get("response_type") or fb_dict.get("response_type") or "diagnosis"
+            allow_scaffold_arrays = resp_type in ("diagnosis", "visual_inspection")
             for k, v in fb_dict.items():
+                if k == "vehicle_detected":
+                    continue
+                if not allow_scaffold_arrays and k in (
+                    "faults", "inventory", "repair_steps", "telemetry_notes", "recommendations"
+                ):
+                    parsed.setdefault(k, [])
+                    continue
                 if k not in parsed or parsed[k] in (None, "", []):
                     parsed[k] = v
 
@@ -258,7 +416,9 @@ def validate_and_coerce_structured_json(
         return validated
     except Exception:
         if fallback_response is not None:
-            plain_text = re.sub(r"```.*?```", "", raw_output or "", flags=re.DOTALL).strip()
+            plain_text = _strip_reasoning_tokens(raw_output)
+            plain_text = re.sub(r"```.*?```", "", plain_text, flags=re.DOTALL)
+            plain_text = re.sub(r"```(?:json)?[\s\S]*$", "", plain_text).strip()
             if plain_text and len(plain_text) > 15 and not plain_text.startswith("{"):
                 fallback_response.mentor_reply = truncate_to_last_sentence(plain_text)
             else:
@@ -268,5 +428,5 @@ def validate_and_coerce_structured_json(
         return DiagnosticStructuredResponse(
             response_type="followup",
             summary_title="Ответ эксперта ИИдеал Авто",
-            mentor_reply=truncate_to_last_sentence(raw_output) or "Диагностический анализ завершён.",
+            mentor_reply=truncate_to_last_sentence(prose_part or raw_output) or "Диагностический анализ завершён.",
         )

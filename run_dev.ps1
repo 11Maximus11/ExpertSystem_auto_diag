@@ -1,4 +1,4 @@
-# Скрипт быстрого запуска «ИИдеал Авто» (AIdeal Auto) на Windows (PowerShell)
+﻿# Скрипт быстрого запуска «ИИдеал Авто» (AIdeal Auto) на Windows (PowerShell)
 # На базе послойного AirLLM (Google Gemma 4 12B Unified Text+Vision+Audio) + RAG (BERT/FAISS/BM25/CrossEncoder)
 
 param(
@@ -25,9 +25,23 @@ if (-not (Test-Path $PythonExe)) {
     & $PythonExe -m pip install -r requirements.txt
 } else {
     # Автоматическая проверка поддержки CUDA в PyTorch и наличия всех пакетов
-    $CudaStatus = & $PythonExe -c "import torch; print('CUDA_OK' if torch.cuda.is_available() else 'NO_CUDA')" 2>$null
-    if ($CudaStatus -notmatch "CUDA_OK") {
-        Write-Host "[AIdeal Auto] ВНИМАНИЕ: PyTorch в .venv установлен БЕЗ CUDA! Переустановка с CUDA 12.6..." -ForegroundColor Yellow
+    $CudaStatus = & $PythonExe -c "
+import torch
+if not torch.cuda.is_available():
+    print('NO_CUDA')
+else:
+    cc = torch.cuda.get_device_capability(0)
+    try:
+        _ = (torch.zeros(4, device='cuda') + 1).sum().item()
+        print('CUDA_OK')
+    except Exception:
+        print('NEED_CU132' if cc[0] >= 10 else 'NO_CUDA')
+" 2>$null
+    if ($CudaStatus -match "NEED_CU132") {
+        Write-Host "[AIdeal Auto] Обнаружен GPU Blackwell (sm_120): установка PyTorch с CUDA 13.2..." -ForegroundColor Yellow
+        & $PythonExe -m pip install --force-reinstall --no-deps torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu132
+    } elseif ($CudaStatus -notmatch "CUDA_OK") {
+        Write-Host "[AIdeal Auto] ВНИМАНИЕ: PyTorch в .venv не поддерживает CUDA для текущего GPU! Переустановка с CUDA 12.6..." -ForegroundColor Yellow
         & $PythonExe -m pip install --force-reinstall --no-deps torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu126
     }
     $DepsCheck = & $PythonExe -c "import sentence_transformers, faiss, av" 2>$null

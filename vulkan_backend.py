@@ -254,7 +254,8 @@ def get_vulkan_status(model_path: Optional[Path] = None) -> VulkanDeviceInfo:
     total_mb, free_mb = _detect_vram_mb()
 
     devices: List[Dict[str, str]] = vk_summary.get("devices", [])
-    primary = devices[0] if devices else {}
+    discrete = [d for d in devices if "DISCRETE" in d.get("deviceType", "").upper()]
+    primary = discrete[0] if discrete else (devices[0] if devices else {})
 
     device_name = primary.get("deviceName", "")
     if not device_name:

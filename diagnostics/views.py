@@ -453,6 +453,15 @@ def api_sessions(request: HttpRequest) -> JsonResponse:
     return JsonResponse(session.to_dict(), status=201)
 
 
+def _can_access_session(request: HttpRequest, session: Optional[DialogSession]) -> bool:
+    """Проверяет право доступа: открытая демо/анонимная ORM-сессия (user=None) или владелец-пользователь."""
+    if session is None:
+        return False
+    if session.user_id is None:
+        return True
+    return bool(request.user.is_authenticated and session.user_id == request.user.id)
+
+
 @csrf_exempt
 @require_http_methods(["GET", "PATCH", "DELETE"])
 def api_session_detail(request: HttpRequest, session_id: uuid.UUID) -> JsonResponse:
@@ -460,7 +469,7 @@ def api_session_detail(request: HttpRequest, session_id: uuid.UUID) -> JsonRespo
     if user:
         session = DialogSession.objects.select_related("project").filter(pk=session_id, user=user).first()
     else:
-        session = DialogSession.objects.select_related("project").filter(pk=session_id).first()
+        session = DialogSession.objects.select_related("project").filter(pk=session_id, user__isnull=True).first()
 
     if not session:
         if not user:
@@ -639,6 +648,8 @@ def api_worker_status(request: HttpRequest, session_id: uuid.UUID) -> JsonRespon
     session = DialogSession.objects.filter(pk=session_id).first()
     if not session:
         return JsonResponse({"error": "Сессия не найдена"}, status=404)
+    if not _can_access_session(request, session):
+        return JsonResponse({"error": "Доступ к сессии запрещён"}, status=403)
 
     active_settings = SystemSettings.get_active()
     live = context_worker_manager.get_worker_state(str(session.id))
@@ -819,6 +830,11 @@ def api_ask_expert(request: HttpRequest) -> JsonResponse:
             valid_uuid = None
 
     session = DialogSession.objects.filter(pk=valid_uuid).first() if valid_uuid else None
+    if session and session.user_id is not None:
+        if user is None:
+            session = None
+        elif session.user_id != user.id:
+            return JsonResponse({"error": "Доступ к чужой сессии запрещён"}, status=403)
     if session and user and session.user is None:
         session.user = user
         session.save(update_fields=["user"])
@@ -1078,6 +1094,7 @@ def api_ask_expert(request: HttpRequest) -> JsonResponse:
             {
                 "session_id": str(session.id),
                 "session_title": session.title,
+                "vehicle_info": structured_response.vehicle_detected or session.vehicle_info or "",
                 "worker_preempted": False,
                 "worker_version": 0,
                 "worker_status": "idle",
@@ -1123,6 +1140,9 @@ def api_ask_expert(request: HttpRequest) -> JsonResponse:
     )
 
     structured_dict = structured_response.model_dump()
+    if structured_response.vehicle_detected and not (session.vehicle_info or "").strip():
+        session.vehicle_info = structured_response.vehicle_detected[:120]
+        session.save(update_fields=["vehicle_info", "updated_at"])
     for tc in structured_response.tool_calls:
         logger.debug(f"[Function Calling Debug] fn {tc.tool_name}({tc.arguments}) -> {tc.result_summary}")
 
@@ -1141,6 +1161,7 @@ def api_ask_expert(request: HttpRequest) -> JsonResponse:
         {
             "session_id": str(session.id),
             "session_title": session.title,
+            "vehicle_info": session.vehicle_info or "",
             "worker_preempted": worker_was_preempted,
             "worker_version": new_worker_version,
             "worker_status": "running",
@@ -1225,6 +1246,9 @@ def api_toggle_task(request: HttpRequest, message_id: int) -> JsonResponse:
                 }
             )
         return JsonResponse({"error": "Сообщение или чеклист не найдены"}, status=404)
+
+    if not _can_access_session(request, msg.session):
+        return JsonResponse({"error": "Доступ к сессии запрещён"}, status=403)
 
     sdata = dict(msg.structured_data)
     if item_type == "step":
@@ -1415,6 +1439,9 @@ def api_delete_messages(request: HttpRequest) -> JsonResponse:
             })
         return JsonResponse({"error": "Сессия не найдена"}, status=404)
 
+    if not _can_access_session(request, session):
+        return JsonResponse({"error": "Доступ к сессии запрещён"}, status=403)
+
     # Принудительно останавливаем фоновый воркер суммаризации, чтобы исключить конфликты
     context_worker_manager.preempt_if_running(str(session.id))
 
@@ -1472,6 +1499,8 @@ def api_delete_single_message(request: HttpRequest, message_id: int) -> JsonResp
         return JsonResponse({"error": "Сообщение не найдено"}, status=404)
 
     session = msg.session
+    if not _can_access_session(request, session):
+        return JsonResponse({"error": "Доступ к сессии запрещён"}, status=403)
     context_worker_manager.preempt_if_running(str(session.id))
     msg.delete()
 

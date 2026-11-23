@@ -180,13 +180,61 @@ SYSTEM_INVENTORY_TEMPLATES: Dict[str, List[Dict[str, Any]]] = {
             "required": True,
         },
     ],
+    "cooling": [
+        {
+            "name": "Опрессовщик системы охлаждения и тестер прорыва газов CO₂",
+            "category": "tool",
+            "spec": "Испытательное давление 1.2–1.5 бар (удержание > 10 мин)",
+            "required": True,
+        },
+        {
+            "name": "Диагностический сканер (Live Data ТОЖ, скважность термостата/вентилятора)",
+            "category": "tool",
+            "spec": "Контроль ΔT радиатора, пороги включения вентиляторов",
+            "required": True,
+        },
+        {
+            "name": "ИК-пирометр и рефрактометр / ареометр антифриза",
+            "category": "tool",
+            "spec": "Температура замерзания -35…-40 °C, допуск OEM",
+            "required": False,
+        },
+    ],
+    "hybrid": [
+        {
+            "name": "Диэлектрические перчатки до 1000 В и инструмент IEC 60900",
+            "category": "safety",
+            "spec": "Обязательное извлечение Service Plug и ожидание разряда 10 мин",
+            "required": True,
+        },
+        {
+            "name": "Диагностический сканер HV Battery / Inverter + мегаомметр 500–1000 В",
+            "category": "tool",
+            "spec": "Контроль изоляции > 10 МОм, ΔV модулей < 0.03 В, контур инвертора",
+            "required": True,
+        },
+    ],
+    "chassis": [
+        {
+            "name": "Механический стетоскоп и индикатор часового типа на стойке",
+            "category": "tool",
+            "spec": "Биение тормозного диска/ступицы ≤ 0.05–0.08 мм",
+            "required": True,
+        },
+        {
+            "name": "Монтажная лопатка и динамометрический ключ",
+            "category": "tool",
+            "spec": "Затяжка ступичных и рычажных болтов по моменту OEM на нагруженной подвеске",
+            "required": True,
+        },
+    ],
 }
 
 
 class W4A16Linear(nn.Module):
     """
     Модуль линейного слоя с прямой аппаратной декомпрессией весов W4A16 QAT
-    в bfloat16/float32 на GPU во время прямого прохода.
+    в bfloat16/float32 на GPU (и опциональным TensorCore int4pack-ускорением).
     """
     def __init__(self, in_features: int, out_features: int, group_size: int = 32, device: str = "meta"):
         super().__init__()
@@ -201,8 +249,65 @@ class W4A16Linear(nn.Module):
             torch.empty((out_features, in_features // group_size), dtype=torch.bfloat16, device=device),
             requires_grad=False,
         )
+        self.register_buffer("_int4_weight", None, persistent=False)
+        self.register_buffer("_int4_scales_zeros", None, persistent=False)
+
+    def prepare_int4pack(self) -> bool:
+        """Конвертирует резидентные веса W4A16 на CUDA GPU в быстрый формат _weight_int4pack_mm."""
+        if (
+            self.weight_packed is None
+            or self.weight_scale is None
+            or self.weight_packed.device.type != "cuda"
+            or self.out_features % 8 != 0
+            or self.in_features % 64 != 0
+            or self.group_size not in (32, 64, 128, 256)
+            or not hasattr(torch, "_convert_weight_to_int4pack")
+            or not hasattr(torch.ops.aten, "_weight_int4pack_mm")
+        ):
+            return False
+        try:
+            with torch.no_grad():
+                wp_u8 = self.weight_packed.detach().contiguous().view(torch.uint8)
+                swapped = ((wp_u8 & 0x0F) << 4) | (wp_u8 >> 4)
+                packed_4 = torch._convert_weight_to_int4pack(swapped, 2)
+                sz = torch.zeros(
+                    (self.in_features // self.group_size, self.out_features, 2),
+                    dtype=torch.bfloat16,
+                    device=self.weight_packed.device,
+                )
+                sz[:, :, 0] = self.weight_scale.detach().to(torch.bfloat16).T
+                probe_x = torch.zeros((1, self.in_features), dtype=torch.bfloat16, device=self.weight_packed.device)
+                _ = torch.ops.aten._weight_int4pack_mm(probe_x, packed_4, self.group_size, sz)
+
+            self._int4_weight = packed_4
+            self._int4_scales_zeros = sz
+            self.weight_packed = None
+            self.weight_scale = None
+            return True
+        except Exception as exc:
+            logger.debug("[W4A16Linear] int4pack fallback для (%d, %d): %s", self.in_features, self.out_features, exc)
+            self._int4_weight = None
+            self._int4_scales_zeros = None
+            return False
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if self._int4_weight is not None and self._int4_scales_zeros is not None and x.device.type == "cuda":
+            orig_dtype = x.dtype
+            x_2d = x.reshape(-1, self.in_features)
+            if x_2d.dtype != torch.bfloat16:
+                x_2d = x_2d.to(torch.bfloat16)
+            if not x_2d.is_contiguous():
+                x_2d = x_2d.contiguous()
+            out = torch.ops.aten._weight_int4pack_mm(
+                x_2d,
+                self._int4_weight,
+                self.group_size,
+                self._int4_scales_zeros,
+            )
+            if out.dtype != orig_dtype:
+                out = out.to(orig_dtype)
+            return out.reshape(*x.shape[:-1], self.out_features)
+
         wp_u8 = self.weight_packed.view(torch.uint8)
         lo = (wp_u8 & 0x0F).to(x.dtype) - 8.0
         hi = (wp_u8 >> 4).to(x.dtype) - 8.0
@@ -290,14 +395,15 @@ def _create_adaptive_airllm_model(
             # 2. Адаптивный динамический расчет резидентных слоев в VRAM
             decoder_indices = list(range(1, 49))
             streamed_indices: List[int] = []
+            packed_linears_count = 0
 
             if torch.cuda.is_available() and str(self.running_device).startswith("cuda"):
                 import gc
                 gc.collect()
                 torch.cuda.empty_cache()
 
-                # Минимальный безопасный запас VRAM под динамический KV-кэш и рабочую область активного слоя (по умолчанию 180 МБ)
-                min_safety_headroom_mb = int(os.environ.get("VRAM_HEADROOM_MB", "180"))
+                # Безопасный запас VRAM под динамический KV-кэш и рабочую область активного слоя (по умолчанию 384 МБ)
+                min_safety_headroom_mb = int(os.environ.get("VRAM_HEADROOM_MB", "384"))
                 target_gpu_layers_env = os.environ.get("VULKAN_GPU_LAYERS") or os.environ.get("AIRLLM_GPU_LAYERS")
                 max_target_layers = int(target_gpu_layers_env) if target_gpu_layers_env else 48
 
@@ -327,6 +433,11 @@ def _create_adaptive_airllm_model(
                         try:
                             self.move_layer_to_device(state_dict)
                             del state_dict
+                            layer_mod = self.layers[idx] if idx < len(self.layers) else None
+                            if layer_mod is not None:
+                                for sub in layer_mod.modules():
+                                    if isinstance(sub, W4A16Linear) and sub.prepare_int4pack():
+                                        packed_linears_count += 1
                             self.resident_gpu_layers_count += 1
                             continue
                         except RuntimeError as oom_exc:
@@ -404,8 +515,9 @@ def _create_adaptive_airllm_model(
                 torch.cuda.empty_cache()
 
             logger.info(
-                "[AirLLM Gemma 4 12B] В VRAM GPU закреплено: %d/48 слоёв | PCIe DMA стриминг: %d слоёв.",
+                "[AirLLM Gemma 4 12B] В VRAM GPU закреплено: %d/48 слоёв (int4pack ускорено: %d модулей) | PCIe DMA стриминг: %d слоёв.",
                 self.resident_gpu_layers_count,
+                packed_linears_count,
                 self.streamed_layers_count,
             )
 
@@ -728,6 +840,71 @@ class AirLLMVulkanOrchestrator:
     # =========================================================================
     # Вспомогательная сборка карточек неисправностей, инвентаря и шагов
     # =========================================================================
+    def _analyze_dialog_state(
+        self,
+        query: str,
+        recent_messages: List[Any],
+        attached_codes: List[str],
+        dtc_cards: Dict[str, Dict[str, Any]],
+        has_images: bool,
+        has_docs: bool,
+        vehicle_info: str = "",
+    ) -> Dict[str, Any]:
+        """Определяет контекст активного диагностического диалога (первичный разбор vs уточняющий шаг)."""
+        active_codes: List[str] = []
+        prior_diagnosis = False
+        prior_vehicle = (vehicle_info or "").strip()
+
+        for msg in recent_messages or []:
+            sdata = getattr(msg, "structured_data", None)
+            if isinstance(sdata, dict):
+                if sdata.get("faults") or sdata.get("response_type") in ("diagnosis", "visual_inspection"):
+                    prior_diagnosis = True
+                for f in sdata.get("faults") or []:
+                    if isinstance(f, dict) and f.get("code"):
+                        c = str(f["code"]).strip().upper()
+                        if c and c not in active_codes:
+                            active_codes.append(c)
+                if not prior_vehicle and sdata.get("vehicle_detected"):
+                    prior_vehicle = str(sdata["vehicle_detected"]).strip()
+            for c in getattr(msg, "dtc_codes", None) or []:
+                c_up = str(c).strip().upper()
+                if c_up and c_up not in active_codes:
+                    active_codes.append(c_up)
+
+        explicit_in_query = list(
+            dict.fromkeys([c.upper() for c in attached_codes] + self.rag_engine._extract_dtc_codes_from_text(query))
+        )
+        new_explicit_codes = [c for c in explicit_in_query if c not in active_codes]
+        is_greeting = (
+            self.rag_engine.is_general_or_greeting_query(query)
+            and not explicit_in_query
+            and not has_images
+            and not has_docs
+        )
+
+        q_low = (query or "").lower()
+        requests_new_plan = any(
+            kw in q_low
+            for kw in ("чеклист", "чек-лист", "план ремонта", "новый план", "список инструментов", "заказ-наряд")
+        )
+        is_followup = bool(
+            prior_diagnosis
+            and not new_explicit_codes
+            and not has_images
+            and not has_docs
+            and not is_greeting
+            and not requests_new_plan
+        )
+        return {
+            "has_prior_diagnosis": prior_diagnosis,
+            "active_codes": active_codes,
+            "explicit_in_query": explicit_in_query,
+            "is_greeting": is_greeting,
+            "is_followup": is_followup,
+            "vehicle_info": prior_vehicle,
+        }
+
     def _build_diagnostic_scaffolding(
         self,
         query: str,
@@ -737,7 +914,25 @@ class AirLLMVulkanOrchestrator:
         image_analyses: List[Dict[str, Any]],
         doc_analyses: List[Dict[str, Any]],
         voice_info: Optional[Dict[str, Any]] = None,
+        is_followup: bool = False,
+        vehicle_info: str = "",
     ) -> DiagnosticStructuredResponse:
+        # Уточняющий ход в активном диалоге: не дублируем шаблонный чеклист повторно
+        if is_followup:
+            return DiagnosticStructuredResponse(
+                response_type="followup",
+                summary_title="Уточнение и следующий шаг диагностики",
+                mentor_reply="",
+                faults=[],
+                inventory=[],
+                repair_steps=[],
+                telemetry_notes=[],
+                recommendations=[],
+                follow_up_question="Какие показания или изменения наблюдаются после проверки?",
+                tool_calls=tool_calls,
+                vehicle_detected=vehicle_info,
+            )
+
         # Разговорный или голосовой запрос без явно найденных кодов/регламентов
         if not rag_hits and not dtc_cards and not image_analyses and not doc_analyses:
             has_audio = bool(voice_info and voice_info.get("audio_attached_to_model"))
@@ -746,7 +941,7 @@ class AirLLMVulkanOrchestrator:
                 summary_title=(
                     "ИИдеал Авто • Голосовой анализ (Gemma 4 Native Audio)"
                     if has_audio
-                    else "ИИдеал Авто (AIdeal Auto) • Консультация диагноста"
+                    else "ИИдеал Авто • Консультация диагноста"
                 ),
                 mentor_reply=(
                     "Голосовой запрос мастера принят и передан напрямую в нативный аудиоэнкодер Google Gemma 4 12B (embed_audio). "
@@ -765,10 +960,11 @@ class AirLLMVulkanOrchestrator:
                 telemetry_notes=[],
                 recommendations=[
                     "Укажите марку, модель, год выпуска и двигатель для точной привязки допусков OEM.",
-                    "Вы можете загрузить лог сканера (.txt, .csv, .pdf, .obd) или фото с камеры / AR-очков.",
+                    "Вы можете загрузить лог сканера (.txt, .csv, .pdf, .obd) или фото с камеры.",
                 ],
                 follow_up_question="Какой автомобиль диагностируем и какие симптомы наблюдаются?",
                 tool_calls=tool_calls,
+                vehicle_detected=vehicle_info,
             )
 
         faults: List[DetectedFault] = []
@@ -854,8 +1050,8 @@ class AirLLMVulkanOrchestrator:
             card = self.rag_engine.get_dtc_details(f_obj.code)
             if card:
                 for sol in card.get("solutions", []):
-                    for sub_act in re.split(r"[,;.]", sol):
-                        clean_act = sub_act.strip()
+                    for sub_act in re.split(r";|\.(?!\d)", sol):
+                        clean_act = sub_act.strip(" .;")
                         if len(clean_act) > 4 and clean_act.lower() not in [a.lower() for a in collected_actions]:
                             collected_actions.append(clean_act)
 
@@ -941,9 +1137,11 @@ class AirLLMVulkanOrchestrator:
         dialog_summary: str,
         global_summary: str,
         settings_obj,
+        dialog_state: Optional[Dict[str, Any]] = None,
     ) -> Optional[str]:
         if os.environ.get("AUTODIAG_FAST_TEST") == "1":
             return None
+        dialog_state = dialog_state or {}
 
         try:
             model, processor = self.ensure_model_loaded(settings_obj)
@@ -998,36 +1196,76 @@ class AirLLMVulkanOrchestrator:
 
         has_images = bool(pil_images)
         has_native_audio = bool(audio_waveform_16k is not None)
-        is_conversational = (
-            not rag_hits
-            and not dtc_cards
+        is_greeting_or_casual = (
+            dialog_state.get("is_greeting", False)
             and not has_images
             and not doc_analyses
             and not has_native_audio
         )
+        is_followup = bool(dialog_state.get("is_followup", False))
+        vehicle_info = (dialog_state.get("vehicle_info") or "").strip()
+        active_codes = dialog_state.get("active_codes") or []
+
+        json_schema_hint_diag = (
+            "\n\nФОРМАТ ВЫВОДА:\n"
+            "1) Сначала напиши ёмкий и точный разбор на русском (90–140 слов, без приветствий и воды: физическая причина, точные ориентиры замеров).\n"
+            "2) Затем сразу в конце добавь ОДИН компактный блок ```json ... ``` БЕЗ поля mentor_reply:\n"
+            "```json\n"
+            "{\n"
+            '  "response_type": "diagnosis",\n'
+            '  "summary_title": "Заголовок до 7 слов",\n'
+            '  "vehicle_detected": "Марка Модель Двигатель (если известны)",\n'
+            '  "faults": [{"code": "P0300", "system": "engine", "system_ru": "Двигатель", "title": "Короткое название", "severity": "warning", "confidence": 90, "health_index": 70, "root_cause": "Короткая причина"}],\n'
+            '  "inventory": [{"name": "Нужный инструмент", "category": "tool", "spec": "Допуск", "required": true}],\n'
+            '  "repair_steps": [{"step_number": 1, "title": "Шаг", "instruction": "Краткое действие", "torque_or_spec": "Эталон"}],\n'
+            '  "recommendations": ["1 краткий практический совет"],\n'
+            '  "follow_up_question": "Один точный вопрос диагноста"\n'
+            "}\n"
+            "```\n"
+            "Правила точности: строго 1–2 faults, 2–3 inventory и 3 repair_steps (от простого к сложному, без повтора уже заменённого); "
+            "различай MPI (3.5–4.0 бар) и GDI/TSI (низкое до ТНВД 3.5–6 бар, высокое в рампе 40–150 бар); для STFT/LTFT указывай рабочую норму ±5–8%. "
+            "Допустимые system: engine, cooling, transmission, brakes, electrical, suspension, chassis, hybrid, battery."
+        )
+
+        json_schema_hint_followup = (
+            "\n\nФОРМАТ ВЫВОДА:\n"
+            "1) Сразу дай прямой, толковый ответ на русском (80–140 слов, без приветствий и без повтора исключённых версий; для GDI давление в рампе 40–150 бар, норма коррекций ±5–8%).\n"
+            "2) В самом конце добавь компактный блок ```json ... ``` БЕЗ mentor_reply:\n"
+            "```json\n"
+            "{\n"
+            '  "response_type": "followup",\n'
+            '  "summary_title": "Заголовок шага до 6 слов",\n'
+            '  "vehicle_detected": "Марка Модель Двигатель (если известны)",\n'
+            '  "faults": [],\n'
+            '  "inventory": [],\n'
+            '  "repair_steps": [],\n'
+            '  "follow_up_question": "Один конкретный вопрос по следующему замеру"\n'
+            "}\n"
+            "```\n"
+            "Оставляй faults, inventory и repair_steps пустыми [], заполняй только при смене диагноза."
+        )
 
         if has_images:
             sys_prompt = (
-                "Ты — ИИдеал Авто (AIdeal Auto), практичный эксперт автодиагностики и автоэлектрик. "
-                "К запросу пользователя ПРИКРЕПЛЕНА ФОТОГРАФИЯ (передана напрямую в твой визуальный вход Gemma 4 Vision)."
+                "Ты — ИИдеал Авто (AIdeal Auto), ведущий автодиагност и автоэлектрик. "
+                "К запросу ПРИКРЕПЛЕНА ФОТОГРАФИЯ (передана напрямую в Gemma 4 Vision)."
                 + (
-                    " Также передана АУДИОЗАПИСЬ речи мастера (передана напрямую в твой нативный аудиовход Gemma 4 embed_audio). "
+                    " Также передана АУДИОЗАПИСЬ речи мастера (нативно в Gemma 4 embed_audio). "
                     if has_native_audio
                     else " "
                 )
-                + "Внимательно изучи изображение"
-                + (" и прослушай аудиозапись мастера! " if has_native_audio else "! ")
-                + "НИ В КОЕМ СЛУЧАЕ НЕ ПРОСИ пользователя прислать фото или аудио, они уже перед тобой. "
-                "1) Опиши, что конкретно видно на фотографии (состояние проводки, жгутов, разъемов, деталей, повреждения); "
-                + (
-                    "2) Внимательно вслушайся в речь мастера из аудиозаписи и дай прямой ответ на его голосовой вопрос; "
-                    if has_native_audio
-                    else "2) Объясни физическую причину проблемы и почему автомобиль не заводится или работает с перебоями; "
-                )
-                + "3) Дай четкий практический план ремонта (восстановление жгута, пайка/обжим пинов, термоусадка, прозвонка мультиметром) без банальных советов. "
-                "Пиши профессионально, ёмко и понятно, всегда полностью завершай мысль и последнее предложение."
+                + "Внимательно осмотри фото"
+                + (" и прослушай аудио! " if has_native_audio else "! ")
+                + "Не проси прислать фото или аудио повторно. "
+                "1) Конкретно опиши детали на изображении (жгуты, разъемы, окисление, подтеки, повреждения, код/лампа на приборке); "
+                "2) Объясни физическую причину неисправности; "
+                "3) Дай практический порядок ремонта и проверки с конкретными параметрами. "
+                "Без банальных инструкций и без лишней воды."
+                + json_schema_hint_diag.replace('"response_type": "diagnosis"', '"response_type": "visual_inspection"')
             )
             extra_notes = []
+            if vehicle_info:
+                extra_notes.append(f"Авто: {vehicle_info}")
             if dtc_cards:
                 extra_notes.append("Коды DTC: " + ", ".join(dtc_cards.keys()))
             if doc_analyses:
@@ -1039,48 +1277,73 @@ class AirLLMVulkanOrchestrator:
                 extra_notes.append("\n".join(doc_summaries))
             if has_native_audio:
                 extra_notes.append("Прикреплена аудиозапись мастера (Gemma 4 embed_audio)")
-            notes_str = f" [Дополнительные данные: {'; '.join(extra_notes)}]" if extra_notes else ""
+            notes_str = f" [Контекст: {'; '.join(extra_notes)}]" if extra_notes else ""
             if has_native_audio:
                 user_prompt_text = (
-                    f"Изучи прикреплённое фото узла/проводки автомобиля и внимательно прослушай голосовой вопрос мастера в аудиозаписи.{notes_str}\n"
-                    f"Ответь на вопрос мастера и дай практическое заключение автодиагноста."
+                    f"Изучи прикреплённое фото и внимательно прослушай голосовой вопрос мастера.{notes_str}\n"
+                    f"Дай точное заключение автодиагноста."
                 )
             else:
-                user_prompt_text = f"Изучи прикреплённое фото узла/проводки автомобиля и дай заключение автодиагноста.{notes_str}\nВопрос мастера: {query}"
+                user_prompt_text = f"Изучи прикреплённое фото узла автомобиля и дай заключение диагноста.{notes_str}\nВопрос мастера: {query}"
             if dialog_summary:
-                user_prompt_text = f"[Сжатая выжимка ранней истории: {dialog_summary}]\n{user_prompt_text}"
-        elif is_conversational:
+                user_prompt_text = f"[Сводка ранней истории: {dialog_summary}]\n{user_prompt_text}"
+
+        elif is_greeting_or_casual:
             sys_prompt = (
-                "Ты — ИИдеал Авто (AIdeal Auto), практичный инженер-диагност и наставник автосервиса. "
-                "Пиши понятным, живым и профессиональным языком, кратко и по делу, без банальных инструкций "
-                "и без лишней воды. Ответь пользователю, уточни симптомы и марку автомобиля. "
-                "Всегда полностью завершай мысль и последнее предложение."
+                "Ты — ИИдеал Авто (AIdeal Auto), опытный и доброжелательный инженер-автодиагност. "
+                "Ответь живо, кратко и естественно (2–4 предложения). Если это приветствие — представься кратко и "
+                "предложи описать симптомы, указать марку/двигатель автомобиля или код ошибки OBD-II."
             )
             user_prompt_text = query
             if dialog_summary:
-                user_prompt_text = f"[Сжатая выжимка ранней истории: {dialog_summary}]\nВопрос пользователя: {query}"
+                user_prompt_text = f"[Контекст: {dialog_summary}]\nСообщение: {query}"
+
         elif has_native_audio and not rag_hits and not dtc_cards:
             sys_prompt = (
-                "Ты — ИИдеал Авто (AIdeal Auto), практичный инженер-диагност и наставник автосервиса. "
-                "К запросу пользователя прикреплена аудиозапись, переданная напрямую в твой нативный аудиоэнкодер Gemma 4 (embed_audio). "
-                "ТВОЯ ЗАДАЧА: "
-                "1) Внимательно прослушай человеческую русскую речь в аудиозаписи, пойми вопрос мастера или описанную проблему; "
-                "2) Если мастер голосом задает вопрос, просит совета или описывает неисправность — дай четкий, подробный технический ответ автоэксперта по существу проблемы; "
-                "3) Если в аудиозаписи параллельно слышны звуки работы двигателя, подвески, стуки, треск или вой — проанализируй их акустические признаки и укажи вероятный источник шума; "
-                "4) Не проси прислать аудио снова — оно уже загружено и обработано. Всегда полностью завершай мысль и последнее предложение."
+                "Ты — ИИдеал Авто (AIdeal Auto), опытный инженер-диагност. "
+                "К запросу прикреплена аудиозапись (Gemma 4 embed_audio). "
+                "Прослушай русскую речь мастера или звуки работы узла (стуки, вой, свист, перебои): "
+                "прямо ответь на вопрос или разбери акустический признак и дай чёткий план проверки. Не проси прислать аудио снова."
+                + (json_schema_hint_followup if is_followup else json_schema_hint_diag)
             )
+            ctx_prefix = f"[Автомобиль: {vehicle_info}]\n" if vehicle_info else ""
             if query and not any(query.strip().startswith(p) for p in ("Голосовой запрос", "Голосовой вопрос", "Аудиозапись")):
-                user_prompt_text = (
-                    f"Мастер прикрепил голосовую аудиозапись и пояснил: «{query}».\n"
-                    "Внимательно прослушай речь мастера в аудиозаписи, пойми суть вопроса и дай развёрнутый технический ответ автодиагноста."
-                )
+                user_prompt_text = f"{ctx_prefix}Мастер прикрепил аудиозапись и пояснил: «{query}».\nПрослушай аудио и дай точный разбор."
             else:
-                user_prompt_text = (
-                    "Мастер обратился с голосовым запросом через аудиозапись.\n"
-                    "Внимательно прослушай сказанное мастером в прикреплённом аудиофайле, распознай его вопрос или описание поломки и дай подробный практический ответ автодиагноста."
-                )
+                user_prompt_text = f"{ctx_prefix}Мастер отправил голосовой запрос.\nПрослушай речь/звук в аудиозаписи и дай практический разбор."
             if dialog_summary:
-                user_prompt_text = f"[Сжатая выжимка ранней истории: {dialog_summary}]\n{user_prompt_text}"
+                user_prompt_text = f"[Сводка ранней истории: {dialog_summary}]\n{user_prompt_text}"
+
+        elif is_followup:
+            extra_docs_text = "\n\n".join(
+                f"=== Документ: {d['filename']} ===\n"
+                f"{d.get('llm_ready_text', d.get('extracted_text', d.get('raw_excerpt', '')))}"
+                for d in doc_analyses
+            )
+            rag_context = self.rag_engine.prepare_llm_context(
+                query=query,
+                top_n=2,
+                dtc_codes=list(dtc_cards.keys()),
+                extra_docs_text=extra_docs_text or None,
+                dialog_summary=dialog_summary,
+                global_summary=global_summary,
+                vehicle_info=vehicle_info,
+                precomputed_hits=rag_hits[:2] if rag_hits else [],
+            )
+            active_codes_note = f"Активные коды сессии: {', '.join(active_codes)}. " if active_codes else ""
+            sys_prompt = (
+                "Ты — ИИдеал Авто (AIdeal Auto), ведущий автодиагност в живом диалоге с мастером/владельцем. "
+                + active_codes_note
+                + "Это ПРОДОЛЖЕНИЕ диагностики: пользователь сообщил новые результаты проверки/замеры или задал уточняющий вопрос. "
+                "Правила: "
+                "1) Исключи всё, что уже заменено или проверено в норме по истории диалога — не повторяй эти советы; "
+                "2) Проанализируй новые факты/цифры с учётом конструкции конкретного двигателя/КПП; "
+                "3) Назови 1–3 следующие самые вероятные причины и точные контрольные значения; "
+                "4) Отвечай без приветствий, ёмко и по делу."
+                + json_schema_hint_followup
+            )
+            user_prompt_text = rag_context
+
         else:
             extra_docs_text = "\n\n".join(
                 f"=== Документ: {d['filename']} ({'Полный текст без сокращений' if d.get('is_fully_processed', True) else 'Интеллектуальная диагностическая выборка'}) ===\n"
@@ -1094,45 +1357,43 @@ class AirLLMVulkanOrchestrator:
                 extra_docs_text=extra_docs_text or None,
                 dialog_summary=dialog_summary,
                 global_summary=global_summary,
+                vehicle_info=vehicle_info,
+                precomputed_hits=rag_hits,
             )
             sys_prompt = (
-                "Ты — ИИдеал Авто (AIdeal Auto), ведущий эксперт автодиагностики. "
+                "Ты — ИИдеал Авто (AIdeal Auto), ведущий инженер-автодиагност и автоэлектрик. "
                 + (
-                    "К запросу прикреплена АУДИОЗАПИСЬ с речью мастера или звуками работы узлов (нативно в embed_audio). Прослушай её! "
+                    "К запросу прикреплена АУДИОЗАПИСЬ (нативно в embed_audio). Прослушай её! "
                     if has_native_audio
                     else ""
                 )
-                + "Дай четкий, понятный технический разбор без глупых и очевидных инструкций (не пиши банальности вроде 'наденьте перчатки'). "
-                "1) Точная физическая причина неисправности; "
-                "2) Конкретные параметры и точки проверки мультиметром/осциллографом/сканером; "
-                "3) Прямой ответ на вопрос мастера"
-                + (" (включая услышанное в голосовой аудиозаписи)." if has_native_audio else ".")
-                + " Пиши емко и по существу, всегда дописывай последнее предложение до конца."
+                + "Дай профессиональный, практичный разбор без воды и без очевидных бытовых советов (не пиши 'наденьте перчатки' или 'обратитесь в сервис'). "
+                "1) Физическая первопричина и специфика указанного автомобиля/двигателя; "
+                "2) Конкретные параметры и точки замера (сканер Live Data, коррекции STFT/LTFT, давление, сопротивление/падение напряжения, осциллограф); "
+                "3) Рациональный порядок проверок от простого к сложному (чётко и компактно, без воды)."
+                + json_schema_hint_diag
             )
             user_prompt_text = rag_context
             if has_native_audio:
-                user_prompt_text += (
-                    "\n\n[Примечание к аудио]: В нативный аудиовход передана голосовая запись мастера. "
-                    "Внимательно прослушай речь мастера в аудиозаписи и ответь на его вопрос с учетом базы знаний."
-                )
+                user_prompt_text += "\n\n[Примечание]: Учти голосовую запись мастера из нативного аудиовхода."
 
         # Собираем сообщения диалога (сохраняем последние 5 вопросов пользователя и 5 ответов ИИ)
         chat_messages: List[Dict[str, Any]] = [
             {"role": "system", "content": [{"type": "text", "text": sys_prompt}]}
         ]
 
-        # Добавляем последние 10 сообщений (5 пар «пользователь - ассистент») с ключевой информацией
+        # Добавляем последние 10 сообщений (5 пар «пользователь - ассистент») с полным техническим контекстом
         recent_window = recent_messages[-(RECENT_EXCHANGES_TO_KEEP * 2):] if recent_messages else []
         for msg in recent_window:
             if msg.role == "user" and (msg.content or "").strip():
                 chat_messages.append(
                     {
                         "role": "user",
-                        "content": [{"type": "text", "text": (msg.content or "").strip()[:1000]}],
+                        "content": [{"type": "text", "text": (msg.content or "").strip()[:1200]}],
                     }
                 )
             elif msg.role == "assistant":
-                core_reply = format_assistant_core_memory(msg, max_chars=800)
+                core_reply = format_assistant_core_memory(msg, max_chars=1400)
                 if core_reply:
                     chat_messages.append(
                         {
@@ -1143,12 +1404,8 @@ class AirLLMVulkanOrchestrator:
 
         # Формируем текущее сообщение пользователя с нативными мультимодальными вложениями
         user_content_items: List[Dict[str, Any]] = []
-
-        # 1. Фотографии (Vision)
         for pil_img in pil_images:
             user_content_items.append({"type": "image", "image": pil_img})
-
-        # 2. Нативное аудио (Gemma 4 embed_audio)
         if audio_waveform_16k is not None and len(audio_waveform_16k) > 0:
             user_content_items.append({"type": "audio", "audio": audio_waveform_16k})
 
@@ -1180,17 +1437,30 @@ class AirLLMVulkanOrchestrator:
                 }
                 input_len = model_inputs["input_ids"].shape[-1]
                 ctx_limit = getattr(settings_obj, "context_window_tokens", 32768) or 32768
-                available_ctx = max(500, ctx_limit - input_len)
-                target_max_new = min(5000, available_ctx)
+                available_ctx = max(400, ctx_limit - input_len)
+                env_max_new = int(os.environ.get("GEMMA_MAX_NEW_TOKENS", "0") or 0)
+                if env_max_new > 0:
+                    target_max_new = min(env_max_new, available_ctx)
+                elif is_greeting_or_casual:
+                    target_max_new = min(280, available_ctx)
+                elif is_followup:
+                    target_max_new = min(650, available_ctx)
+                else:
+                    target_max_new = min(1050, available_ctx)
 
                 tok = getattr(processor, "tokenizer", processor)
-                eos_ids = [1, 107]
-                if getattr(tok, "eos_token_id", None) is not None:
-                    if isinstance(tok.eos_token_id, list):
-                        eos_ids.extend(tok.eos_token_id)
-                    else:
-                        eos_ids.append(int(tok.eos_token_id))
+                # Токен 106 у Gemma 4 = <turn|>, 1 = <eos>. НЕ добавлять 107 (это перенос строки \n)!
+                eos_ids = [1, 106]
+                tok_eos = getattr(tok, "eos_token_id", None)
+                if tok_eos is not None:
+                    if isinstance(tok_eos, list):
+                        for eid in tok_eos:
+                            if int(eid) != 107 and int(eid) not in eos_ids:
+                                eos_ids.append(int(eid))
+                    elif int(tok_eos) != 107 and int(tok_eos) not in eos_ids:
+                        eos_ids.append(int(tok_eos))
 
+                gen_temp = 0.55 if is_greeting_or_casual else 0.38
                 with torch.inference_mode():
                     gen_ids = model.generate(
                         **model_inputs,
@@ -1198,22 +1468,25 @@ class AirLLMVulkanOrchestrator:
                         eos_token_id=eos_ids,
                         pad_token_id=tok.pad_token_id if hasattr(tok, "pad_token_id") and tok.pad_token_id is not None else 0,
                         do_sample=True,
-                        temperature=0.2,
+                        temperature=gen_temp,
                         top_p=0.92,
+                        top_k=64,
+                        repetition_penalty=1.07,
                         use_cache=True,
                     )
 
                 new_tokens = gen_ids[0][input_len:]
                 decoded = tok.decode(new_tokens, skip_special_tokens=True).strip()
+                decoded = re.sub(r"<\|channel>thought.*?<channel\|>", "", decoded, flags=re.DOTALL)
                 decoded = re.sub(r"<think>.*?</think>", "", decoded, flags=re.DOTALL).strip()
-                # Автообрезка по последнему завершенному предложению
-                decoded = truncate_to_last_sentence(decoded)
 
                 self._last_inference_ms = int((time.perf_counter() - t_start) * 1000)
                 logger.info(
-                    "[AirLLM Gemma 4] Ответ сгенерирован за %d мс (%d токенов, обрезано по предложению).",
+                    "[AirLLM Gemma 4] Ответ сгенерирован за %d мс (%d токенов, temp=%.2f, mode=%s).",
                     self._last_inference_ms,
                     len(new_tokens),
+                    gen_temp,
+                    "greeting" if is_greeting_or_casual else ("followup" if is_followup else "diag"),
                 )
                 return decoded
             except Exception as exc:
@@ -1236,9 +1509,10 @@ class AirLLMVulkanOrchestrator:
     ) -> DiagnosticStructuredResponse:
         """
         Полный цикл обработки запроса:
-        1. Function Calling (поиск по словарю DTC, гибридный RAG BERT + FAISS, инспекция медиа).
-        2. Реальная генерация ответа через AirLLM Google Gemma 4 12B на GPU.
-        3. Приведение ответа к строгому JSON виду с автообрезкой по последнему предложению.
+        1. Анализ состояния диалога (первичная диагностика vs уточняющий шаг vs приветствие).
+        2. Function Calling (поиск по словарю DTC, гибридный RAG BERT + FAISS + BM25, инспекция медиа).
+        3. Генерация ответа через AirLLM Google Gemma 4 12B на GPU.
+        4. Разбор гибридного вывода (текст диагноста + компактный JSON) и автообрезка по последнему предложению.
         """
         tool_calls, rag_hits, dtc_cards = self.execute_function_calls(
             query=query,
@@ -1247,6 +1521,23 @@ class AirLLMVulkanOrchestrator:
             doc_analyses=doc_analyses,
             voice_info=voice_info,
         )
+
+        dialog_state = self._analyze_dialog_state(
+            query=query,
+            recent_messages=recent_messages,
+            attached_codes=attached_codes,
+            dtc_cards=dtc_cards,
+            has_images=bool(image_analyses),
+            has_docs=bool(doc_analyses),
+            vehicle_info=getattr(session, "vehicle_info", "") or "",
+        )
+
+        # На уточняющем шаге подтягиваем контекст активных кодов сессии, если запрос не назвал новых кодов
+        if dialog_state["is_followup"] and not dtc_cards and dialog_state["active_codes"]:
+            for active_c in dialog_state["active_codes"][:2]:
+                card = self.rag_engine.get_dtc_details(active_c)
+                if card:
+                    dtc_cards[active_c] = card
 
         global_summary = (
             settings_obj.global_memory_summary
@@ -1262,6 +1553,8 @@ class AirLLMVulkanOrchestrator:
             image_analyses=image_analyses,
             doc_analyses=doc_analyses,
             voice_info=voice_info,
+            is_followup=dialog_state["is_followup"],
+            vehicle_info=dialog_state["vehicle_info"],
         )
 
         llm_output = self._run_airllm_inference(
@@ -1275,27 +1568,26 @@ class AirLLMVulkanOrchestrator:
             dialog_summary=session.summary or "",
             global_summary=global_summary or "",
             settings_obj=settings_obj,
+            dialog_state=dialog_state,
         )
 
         if llm_output:
-            if llm_output.lstrip().startswith("{") and '"mentor_reply"' in llm_output:
-                validated = validate_and_coerce_structured_json(
-                    raw_output=llm_output,
-                    fallback_response=scaffolding,
-                )
-                if not validated.tool_calls:
-                    validated.tool_calls = tool_calls
-                return validated
-
-            scaffolding.mentor_reply = truncate_to_last_sentence(llm_output)
-            if scaffolding.response_type == "general":
-                scaffolding.summary_title = "ИИдеал Авто • Диалог с диагностом"
-            return validate_and_coerce_structured_json(
-                raw_output=json.dumps(scaffolding.model_dump(), ensure_ascii=False),
+            validated = validate_and_coerce_structured_json(
+                raw_output=llm_output,
                 fallback_response=scaffolding,
             )
+            if not validated.tool_calls:
+                validated.tool_calls = tool_calls
+            if dialog_state["is_greeting"] and not image_analyses and not doc_analyses and not attached_codes:
+                validated.response_type = "general"
+                validated.faults = []
+                validated.inventory = []
+                validated.repair_steps = []
+            if not validated.vehicle_detected and dialog_state["vehicle_info"]:
+                validated.vehicle_detected = dialog_state["vehicle_info"]
+            return validated
 
-        # Резервный ответ при тестировании или докачке
+        # Резервный ответ при AUTODIAG_FAST_TEST=1 или при отсутствии весов модели
         if not scaffolding.mentor_reply:
             fault_lines = [
                 f"• **{f.code}** ({f.system_ru}): {f.title} — *Индекс здоровья: {f.health_index}%*"
@@ -1303,7 +1595,7 @@ class AirLLMVulkanOrchestrator:
             ]
             scaffolding.mentor_reply = (
                 "Выполнен анализ запроса по локальной базе знаний и телеметрии.\n\n"
-                + ("\n".join(fault_lines) if fault_lines else "Опишите симптомы или укажите код ошибки OBD-II.")
+                + ("\n".join(fault_lines) if fault_lines else "Опишите результаты проверки или уточните симптомы для следующего шага.")
             )
             scaffolding.mentor_reply = truncate_to_last_sentence(scaffolding.mentor_reply)
         return scaffolding

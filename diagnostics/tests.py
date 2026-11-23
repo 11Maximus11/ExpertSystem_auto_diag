@@ -679,4 +679,106 @@ class AIdealAutoComprehensiveTests(TransactionTestCase):
         self.assertIn("P0300 Random Cylinder Misfire", data["llm_ready_text"])
         self.assertEqual(data["embedded_images_count"], 0)
 
+    def test_14_hybrid_json_followup_and_vehicle_detection(self):
+        """Проверка гибридного разбора prose + JSON, сохранения пустых списков для followup и автоопределения авто."""
+        from diagnostics.schemas import DetectedFault, DiagnosticStructuredResponse, RepairTaskStep
+
+        fallback = DiagnosticStructuredResponse(
+            response_type="diagnosis",
+            summary_title="Первичная диагностика P0300",
+            mentor_reply="",
+            faults=[
+                DetectedFault(
+                    code="P0300",
+                    system="engine",
+                    system_ru="Двигатель",
+                    title="Пропуски зажигания",
+                    root_cause="Свечи/катушки/впуск",
+                )
+            ],
+            repair_steps=[
+                RepairTaskStep(step_number=1, title="Проверка свечей", instruction="Осмотреть свечи")
+            ],
+        )
+
+        # 1. На followup модель выдает текст перед fenced JSON с пустыми faults/repair_steps: шаблон НЕ должен затирать []
+        hybrid_followup = (
+            "Раз свечи и катушки заменены, а компрессия по 12 бар — исключаем механику и зажигание. "
+            "Проверьте баланс форсунок и подсос через впуск.\n\n"
+            "```json\n"
+            '{"response_type": "followup", "summary_title": "Проверка форсунок 2-3 цил", '
+            '"vehicle_detected": "Skoda Octavia 1.4 TSI", "faults": [], "inventory": [], "repair_steps": [], '
+            '"follow_up_question": "Какая долговременная коррекция LTFT на холостом ходу?"}\n'
+            "```"
+        )
+        parsed = validate_and_coerce_structured_json(hybrid_followup, fallback_response=fallback)
+        self.assertEqual(parsed.response_type, "followup")
+        self.assertEqual(parsed.vehicle_detected, "Skoda Octavia 1.4 TSI")
+        self.assertIn("компрессия по 12 бар", parsed.mentor_reply)
+        self.assertEqual(len(parsed.faults), 0)
+        self.assertEqual(len(parsed.repair_steps), 0)
+
+        # 2. Скрытые рассуждения Gemma <|channel>thought...<channel|> вырезаются без утечки пользователю
+        with_thought = "<|channel>thought\nПроверим симптомы.<channel|>Вероятно виноват ступичный подшипник."
+        cleaned_res = validate_and_coerce_structured_json(with_thought)
+        self.assertNotIn("channel>", cleaned_res.mentor_reply)
+        self.assertIn("ступичный подшипник", cleaned_res.mentor_reply)
+
+    def test_15_cross_tenant_endpoint_ownership_security(self):
+        """Проверка строгой защиты чужих сессий и чеклистов между пользователями и гостями."""
+        self.client.post(
+            "/api/auth/register/",
+            data=json.dumps({"username": "owner_u1", "password": "Password123!", "password_confirm": "Password123!"}),
+            content_type="application/json",
+        )
+        s_resp = self.client.post(
+            "/api/sessions/",
+            data=json.dumps({"vehicle_info": "BMW X5 F15", "title": "Приватная сессия"}),
+            content_type="application/json",
+        )
+        private_sid = s_resp.json()["id"]
+        ask_resp = self.client.post(
+            "/api/ask/",
+            data=json.dumps({"session_id": private_sid, "query": "Ошибка P0300"}),
+            content_type="application/json",
+        )
+        self.assertEqual(ask_resp.status_code, 200)
+        private_msg_id = ask_resp.json()["assistant_message"]["id"]
+
+        # Гость (после logout) не может читать/удалять приватную сессию и сообщения
+        self.client.post("/api/auth/logout/")
+        self.assertEqual(self.client.get(f"/api/worker-status/{private_sid}/").status_code, 403)
+        self.assertEqual(
+            self.client.post(
+                f"/api/messages/{private_msg_id}/toggle-task/",
+                data=json.dumps({"type": "step", "id": 1, "checked": True}),
+                content_type="application/json",
+            ).status_code,
+            403,
+        )
+        self.assertEqual(self.client.delete(f"/api/messages/{private_msg_id}/delete/").status_code, 403)
+
+        # Второй пользователь (attacker_u2) также получает 403 при попытке вмешаться в чужую сессию
+        self.client.post(
+            "/api/auth/register/",
+            data=json.dumps({"username": "attacker_u2", "password": "Password123!", "password_confirm": "Password123!"}),
+            content_type="application/json",
+        )
+        self.assertEqual(
+            self.client.post(
+                "/api/ask/",
+                data=json.dumps({"session_id": private_sid, "query": "P0300"}),
+                content_type="application/json",
+            ).status_code,
+            403,
+        )
+        self.assertEqual(
+            self.client.post(
+                "/api/messages/delete/",
+                data=json.dumps({"session_id": private_sid, "delete_all": True}),
+                content_type="application/json",
+            ).status_code,
+            403,
+        )
+
 

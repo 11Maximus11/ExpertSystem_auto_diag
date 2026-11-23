@@ -93,10 +93,28 @@
   }
 
   function formatMarkdownLite(text) {
-    let safe = escapeHtml(text);
-    safe = safe.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
-    safe = safe.replace(/\*(.+?)\*/g, '<em>$1</em>');
-    return safe.replace(/\n/g, '<br/>');
+    const raw = String(text || '');
+    const lines = raw.split(/\r?\n/);
+    const inlineFmt = (str) => {
+      let s = escapeHtml(str);
+      s = s.replace(/`([^`]+)`/g, '<code class="md-code">$1</code>');
+      s = s.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+      s = s.replace(/(^|[\s(])\*([^*\n]+)\*(?=[\s.,;:!?)]|$)/g, '$1<em>$2</em>');
+      return s;
+    };
+    return lines
+      .map((line) => {
+        const trimmed = line.trim();
+        if (!trimmed) return '<div style="height:6px;"></div>';
+        const hMatch = trimmed.match(/^#{2,4}\s+(.+)$/);
+        if (hMatch) return `<div class="md-h">${inlineFmt(hMatch[1])}</div>`;
+        const ulMatch = trimmed.match(/^[-*•]\s+(.+)$/);
+        if (ulMatch) return `<div class="md-li">${inlineFmt(ulMatch[1])}</div>`;
+        const olMatch = trimmed.match(/^(\d+[.)])\s+(.+)$/);
+        if (olMatch) return `<div class="md-ol"><strong>${escapeHtml(olMatch[1])}</strong> ${inlineFmt(olMatch[2])}</div>`;
+        return `<div>${inlineFmt(trimmed)}</div>`;
+      })
+      .join('');
   }
 
   // =========================================================================
@@ -962,12 +980,21 @@
     const invDone = inventory.filter((i) => i.checked).length;
     const stepsDone = steps.filter((s) => s.completed).length;
 
+    const respType = String(sdata.response_type || 'diagnosis').toLowerCase();
+    const respLabels = {
+      diagnosis: 'Диагностика',
+      followup: 'Уточнение',
+      visual_inspection: 'Осмотр узла',
+      general: 'Консультация',
+    };
+    const respLabel = respLabels[respType] || 'Эксперт';
+
     let html = `
       <div class="diagnosis-verdict-title">
         <span>${escapeHtml(sdata.summary_title || 'Экспертное заключение')}</span>
-        <span class="badge-vulkan">JSON SCHEMA VALIDATED</span>
+        <span class="badge-diag-type badge-diag-${escapeHtml(respType)}" data-schema-validated="1">${escapeHtml(respLabel)}</span>
       </div>
-      <div style="font-size:0.9rem; color:var(--text-secondary); margin-bottom:10px;">
+      <div class="md-prose">
         ${formatMarkdownLite(sdata.mentor_reply || msg.content)}
       </div>
     `;
@@ -1084,6 +1111,22 @@
     if (toolCalls.length > 0) {
       console.debug('[Gemma 4 Function Calling executed]', toolCalls);
     }
+
+    const followUp = (sdata.follow_up_question || '').trim();
+    const followUpHtml =
+      followUp && respType !== 'general'
+        ? `<button type="button" class="btn-followup-chip" data-followup-text="${escapeHtml(followUp)}" title="Подставить вопрос в поле ввода для ответа">↳ ${escapeHtml(followUp)}</button>`
+        : '<span></span>';
+
+    html += `
+      <div class="msg-footer-bar">
+        ${followUpHtml}
+        <div class="msg-utility-actions">
+          <button type="button" class="btn-card-action btn-copy-reply" data-msg-id="${escapeHtml(String(msg.id))}" title="Копировать ответ">Копировать</button>
+          ${faults.length || steps.length ? `<button type="button" class="btn-card-action btn-export-report" data-msg-id="${escapeHtml(String(msg.id))}" title="Скачать текстовый заказ-наряд">Отчёт</button>` : ''}
+        </div>
+      </div>
+    `;
 
     return html;
   }
@@ -1241,7 +1284,7 @@
   }
 
   async function pollWorkerStatus() {
-    if (!state.currentSessionId) return;
+    if (!state.currentSessionId || state.isDemo) return;
     try {
       const resp = await fetch(`/api/worker-status/${state.currentSessionId}/`);
       if (!resp.ok) return;
@@ -1845,6 +1888,9 @@
         return;
       }
 
+      if (data.vehicle_info && vehInput && !vehInput.value.trim()) {
+        vehInput.value = data.vehicle_info;
+      }
       if (state.isDemo) {
         if (!state.demoMessagesBySession[state.currentSessionId]) {
           state.demoMessagesBySession[state.currentSessionId] = [];
@@ -1852,8 +1898,13 @@
         if (data.user_message) state.demoMessagesBySession[state.currentSessionId].push(data.user_message);
         if (data.assistant_message) state.demoMessagesBySession[state.currentSessionId].push(data.assistant_message);
         const demoSess = state.demoSessions.find((s) => String(s.id) === String(state.currentSessionId));
-        if (demoSess && data.session_title && (demoSess.title === 'Демо-диагностика' || demoSess.title.startsWith('Диагностика #'))) {
-          demoSess.title = data.session_title;
+        if (demoSess) {
+          if (data.session_title && (demoSess.title === 'Демо-диагностика' || demoSess.title.startsWith('Диагностика #'))) {
+            demoSess.title = data.session_title;
+          }
+          if (data.vehicle_info && !demoSess.vehicle_info) {
+            demoSess.vehicle_info = data.vehicle_info;
+          }
         }
       }
 
@@ -1989,6 +2040,13 @@
           if (code && !state.stagedCodes.includes(code)) {
             state.stagedCodes.push(code);
             renderStagingBar();
+          }
+          if (window.innerWidth <= 1120) {
+            el('panelInspector')?.classList.remove('mobile-active');
+            document.querySelectorAll('[data-mobile-view]').forEach((b) => {
+              b.classList.toggle('active', b.dataset.mobileView === 'chat');
+            });
+            el('queryInput')?.focus();
           }
         });
       });
@@ -3246,6 +3304,9 @@
       const dtcTabBtn = document.querySelector('[data-inspector-tab="paneDtc"]');
       dtcTabBtn?.click();
       el('panelInspector')?.classList.add('mobile-active');
+      document.querySelectorAll('[data-mobile-view]').forEach((b) => {
+        b.classList.toggle('active', b.dataset.mobileView === 'dtc');
+      });
       el('dtcSearchInput')?.focus();
     });
 
@@ -3505,18 +3566,89 @@
       });
     });
 
-    // Закрытие мобильных панелей
+    // Закрытие мобильных панелей с синхронизацией вкладки «Чат»
     document.querySelectorAll('.js-close-mobile-drawer').forEach((btn) => {
       btn.addEventListener('click', () => {
         toggleMobileSidebar(false);
         el('panelInspector')?.classList.remove('mobile-active');
-        document.querySelectorAll('[data-mobile-view]').forEach((b) => b.classList.remove('active'));
+        document.querySelectorAll('[data-mobile-view]').forEach((b) => {
+          b.classList.toggle('active', b.dataset.mobileView === 'chat');
+        });
       });
     });
 
-    // Делегирование удаления отдельного сообщения и чекбоксов в ленте чата
+    // Сохранение профиля автомобиля при изменении поля в шапке чата
+    el('vehicleInfoInput')?.addEventListener('change', async (e) => {
+      const val = (e.target.value || '').trim();
+      if (!state.currentSessionId) return;
+      if (state.isDemo) {
+        const demoSess = state.demoSessions.find((s) => String(s.id) === String(state.currentSessionId));
+        if (demoSess) demoSess.vehicle_info = val;
+        return;
+      }
+      try {
+        await fetch(`/api/sessions/${state.currentSessionId}/`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ vehicle_info: val }),
+        });
+      } catch (_) {}
+    });
+
+    // Делегирование удаления отдельного сообщения, копирования, экспорта и быстрых вопросов в ленте чата
     const chatFeedEl = el('chatFeed');
-    chatFeedEl?.addEventListener('click', (e) => {
+    chatFeedEl?.addEventListener('click', async (e) => {
+      const followBtn = e.target.closest('.btn-followup-chip');
+      if (followBtn) {
+        const qInput = el('queryInput');
+        if (qInput) {
+          qInput.placeholder = followBtn.dataset.followupText || qInput.placeholder;
+          qInput.focus();
+        }
+        return;
+      }
+      const copyBtn = e.target.closest('.btn-copy-reply');
+      if (copyBtn) {
+        const card = copyBtn.closest('.msg-card');
+        const prose = card?.querySelector('.md-prose')?.innerText || '';
+        if (prose && navigator.clipboard) {
+          try {
+            await navigator.clipboard.writeText(prose);
+            const orig = copyBtn.textContent;
+            copyBtn.textContent = 'Скопировано';
+            setTimeout(() => { copyBtn.textContent = orig; }, 1400);
+          } catch (_) {}
+        }
+        return;
+      }
+      const exportBtn = e.target.closest('.btn-export-report');
+      if (exportBtn) {
+        const card = exportBtn.closest('.msg-card');
+        const title = card?.querySelector('.diagnosis-verdict-title span')?.textContent || 'Диагностический отчёт ИИдеал Авто';
+        const veh = (el('vehicleInfoInput')?.value || 'Не указан').trim();
+        const prose = card?.querySelector('.md-prose')?.innerText || '';
+        const faultLines = Array.from(card?.querySelectorAll('.fault-box') || []).map((b) => '- ' + b.innerText.replace(/\s+/g, ' ').trim());
+        const stepLines = Array.from(card?.querySelectorAll('.steps-checklist .check-row') || []).map((r) => {
+          const chk = r.querySelector('input[type="checkbox"]')?.checked ? '[x]' : '[ ]';
+          return `${chk} ${r.innerText.replace(/\s+/g, ' ').trim()}`;
+        });
+        const report = [
+          'ИИДЕАЛ АВТО • ДИАГНОСТИЧЕСКИЙ ОТЧЁТ',
+          `Автомобиль: ${veh}`,
+          `Заключение: ${title}`,
+          '',
+          prose,
+          faultLines.length ? '\nУстановленные неисправности:\n' + faultLines.join('\n') : '',
+          stepLines.length ? '\nПлан ремонта:\n' + stepLines.join('\n') : '',
+        ].filter(Boolean).join('\n');
+        const blob = new Blob([report], { type: 'text/plain;charset=utf-8' });
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = `aideal-report-${Date.now()}.txt`;
+        a.click();
+        setTimeout(() => URL.revokeObjectURL(a.href), 1500);
+        return;
+      }
       const delBtn = e.target.closest('.btn-msg-delete');
       if (delBtn) {
         const msgId = delBtn.dataset.msgId;
@@ -3555,6 +3687,7 @@
     });
 
     initAuthUi();
+    initMediaPreviewEvents();
     initDraggableArWindows();
     if (document.body.classList.contains('ar-glasses-mode')) {
       startCameraStream(el('arCameraVideoEl'), state.cameraFacingMode).then((s) => {
@@ -3712,6 +3845,7 @@
         console.error('Ошибка при удалении аккаунта:', err);
       }
     });
+  }
 
   function getEffectiveAudioDuration(card, audio) {
     if (audio && audio.duration && isFinite(audio.duration) && audio.duration > 0) {
@@ -3915,6 +4049,7 @@
     }
   }
 
+  function initMediaPreviewEvents() {
     // =========================================================================
     // Обработчики превью вложений (Лайтбокс, Аудиоплеер, Сворачивание документов)
     // =========================================================================

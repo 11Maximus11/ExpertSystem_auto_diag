@@ -23,7 +23,8 @@ STOP_WORDS = {
 
 GREETING_PATTERNS = re.compile(
     r"^\s*(привет|здравствуй|здравствуйте|добрый\s+(день|вечер|утро)|хай|hello|hi|"
-    r"как\s+дела|кто\s+ты|что\s+ты\s+умеешь|спасибо|благодарю|пока|тест)\s*[!?.]*\s*$",
+    r"как\s+дела|кто\s+ты|что\s+ты\s+умеешь|спасибо(\s+большое)?|благодарю|"
+    r"понял|понятно|ясно|хорошо|ладно|ок|окей|да|нет|пока|тест)\s*[!?.]*\s*$",
     re.IGNORECASE,
 )
 
@@ -36,6 +37,7 @@ SYSTEM_NAMES_RU = {
     "electrical": "Электрооборудование",
     "cooling": "Система охлаждения",
     "hybrid": "Гибридная установка",
+    "battery": "Тяговая батарея (ВВБ / BMS)",
     "chassis": "Ходовая часть",
     "suspension": "Подвеска",
 }
@@ -43,27 +45,60 @@ SYSTEM_DISPLAY_NAMES = SYSTEM_NAMES_RU
 
 SYSTEM_DESCRIPTIONS = {
     "engine": "Двигатель, топливная система, зажигание, фазы ГРМ и впуск/выпуск",
-    "transmission": "Трансмиссия, АКПП/МКПП, гидроблок, сцепление и приводы",
+    "transmission": "Трансмиссия, АКПП/МКПП/CVT/DSG, гидроблок, сцепление и приводы",
     "brakes": "Тормозная система, гидравлика, вакуумный усилитель, ABS/ESP",
     "electrical": "Электрооборудование, бортовая сеть, АКБ, генератор, шина CAN",
     "cooling": "Система охлаждения, термостат, радиатор, помпа, вентиляторы",
     "hybrid": "Гибридная силовая установка, высоковольтная батарея (ВВБ), инвертор",
-    "chassis": "Подвеска, рулевое управление, ступичные узлы и датчики шасси",
-    "suspension": "Подвеска, пневмостойки, амортизаторы и датчики клиренса",
+    "battery": "Тяговая высоковольтная батарея, система управления BMS, зарядный порт и охлаждение",
+    "chassis": "Подвеска, рулевое управление, ЭУР/ГУР, ступичные узлы и датчики шасси",
+    "suspension": "Пневмоподвеска, пневмостойки, компрессор, амортизаторы и датчики клиренса",
 }
 
 CODE_DEFAULT_SYMPTOMS = {
-    "P0105": "Нестабильный холостой ход, провалы при нажатии на газ, ошибка датчика абсолютного давления MAP, повышенный расход топлива",
+    "P0010": "Неисправность цепи клапана фазорегулятора OCV (VVT) впуск, потеря тяги на низах, плавающий холостой ход",
     "P0012": "Потеря тяги, дизельный стук муфты фазовращателя VVT, ошибка сдвига фаз распредвала в позднюю сторону, трудный запуск",
+    "P0105": "Нестабильный холостой ход, провалы при нажатии на газ, ошибка датчика абсолютного давления MAP, повышенный расход топлива",
+    "P0171": "Бедная топливно-воздушная смесь, плавают обороты холостого хода, подсос воздуха во впуске, потеря мощности, медленный разгон",
+    "P0172": "Богатая топливно-воздушная смесь, черный дым из выхлопа, запах бензина, перерасход топлива, нагар на свечах",
+    "P0217": "Перегрев двигателя, стрелка температуры в красной зоне, кипит антифриз, вентилятор работает на максимуме",
+    "P0300": "Двигатель троит и трясется на холостом ходу, потеря мощности, медленный разгон, множественные пропуски зажигания",
+    "P0420": "Низкая эффективность катализатора, горит Check Engine, вялый разгон при оплавлении сот",
+    "P0522": "Низкое напряжение цепи датчика давления масла или падение давления масла, мигает красная лампа давления",
+    "P0562": "Тусклый свет фар, просадка напряжения бортовой сети ниже 12В, тугой запуск стартера, разряд аккумулятора",
+    "P0606": "Внутренняя ошибка процессора ЭБУ ECM/PCM, двигатель не запускается или уходит в аварийный режим",
+    "P0700": "Запрос контрольной лампы MIL от блока управления трансмиссией TCM, ошибка в коробке передач",
+    "P0715": "Ошибка датчика оборотов входного вала АКПП ISS, жесткие переключения и толчки",
+    "P0720": "Неисправность датчика частоты вращения выходного вала КПП OSS, сбой спидометра и переключений",
+    "P0730": "Некорректное передаточное число трансмиссии, пробуксовка АКПП при разгоне, запах горелого ATF",
+    "P0741": "Муфта блокировки гидротрансформатора ГДТ заклинила выключенной, вибрации на скорости 60-90 км/ч",
     "P0796": "Пинки и рывки при переключении передач АКПП, пробуксовка фрикционов, вибрации руля и стук при езде по кочкам, ошибка соленоида давления C",
     "P1744": "Пробуксовка гидротрансформатора АКПП, вибрации руля и кузова под нагрузкой, стук при езде по кочкам и неровностям",
+    "C0035": "Горит ABS/ESP, ошибка датчика скорости левого переднего колеса",
+    "C0040": "Горит ABS/ESP, ошибка датчика скорости правого переднего колеса",
     "C0050": "Горит лампа ABS и ESP на панели, не работает антиблокировочная система, мягкая педаль тормоза, сбой датчика скорости колеса",
+    "C0060": "Пульсация педали тормоза, биение дисков, ошибка левого переднего клапана сброса ABS",
+    "C0070": "Ошибка правого переднего клапана нагнетания ABS, увод при торможении",
+    "C0080": "Сбой правого заднего клапана сброса ABS, подклинивание заднего тормозного контура",
+    "U0100": "Потеря связи с блоком управления двигателем ECM/PCM по шине CAN, автомобиль не заводится",
+    "U0121": "Потеря связи с модулем ABS/ESP по шине CAN, горят лампы ABS и ESP",
+    "U0140": "Потеря связи с блоком кузова BCM по шине CAN, отказ света или центрального замка",
+    "U0155": "Потеря связи с комбинацией приборов IPC, падают стрелки, сбой иммобилайзера",
+    "U0300": "Несовместимость или сбой ПО внутренних модулей управления на шине CAN",
+    "U0401": "Недостоверные данные от ЭБУ двигателя ECM/PCM по шине CAN",
     "U1900": "Потеря связи между блоками управления по шине CAN, не работает CAN шина, хаотичные ошибки на приборной панели",
-    "P0300": "Двигатель троит и трясется на холостом ходу, потеря мощности, медленный разгон, множественные пропуски зажигания",
+    "B1000": "Внутренний сбой или просадка питания блока управления кузовом BCM",
+    "B1200": "Ошибка кнопок или модуля управления климат-контролем",
+    "B1300": "Сбой цепи реле аксессуаров или питания центрального замка BCM",
+    "B1400": "Неисправность цепи электростеклоподъемников или дверного модуля",
+    "B1500": "Ошибка цепи управления наружным освещением или диммером",
+    "B1600": "Сбой считывания транспондера иммобилайзера PATS, блокировка запуска двигателя",
     "P0A80": "Потеря мощности гибридной установки, ошибка высоковольтной батареи ВВБ, деградация ячеек тягового аккумулятора",
-    "P0171": "Бедная топливно-воздушная смесь, плавают обороты холостого хода, подсос воздуха во впуске, потеря мощности, медленный разгон",
-    "P0217": "Перегрев двигателя, стрелка температуры в красной зоне, кипит антифриз, вентилятор работает на максимуме",
-    "P0562": "Тусклый свет фар, просадка напряжения бортовой сети ниже 12В, тугой запуск стартера, разряд аккумулятора",
+    "P0A1F": "Внутренняя ошибка контроллера управления батареей BMS/BECM, запрет включения Ready",
+    "P0AC0": "Ошибка датчика тока высоковольтной батареи ВВБ",
+    "P0BFA": "Сбой контроля или балансировки ячейки тяговой батареи ВВБ",
+    "P0C2A": "Отказ вспомогательного электрического насоса охлаждения инвертора или АКПП",
+    "P0D1F": "Ошибка цепи контроля зарядного порта электромобиля EV/PHEV",
 }
 
 
@@ -114,8 +149,8 @@ def normalize_kb_entry(item: Dict[str, Any], index: int = 0) -> Dict[str, Any]:
         if m_fix and not fix:
             fix = m_fix.group(1).strip()
 
-    if code in CODE_DEFAULT_SYMPTOMS and CODE_DEFAULT_SYMPTOMS[code] not in symptoms:
-        symptoms = f"{symptoms}. {CODE_DEFAULT_SYMPTOMS[code]}".strip(". ")
+    if not symptoms and code in CODE_DEFAULT_SYMPTOMS:
+        symptoms = CODE_DEFAULT_SYMPTOMS[code]
 
     if not cause:
         cause = f"Неисправность узла подсистемы {system} по коду {code}: {symptoms or text}"
@@ -124,9 +159,9 @@ def normalize_kb_entry(item: Dict[str, Any], index: int = 0) -> Dict[str, Any]:
     health_index = int(item.get("health_index") or meta.get("health_index") or 65)
 
     doc_text = text or (
-        f"Система: {system}. Код: {code}. Симптомы: {symptoms}. Причина: {cause}. Решение: {fix}"
+        f"Система: {SYSTEM_NAMES_RU.get(system, system)}. Код: {code}. Симптомы: {symptoms}. Причина: {cause}. Решение: {fix}"
     )
-    if code in CODE_DEFAULT_SYMPTOMS and CODE_DEFAULT_SYMPTOMS[code] not in doc_text:
+    if not text and code in CODE_DEFAULT_SYMPTOMS and CODE_DEFAULT_SYMPTOMS[code] not in doc_text:
         doc_text = f"{doc_text} ({CODE_DEFAULT_SYMPTOMS[code]})"
 
     sys_ru = SYSTEM_NAMES_RU.get(system, system.capitalize())
@@ -214,7 +249,22 @@ def load_telemetry_sample_entries(
             if not raw_code or raw_code == "NONE":
                 continue
 
-            sys_name = (sys_m.group(1).strip().lower() if sys_m else infer_system_from_code(raw_code))
+            raw_sys = sys_m.group(1).strip().lower() if sys_m else ""
+            alias_map = {
+                "emissions": "engine",
+                "exhaust": "engine",
+                "diesel": "engine",
+                "thermal": "cooling",
+                "4wd": "transmission",
+                "air-brakes": "brakes",
+                "hydraulics": "brakes",
+                "electric-motor": "hybrid",
+                "hybrid-control": "hybrid",
+                "charging": "battery",
+            }
+            sys_name = alias_map.get(raw_sys, raw_sys)
+            if sys_name not in SYSTEM_NAMES_RU:
+                sys_name = infer_system_from_code(raw_code)
             health_val = float(health_m.group(1)) if health_m else 68.0
             temp_val = float(temp_m.group(1)) if temp_m else 85.0
             vib_val = float(vib_m.group(1)) if vib_m else 0.0
@@ -262,9 +312,11 @@ def load_telemetry_sample_entries(
         avg_health = int(round(sum(x["health_index"] for x in items) / count))
         sys_name = items[0]["system"]
 
+        sys_ru = SYSTEM_NAMES_RU.get(sys_name, sys_name.capitalize())
         telemetry_summary[code] = {
             "code": code,
             "system": sys_name,
+            "system_ru": sys_ru,
             "occurrences_in_sample": count,
             "avg_engine_temp_c": avg_temp,
             "avg_rpm": 2200,
@@ -273,6 +325,11 @@ def load_telemetry_sample_entries(
             "avg_health_index": avg_health,
             "typical_severity": "High" if avg_health < 55 else "Medium",
             "default_symptoms": CODE_DEFAULT_SYMPTOMS.get(code, f"Признаки неисправности по коду {code}"),
+            "sample_measurements": {
+                "Температура узла": f"{avg_temp} °C",
+                "Напряжение бортсети": f"{avg_volt} В",
+                "Записей в базе": count,
+            },
         }
 
         for idx, item in enumerate(items[:max_per_code]):
@@ -585,11 +642,11 @@ class VehicleExpertEngine:
             return True
 
         all_kb_vocab = set()
-        for doc_toks in self.doc_tokens[:250]:
+        for doc_toks in self.doc_tokens:
             all_kb_vocab.update(doc_toks)
 
         overlap = q_tokens & all_kb_vocab
-        return len(overlap) == 0 and len(q_tokens) <= 3
+        return len(overlap) == 0 and len(q_tokens) <= 4
 
     def search_dtc_dictionary(
         self,
@@ -702,7 +759,7 @@ class VehicleExpertEngine:
         top_lex_indices = [
             idx for idx, _ in sorted(lexical_scores.items(), key=lambda kv: kv[1], reverse=True)[:10]
         ]
-        candidate_indices = list(dict.fromkeys(dtc_indices + v_indices_list + bm25_indices + top_lex_indices))[:16]
+        candidate_indices = list(dict.fromkeys(dtc_indices + v_indices_list + bm25_indices + top_lex_indices))[:10]
 
         best_lex = max((lexical_scores.get(i, 0.0) for i in candidate_indices), default=0.0)
         best_vec = max((v_scores_map.get(i, 0.0) for i in candidate_indices), default=0.0)
@@ -713,7 +770,7 @@ class VehicleExpertEngine:
         rerank_scores: Dict[int, float] = {}
         if self.reranker is not None and candidate_indices and (query or "").strip():
             try:
-                pairs = [[query, self.documents[idx]] for idx in candidate_indices]
+                pairs = [[query, self.documents[idx][:240]] for idx in candidate_indices]
                 ce_preds = self.reranker.predict(pairs)
                 for idx, s in zip(candidate_indices, ce_preds):
                     rerank_scores[idx] = float(s)
@@ -769,13 +826,17 @@ class VehicleExpertEngine:
         extra_docs_text: Optional[str] = None,
         dialog_summary: Optional[str] = None,
         global_summary: Optional[str] = None,
+        vehicle_info: Optional[str] = None,
+        precomputed_hits: Optional[List[Dict[str, Any]]] = None,
     ) -> str:
         """
         Формирует структурированный контекст базы знаний и памяти для промпта LLM (Google Gemma 4 12B).
         """
-        hits = self.diagnose(query=query, top_n=top_n, dtc_codes=dtc_codes)
+        hits = precomputed_hits if precomputed_hits is not None else self.diagnose(query=query, top_n=top_n, dtc_codes=dtc_codes)
         parts: List[str] = []
 
+        if vehicle_info and vehicle_info.strip():
+            parts.append(f"[Автомобиль в сессии]: {vehicle_info.strip()}")
         if global_summary:
             parts.append(f"[Глобальный профиль и накопленная память клиента]:\n{global_summary.strip()}")
         if dialog_summary:
@@ -787,11 +848,16 @@ class VehicleExpertEngine:
                 meta = h.get("meta") or {}
                 code = meta.get("code") or "N/A"
                 sys_name = meta.get("system_ru") or meta.get("system") or "Система"
+                tel_str = ""
+                t_info = self.telemetry_stats.get(code)
+                if t_info and t_info.get("sample_measurements"):
+                    meas = ", ".join(f"{k}: {v}" for k, v in t_info["sample_measurements"].items())
+                    tel_str = f"\n   Эталон телеметрии ({t_info.get('avg_health_index')}% HI): {meas}"
                 kb_lines.append(
                     f"{i}. Код: {code} ({sys_name}) | Релевантность: {h.get('score', 0):.3f}\n"
                     f"   Симптомы: {meta.get('symptoms', '')}\n"
                     f"   Причина: {meta.get('cause', meta.get('reason', ''))}\n"
-                    f"   Проверка и ремонт: {meta.get('fix', meta.get('recommendation', ''))}"
+                    f"   Проверка и ремонт: {meta.get('fix', meta.get('recommendation', ''))}{tel_str}"
                 )
             parts.append("\n".join(kb_lines))
 

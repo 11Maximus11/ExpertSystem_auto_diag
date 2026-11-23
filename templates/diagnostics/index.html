@@ -213,7 +213,24 @@
 
     <!-- 2. ЦЕНТРАЛЬНАЯ ПАНЕЛЬ: ДИАЛОГ С ЭКСПЕРТОМ И ДОК ВВОДА -->
     <section class="panel-main" id="panelMain" aria-label="Рабочая область диагностики">
-      <input type="hidden" id="vehicleInfoInput" value="{{ current_session.vehicle_info|default:'Универсальный профиль OBD-II' }}" />
+      <div class="vehicle-bar" id="vehicleBar">
+        <span class="vehicle-bar-label" title="Профиль автомобиля в текущей сессии">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M19 17h2c.6 0 1-.4 1-1v-3c0-.9-.7-1.7-1.5-1.9C18.7 10.6 16 10 16 10s-1.3-1.4-2.2-2.3c-.5-.4-1.1-.7-1.8-.7H5c-.6 0-1.1.4-1.4.9l-1.4 2.9A3.7 3.7 0 0 0 2 12v4c0 .6.4 1 1 1h2"/>
+            <circle cx="7" cy="17" r="2"/><path d="M9 17h6"/><circle cx="17" cy="17" r="2"/>
+          </svg>
+          <span>Авто</span>
+        </span>
+        <input
+          type="text"
+          id="vehicleInfoInput"
+          class="vehicle-input"
+          value="{{ current_session.vehicle_info|default:'' }}"
+          placeholder="Марка, модель, двигатель (напр. Skoda Octavia 1.4 TSI)"
+          aria-label="Автомобиль в текущей сессии диагностики"
+          autocomplete="off"
+        />
+      </div>
 
       <!-- Панель массового управления и удаления сообщений (Чекбоксы / Выделить все) -->
       <div class="chat-selection-toolbar" id="chatSelectionToolbar" style="display:none;" aria-label="Управление сообщениями">

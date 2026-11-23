@@ -772,23 +772,158 @@ select:focus-visible {
    Центральная панель: Чат диагностики и Task-Friendly карточки ответов
    ========================================================================== */
 .vehicle-bar {
-  padding: 8px 16px;
+  padding: 7px 16px;
   background: var(--bg-surface);
   border-bottom: 1px solid var(--border-subtle);
   display: flex;
   align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
+  gap: 8px;
+  flex-wrap: nowrap;
+}
+
+.vehicle-bar-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 0.76rem;
+  font-weight: 700;
+  color: var(--accent-orange);
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .vehicle-input {
   flex: 1;
-  min-width: 180px;
+  min-width: 0;
   background: var(--bg-elevated);
   border: 1px solid var(--border-subtle);
   border-radius: 8px;
-  padding: 6px 10px;
-  font-size: 0.84rem;
+  padding: 5px 10px;
+  font-size: 0.82rem;
+  color: var(--text-primary);
+}
+
+.badge-diag-type {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  background: rgba(59, 130, 246, 0.14);
+  color: #60a5fa;
+  border: 1px solid rgba(59, 130, 246, 0.3);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.badge-diag-type.badge-diag-diagnosis {
+  background: rgba(249, 115, 22, 0.14);
+  color: var(--accent-orange);
+  border-color: rgba(249, 115, 22, 0.35);
+}
+
+.badge-diag-type.badge-diag-followup {
+  background: rgba(16, 185, 129, 0.14);
+  color: #34d399;
+  border-color: rgba(16, 185, 129, 0.35);
+}
+
+.md-prose {
+  font-size: 0.9rem;
+  line-height: 1.55;
+  color: var(--text-secondary);
+  margin-bottom: 10px;
+  word-break: break-word;
+}
+
+.md-h {
+  font-weight: 700;
+  font-size: 0.94rem;
+  color: var(--text-primary);
+  margin: 10px 0 4px 0;
+}
+
+.md-li,
+.md-ol {
+  padding-left: 14px;
+  position: relative;
+  margin: 3px 0;
+}
+
+.md-li::before {
+  content: '•';
+  position: absolute;
+  left: 2px;
+  color: var(--accent-orange);
+  font-weight: 700;
+}
+
+.md-code {
+  font-family: var(--font-mono);
+  font-size: 0.82em;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-primary);
+}
+
+.msg-footer-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--border-subtle);
+}
+
+.btn-followup-chip {
+  flex: 1 1 220px;
+  text-align: left;
+  background: rgba(249, 115, 22, 0.08);
+  border: 1px solid rgba(249, 115, 22, 0.28);
+  color: var(--text-primary);
+  border-radius: 10px;
+  padding: 7px 11px;
+  font-size: 0.79rem;
+  line-height: 1.35;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.btn-followup-chip:hover {
+  background: rgba(249, 115, 22, 0.16);
+  border-color: var(--accent-orange);
+}
+
+.msg-utility-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.btn-card-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 9px;
+  border-radius: 8px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
+  font-size: 0.74rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.btn-card-action:hover {
+  color: var(--text-primary);
+  border-color: var(--border-strong);
 }
 
 .quick-scenarios {
@@ -1748,12 +1883,13 @@ body.ar-glasses-mode .ar-hud-overlay {
    ========================================================================== */
 .mobile-bottom-nav {
   display: none;
+  position: relative;
   background: var(--bg-surface);
   border-top: 1px solid var(--border-subtle);
   padding: 6px 8px calc(6px + env(safe-area-inset-bottom, 0px)) 8px;
   grid-template-columns: repeat(3, 1fr);
   gap: 4px;
-  z-index: 35;
+  z-index: 335;
 }
 
 .mobile-nav-btn {
@@ -2028,7 +2164,10 @@ body.ar-glasses-mode .ar-hud-overlay {
   /* Правая панель инспектора на мобильных */
   .panel-inspector {
     position: fixed;
-    inset: 52px 0 58px 0;
+    top: calc(52px + env(safe-area-inset-top, 0px));
+    left: 0;
+    right: 0;
+    bottom: calc(56px + env(safe-area-inset-bottom, 0px));
     width: 100%;
     max-width: 100%;
     box-sizing: border-box;
@@ -2190,12 +2329,14 @@ body.ar-glasses-mode .ar-hud-overlay {
     grid-template-columns: 1fr;
   }
   .vehicle-bar {
-    padding: 8px 10px;
+    padding: 6px 10px;
+    flex-wrap: nowrap;
   }
   .vehicle-input {
-    width: 100%;
+    width: auto;
     min-width: 0;
-    flex: 1 1 100%;
+    flex: 1 1 auto;
+    font-size: 0.78rem;
   }
   .quick-scenarios {
     width: 100%;
@@ -2221,13 +2362,43 @@ body.ar-glasses-mode .ar-hud-overlay {
     height: 50px;
     min-height: 50px;
     padding: 0 8px;
+    gap: 5px;
   }
   .brand-title {
-    font-size: 0.86rem;
+    font-size: 0.8rem;
+  }
+  .header-actions {
+    gap: 4px;
+  }
+  .btn-header-pill {
+    height: 30px;
+    padding: 0 7px;
+    font-size: 0.71rem;
+    gap: 4px;
+  }
+  .btn-account-unified {
+    max-width: 104px;
+  }
+  .btn-account-unified #userNameSpan {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .btn-icon-top,
+  .btn-mobile-menu {
+    width: 30px;
+    height: 30px;
   }
   .badge-vulkan {
     font-size: 0.62rem;
     padding: 1px 4px;
+  }
+  .staged-card-audio,
+  .attachment-card-audio,
+  .attachment-card-doc {
+    min-width: 0;
+    width: 100%;
+    max-width: 100%;
   }
   .btn-tool,
   .mic-button-wrap {

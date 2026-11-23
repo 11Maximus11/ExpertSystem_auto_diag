@@ -1,0 +1,25 @@
+{
+  "name": "aideal-autodiag-lecodes",
+  "version": "1.0.0",
+  "description": "Автономное веб-приложение автодиагностики на базе le.codes с пробросом OBD2 (Web Bluetooth, Web Serial) и интеллектуальным кэшированием",
+  "type": "module",
+  "scripts": {
+    "dev": "lecodes web dev",
+    "build": "lecodes web build -o dist/web",
+    "preview": "lecodes web preview dist/web",
+    "desktop": "lecodes dev --desktop"
+  },
+  "keywords": [
+    "lecodes",
+    "obd2",
+    "diagnostics",
+    "web-bluetooth",
+    "web-serial",
+    "cache-api"
+  ],
+  "license": "GPL-3.0",
+  "devDependencies": {
+    "lecodes-cli": "^2.14.3",
+    "typescript": "^5.8.3"
+  }
+}

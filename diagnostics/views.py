@@ -12,6 +12,7 @@ import base64
 import json
 import logging
 import mimetypes
+import threading
 import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -26,7 +27,7 @@ from django.views.decorators.http import require_http_methods
 
 logger = logging.getLogger(__name__)
 
-from .airllm_vulkan_service import orchestrator
+from .airllm_vulkan_service import GenerationCancelledError, orchestrator
 from .context_worker import context_worker_manager
 from .document_service import (
     AUDIO_EXTENSIONS,
@@ -1057,16 +1058,31 @@ def api_ask_expert(request: HttpRequest) -> JsonResponse:
         short_title = query[:48] + ("..." if len(query) > 48 else "")
         session.title = short_title
 
-        structured_response = orchestrator.diagnose_and_respond(
-            query=query,
-            session=session,
-            settings_obj=active_settings,
-            recent_messages=recent_msgs,
-            attached_codes=attached_codes,
-            image_analyses=image_analyses,
-            doc_analyses=doc_analyses,
-            voice_info=voice_info,
-        )
+        cancel_event = threading.Event()
+        orchestrator.register_cancel_event(str(session.id), cancel_event)
+        try:
+            structured_response = orchestrator.generate_diagnostic_response(
+                query=query,
+                session=session,
+                settings_obj=active_settings,
+                recent_messages=recent_msgs,
+                attached_codes=attached_codes,
+                image_analyses=image_analyses,
+                doc_analyses=doc_analyses,
+                voice_info=voice_info,
+                cancel_event=cancel_event,
+            )
+        except GenerationCancelledError:
+            return JsonResponse(
+                {
+                    "cancelled": True,
+                    "error": "Генерация ответа отменена мастером.",
+                    "session_id": str(session.id),
+                },
+                status=499,
+            )
+        finally:
+            orchestrator.unregister_cancel_event(str(session.id))
         structured_dict = structured_response.model_dump()
         for tc in structured_response.tool_calls:
             logger.debug(f"[Function Calling Debug] fn {tc.tool_name}({tc.arguments}) -> {tc.result_summary}")
@@ -1128,16 +1144,31 @@ def api_ask_expert(request: HttpRequest) -> JsonResponse:
     )
 
     # ШАГ 3: Генерация строгого JSON ответа через AirLLM / Vulkan + Function Calling
-    structured_response = orchestrator.diagnose_and_respond(
-        query=query,
-        session=session,
-        settings_obj=active_settings,
-        recent_messages=recent_msgs,
-        attached_codes=attached_codes,
-        image_analyses=image_analyses,
-        doc_analyses=doc_analyses,
-        voice_info=voice_info,
-    )
+    cancel_event = threading.Event()
+    orchestrator.register_cancel_event(str(session.id), cancel_event)
+    try:
+        structured_response = orchestrator.generate_diagnostic_response(
+            query=query,
+            session=session,
+            settings_obj=active_settings,
+            recent_messages=recent_msgs,
+            attached_codes=attached_codes,
+            image_analyses=image_analyses,
+            doc_analyses=doc_analyses,
+            voice_info=voice_info,
+            cancel_event=cancel_event,
+        )
+    except GenerationCancelledError:
+        return JsonResponse(
+            {
+                "cancelled": True,
+                "error": "Генерация ответа отменена мастером.",
+                "session_id": str(session.id),
+            },
+            status=499,
+        )
+    finally:
+        orchestrator.unregister_cancel_event(str(session.id))
 
     structured_dict = structured_response.model_dump()
     if structured_response.vehicle_detected and not (session.vehicle_info or "").strip():
@@ -1205,7 +1236,9 @@ def api_toggle_task(request: HttpRequest, message_id: int) -> JsonResponse:
 
     item_type = payload.get("type", "step")  # "step" | "inventory"
     target_id = payload.get("id")
-    checked = bool(payload.get("checked", False))
+    if target_id is None and "task_index" in payload:
+        target_id = payload["task_index"]
+    checked = bool(payload.get("checked", True if "checked" not in payload else payload["checked"]))
 
     msg = ChatMessage.objects.filter(pk=message_id).select_related("session").first()
     if not msg or not isinstance(msg.structured_data, dict):
@@ -1215,21 +1248,37 @@ def api_toggle_task(request: HttpRequest, message_id: int) -> JsonResponse:
             sdata = dict(demo_msg["structured_data"])
             if item_type == "step":
                 steps = sdata.get("repair_steps", [])
+                matched = False
                 for step in steps:
-                    if str(step.get("step_number")) == str(target_id):
+                    if str(step.get("step_number", "")) == str(target_id):
                         step["completed"] = checked
+                        matched = True
+                        break
+                if not matched:
+                    for idx, step in enumerate(steps):
+                        if str(idx) == str(target_id):
+                            step["completed"] = checked
+                            break
                 sdata["repair_steps"] = steps
             elif item_type == "inventory":
                 inv_list = sdata.get("inventory", [])
+                matched = False
                 for inv in inv_list:
-                    if str(inv.get("id")) == str(target_id):
+                    if isinstance(inv, dict) and str(inv.get("id", "")) == str(target_id):
                         inv["checked"] = checked
+                        matched = True
+                        break
+                if not matched:
+                    for idx, inv in enumerate(inv_list):
+                        if isinstance(inv, dict) and str(idx) == str(target_id):
+                            inv["checked"] = checked
+                            break
                 sdata["inventory"] = inv_list
             demo_msg["structured_data"] = sdata
             total_steps = len(sdata.get("repair_steps", []))
             done_steps = sum(1 for s in sdata.get("repair_steps", []) if s.get("completed"))
             total_inv = len(sdata.get("inventory", []))
-            done_inv = sum(1 for i in sdata.get("inventory", []) if i.get("checked"))
+            done_inv = sum(1 for i in sdata.get("inventory", []) if (isinstance(i, dict) and i.get("checked")))
             return JsonResponse(
                 {
                     "message_id": message_id,
@@ -1253,15 +1302,31 @@ def api_toggle_task(request: HttpRequest, message_id: int) -> JsonResponse:
     sdata = dict(msg.structured_data)
     if item_type == "step":
         steps = sdata.get("repair_steps", [])
+        matched = False
         for step in steps:
-            if str(step.get("step_number")) == str(target_id):
+            if str(step.get("step_number", "")) == str(target_id):
                 step["completed"] = checked
+                matched = True
+                break
+        if not matched:
+            for idx, step in enumerate(steps):
+                if str(idx) == str(target_id):
+                    step["completed"] = checked
+                    break
         sdata["repair_steps"] = steps
     elif item_type == "inventory":
         inv_list = sdata.get("inventory", [])
+        matched = False
         for inv in inv_list:
-            if str(inv.get("id")) == str(target_id):
+            if isinstance(inv, dict) and str(inv.get("id", "")) == str(target_id):
                 inv["checked"] = checked
+                matched = True
+                break
+        if not matched:
+            for idx, inv in enumerate(inv_list):
+                if isinstance(inv, dict) and str(idx) == str(target_id):
+                    inv["checked"] = checked
+                    break
         sdata["inventory"] = inv_list
 
     msg.structured_data = sdata
@@ -1273,7 +1338,7 @@ def api_toggle_task(request: HttpRequest, message_id: int) -> JsonResponse:
     total_steps = len(sdata.get("repair_steps", []))
     done_steps = sum(1 for s in sdata.get("repair_steps", []) if s.get("completed"))
     total_inv = len(sdata.get("inventory", []))
-    done_inv = sum(1 for i in sdata.get("inventory", []) if i.get("checked"))
+    done_inv = sum(1 for i in sdata.get("inventory", []) if (isinstance(i, dict) and i.get("checked")))
 
     return JsonResponse(
         {
@@ -1637,4 +1702,32 @@ def api_auth_delete_account(request: HttpRequest) -> JsonResponse:
     user.delete()
     logger.info("Аккаунт пользователя '%s' и все его данные успешно удалены.", username)
     return JsonResponse({"success": True, "is_authenticated": False, "deleted_username": username})
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def api_cancel_generation(request: HttpRequest) -> JsonResponse:
+    """Принудительная отмена активной генерации ответа модели."""
+    try:
+        payload = json.loads(request.body.decode("utf-8") or "{}")
+    except Exception:
+        payload = {}
+    session_id = payload.get("session_id")
+    cancelled = orchestrator.cancel_generation(str(session_id) if session_id else None)
+    return JsonResponse({
+        "status": "cancelled" if cancelled else "no_active_generation",
+        "cancelled": True,
+        "message": "Генерация ответа успешно отменена" if cancelled else "Нет активных процессов генерации для отмены",
+    })
+
+
+def terms_view(request: HttpRequest) -> HttpResponse:
+    """Пользовательское соглашение на основе GPL."""
+    return render(request, "diagnostics/terms.html")
+
+
+def privacy_view(request: HttpRequest) -> HttpResponse:
+    """Политика конфиденциальности и локальной безопасности данных."""
+    return render(request, "diagnostics/privacy.html")
+
 

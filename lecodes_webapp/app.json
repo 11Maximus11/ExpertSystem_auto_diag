@@ -1,0 +1,27 @@
+{
+  "name": "aideal_autodiag_lecodes",
+  "plugins": {
+    "native-ui": "*",
+    "browser": "*"
+  },
+  "web": {
+    "title": "ИИдеал-Авто • le.codes Диагностика & OBD-II",
+    "themeColor": "#0a0f1d",
+    "urls": "hash"
+  },
+  "desktop": {
+    "window": {
+      "width": 1280,
+      "height": 840,
+      "minWidth": 800,
+      "minHeight": 540
+    }
+  },
+  "version": "1.0.0",
+  "android": {
+    "applicationId": "com.example.aidealautodiaglecodes",
+    "versionCode": 1,
+    "sdk": "2.12.7",
+    "variant": "auto"
+  }
+}

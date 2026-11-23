@@ -1670,6 +1670,12 @@
         <div class="skeleton-line w-75"></div>
         <div class="skeleton-line w-60"></div>
       </div>
+      <div style="display:flex; justify-content:flex-end; margin-top:8px;">
+        <button type="button" class="btn-cancel-generation" data-action="cancel-gen" title="Остановить генерацию ответа">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          <span>Отменить генерацию</span>
+        </button>
+      </div>
     `;
 
     const startTs = performance.now();
@@ -1847,6 +1853,22 @@
     let pendingAssistantEl = null;
     let pendingArEl = null;
 
+    // Контроллер отмены генерации
+    state.activeAbortController = new AbortController();
+
+    const triggerCancelGeneration = async () => {
+      try {
+        state.activeAbortController?.abort();
+      } catch (_) {}
+      try {
+        await fetch('/api/cancel/', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ session_id: state.currentSessionId }),
+        });
+      } catch (_) {}
+    };
+
     if (feed) {
       const welcomePlaceholder = feed.querySelector('[data-welcome-placeholder="1"]');
       if (welcomePlaceholder) {
@@ -1858,12 +1880,14 @@
 
       // 2. Сразу добавляем анимированную карточку генерации ответа ИИ
       pendingAssistantEl = createPendingGenerationCard();
+      pendingAssistantEl.querySelector('[data-action="cancel-gen"]')?.addEventListener('click', triggerCancelGeneration);
       feed.appendChild(pendingAssistantEl);
       scrollFeedToBottom();
     }
 
     if (arFeed && document.body.classList.contains('ar-glasses-mode')) {
       pendingArEl = createPendingGenerationCard();
+      pendingArEl.querySelector('[data-action="cancel-gen"]')?.addEventListener('click', triggerCancelGeneration);
       arFeed.innerHTML = '';
       arFeed.appendChild(pendingArEl);
       arFeed.scrollTop = arFeed.scrollHeight;
@@ -1873,6 +1897,7 @@
       const resp = await fetch('/api/ask/', {
         method: 'POST',
         body: formData,
+        signal: state.activeAbortController.signal,
       });
       const data = await resp.json();
       if (!resp.ok) {
@@ -1963,20 +1988,39 @@
         setTimeout(pollWorkerStatus, 250);
       }
     } catch (err) {
-      console.error('Ошибка отправки запроса:', err);
-      if (pendingAssistantEl) {
-        pendingAssistantEl._stopAnimation?.();
-        pendingAssistantEl.innerHTML = `
-          <div class="msg-header">
-            <span class="msg-role-badge" style="color:var(--status-crit);">ОШИБКА СОЕДИНЕНИЯ С СЕРВЕРОМ</span>
-          </div>
-          <div style="font-size:0.86rem; color:var(--text-secondary);">
-            Не удалось получить ответ от сервера диагностики. Проверьте, что сервер запущен, и повторите попытку.
-          </div>
-        `;
-      }
-      if (pendingArEl) {
-        pendingArEl._stopAnimation?.();
+      if (err.name === 'AbortError') {
+        console.info('Генерация отменена автомехаником.');
+        if (pendingAssistantEl) {
+          pendingAssistantEl._stopAnimation?.();
+          pendingAssistantEl.innerHTML = `
+            <div class="msg-header">
+              <span class="msg-role-badge" style="color:var(--accent-orange);">ОТМЕНЕНО МАСТЕРОМ</span>
+            </div>
+            <div style="font-size:0.86rem; color:var(--text-secondary);">
+              Генерация ответа была прервана. Вы можете изменить ввод или повторить диагностику.
+            </div>
+          `;
+        }
+        if (pendingArEl) {
+          pendingArEl._stopAnimation?.();
+          pendingArEl.remove();
+        }
+      } else {
+        console.error('Ошибка отправки запроса:', err);
+        if (pendingAssistantEl) {
+          pendingAssistantEl._stopAnimation?.();
+          pendingAssistantEl.innerHTML = `
+            <div class="msg-header">
+              <span class="msg-role-badge" style="color:var(--status-crit);">СЕРВЕР НЕ ОТВЕЧАЕТ</span>
+            </div>
+            <div style="font-size:0.86rem; color:var(--text-secondary);">
+              Диагностический сервер временно не отвечает. Подождите минуту и повторите попытку.
+            </div>
+          `;
+        }
+        if (pendingArEl) {
+          pendingArEl._stopAnimation?.();
+        }
       }
     } finally {
       tempObjectUrls.forEach((u) => {
@@ -2643,7 +2687,12 @@
     if (btnPassthrough) btnPassthrough.classList.toggle('active', state.arSubmode === 'passthrough');
 
     const cameraWin = el('arWindowCamera');
+    const btnSwitchBgCam = el('btnArSwitchBgCamera');
     if (state.arSubmode === 'passthrough') {
+      if (btnSwitchBgCam) {
+        btnSwitchBgCam.style.display = 'inline-flex';
+        btnSwitchBgCam.disabled = false;
+      }
       if (overlay) overlay.classList.add('passthrough-mode');
       if (bgVideo) {
         bgVideo.style.display = 'block';
@@ -2654,13 +2703,17 @@
       // Скрываем дублирующее плавающее окно камеры — видеопоток уже является полноэкранным фоном
       if (cameraWin) cameraWin.style.display = 'none';
     } else {
+      if (btnSwitchBgCam) {
+        btnSwitchBgCam.style.display = 'none';
+        btnSwitchBgCam.disabled = true;
+      }
       if (overlay) overlay.classList.remove('passthrough-mode');
       if (bgVideo) {
         bgVideo.style.display = 'none';
         stopStream(state.arBgCameraStream);
         state.arBgCameraStream = null;
       }
-      // В оптическом режиме RayNeo на черном фоне #000000 окно визира камеры отображается
+      // В оптическом режиме портативных AR-очков на прозрачном фоне окно визира камеры отображается
       if (cameraWin) cameraWin.style.display = 'flex';
     }
   }
@@ -3335,11 +3388,9 @@
       renderStagingBar();
       el('btnCloseCameraModal')?.click();
     });
-    el('btnGenerateTestShot')?.addEventListener('click', () => {
-      const b64 = generateSyntheticDiagnosticFrame();
-      state.stagedCameraShots.push(b64);
-      renderStagingBar();
+    el('btnOpenObdModalFromCamera')?.addEventListener('click', () => {
       el('btnCloseCameraModal')?.click();
+      el('obdModal')?.style && (el('obdModal').style.display = 'flex');
     });
 
     // Голосовой ввод
@@ -3687,6 +3738,8 @@
     });
 
     initAuthUi();
+    initObdUi();
+    initCookieBanner();
     initMediaPreviewEvents();
     initDraggableArWindows();
     if (document.body.classList.contains('ar-glasses-mode')) {
@@ -3699,6 +3752,161 @@
     if ('serviceWorker' in navigator) {
       navigator.serviceWorker.register('/sw.js').catch(() => {});
     }
+  }
+
+  // =========================================================================
+  // 9a. Сканер OBD-II / ELM327 и Cookie Banner
+  // =========================================================================
+  function initCookieBanner() {
+    const banner = el('cookieBanner');
+    if (!banner) return;
+    if (!localStorage.getItem('aideal_cookies_accepted')) {
+      banner.style.display = 'flex';
+      el('btnAcceptCookies')?.addEventListener('click', () => {
+        localStorage.setItem('aideal_cookies_accepted', '1');
+        banner.style.display = 'none';
+      });
+    }
+  }
+
+  function initObdUi() {
+    const modal = el('obdModal');
+    const openModal = () => {
+      if (modal) modal.style.display = 'flex';
+    };
+    const closeModal = () => {
+      if (modal) modal.style.display = 'none';
+    };
+
+    el('btnOpenObdModal')?.addEventListener('click', openModal);
+    el('btnCloseObdModal')?.addEventListener('click', closeModal);
+    modal?.addEventListener('click', (e) => {
+      if (e.target === modal) closeModal();
+    });
+
+    const updateLiveView = (pids) => {
+      if (!pids) return;
+      if (pids.rpm !== undefined) {
+        const rpmEl = el('obdValRpm');
+        if (rpmEl) rpmEl.textContent = `${pids.rpm} об/м`;
+      }
+      if (pids.speed !== undefined) {
+        const speedEl = el('obdValSpeed');
+        if (speedEl) speedEl.textContent = `${pids.speed} км/ч`;
+      }
+      if (pids.temp !== undefined) {
+        const tempEl = el('obdValTemp');
+        if (tempEl) tempEl.textContent = `${pids.temp} °C`;
+      }
+      if (pids.throttle !== undefined) {
+        const thrEl = el('obdValThrottle');
+        if (thrEl) thrEl.textContent = `${pids.throttle}%`;
+      }
+    };
+
+    if (window.OBD2Client) {
+      window.OBD2Client.on('connected', (info) => {
+        const dot = el('obdStatusDot');
+        const txt = el('obdStatusText');
+        if (dot) dot.style.background = 'var(--status-ok)';
+        if (txt) txt.textContent = `Подключен (${info.type || 'ELM327'})`;
+        const btnDis = el('btnObdDisconnect');
+        if (btnDis) btnDis.style.display = 'inline-flex';
+        window.OBD2Client.startLivePolling(updateLiveView, 600);
+      });
+
+      window.OBD2Client.on('disconnected', () => {
+        const dot = el('obdStatusDot');
+        const txt = el('obdStatusText');
+        if (dot) dot.style.background = '#64748b';
+        if (txt) txt.textContent = 'Не подключен';
+        const btnDis = el('btnObdDisconnect');
+        if (btnDis) btnDis.style.display = 'none';
+        const rEl = el('obdValRpm'); if (rEl) rEl.textContent = '—';
+        const sEl = el('obdValSpeed'); if (sEl) sEl.textContent = '—';
+        const tEl = el('obdValTemp'); if (tEl) tEl.textContent = '—';
+        const thEl = el('obdValThrottle'); if (thEl) thEl.textContent = '—';
+      });
+
+      window.OBD2Client.on('error', (err) => {
+        uiAlert(err.message || 'Ошибка подключения к адаптеру OBD-II', 'OBD-II Сканер', 'warning');
+      });
+
+      window.OBD2Client.on('dtc_found', (res) => {
+        const codes = res.codes || [];
+        const box = el('obdDtcResultBox');
+        const txt = el('obdDtcListText');
+        if (box && txt) {
+          box.style.display = 'block';
+          txt.textContent = codes.length > 0 ? codes.join(', ') : 'Ошибок в памяти ЭБУ не обнаружено (P0000)';
+        }
+        if (codes.length > 0) {
+          codes.forEach((c) => {
+            if (!state.stagedCodes.includes(c)) state.stagedCodes.push(c);
+          });
+          renderStagedBar();
+          uiAlert(`Считано ${codes.length} кодов неисправностей. Они добавлены в диагностическую сессию.`, 'Сканер OBD-II', 'info');
+        }
+      });
+    }
+
+    el('btnObdConnectSerial')?.addEventListener('click', async () => {
+      try {
+        await window.OBD2Client?.connectSerial({ baudRate: 38400 });
+      } catch (e) {
+        uiAlert(e.message || 'Не удалось подключиться через USB/Serial', 'Ошибка OBD-II', 'warning');
+      }
+    });
+
+    el('btnObdConnectBluetooth')?.addEventListener('click', async () => {
+      try {
+        await window.OBD2Client?.connectBluetooth();
+      } catch (e) {
+        uiAlert(e.message || 'Не удалось подключиться через Bluetooth', 'Ошибка OBD-II', 'warning');
+      }
+    });
+
+    el('btnObdConnectDemo')?.addEventListener('click', async () => {
+      await window.OBD2Client?.connectDemo();
+    });
+
+    el('btnObdDisconnect')?.addEventListener('click', () => {
+      window.OBD2Client?.disconnect();
+    });
+
+    el('btnObdReadDtc')?.addEventListener('click', async () => {
+      if (!window.OBD2Client?.isConnected) {
+        await uiAlert('Сначала подключите сканер ELM327 (USB, Bluetooth или Демо-стенд).', 'OBD-II', 'info');
+        return;
+      }
+      try {
+        await window.OBD2Client.readDtcCodes();
+      } catch (e) {
+        uiAlert(e.message || 'Ошибка считывания кодов', 'OBD-II', 'warning');
+      }
+    });
+
+    el('btnObdReadVin')?.addEventListener('click', async () => {
+      if (!window.OBD2Client?.isConnected) {
+        await uiAlert('Сначала подключите адаптер ELM327.', 'OBD-II', 'info');
+        return;
+      }
+      try {
+        const vin = await window.OBD2Client.readVin();
+        if (vin) {
+          const vInput = el('vehicleInput');
+          if (vInput) {
+            vInput.value = (vInput.value ? `${vInput.value} | VIN: ` : 'VIN: ') + vin;
+            state.vehicleInfo = vInput.value;
+          }
+          uiAlert(`Определен VIN номер автомобиля: ${vin}`, 'VIN распознан', 'info');
+        } else {
+          uiAlert('VIN не получен от блока управления автомобиля.', 'OBD-II', 'info');
+        }
+      } catch (e) {
+        uiAlert(e.message || 'Ошибка считывания VIN', 'OBD-II', 'warning');
+      }
+    });
   }
 
   // =========================================================================
@@ -3725,10 +3933,12 @@
         errBanner.style.display = 'none';
         errBanner.textContent = '';
       }
+      const termsGroup = el('authTermsGroup');
       if (mode === 'login') {
         tabLogin?.classList.add('active');
         tabRegister?.classList.remove('active');
         if (emailGroup) emailGroup.style.display = 'none';
+        if (termsGroup) termsGroup.style.display = 'none';
         if (btnSubmit) {
           const s = btnSubmit.querySelector('span');
           if (s) s.textContent = 'Войти';
@@ -3739,6 +3949,7 @@
         tabRegister?.classList.add('active');
         tabLogin?.classList.remove('active');
         if (emailGroup) emailGroup.style.display = 'flex';
+        if (termsGroup) termsGroup.style.display = 'block';
         if (btnSubmit) {
           const s = btnSubmit.querySelector('span');
           if (s) s.textContent = 'Зарегистрироваться';
@@ -3775,6 +3986,18 @@
 
       if (!username || !password) return;
 
+      if (authMode === 'register') {
+        const termsChk = el('authTermsCheckbox');
+        if (termsChk && !termsChk.checked) {
+          if (errBanner) {
+            errBanner.textContent = 'Для регистрации необходимо подтвердить согласие с Пользовательским соглашением и Политикой конфиденциальности.';
+            errBanner.style.display = 'block';
+          }
+          if (btnSubmit) btnSubmit.disabled = false;
+          return;
+        }
+      }
+
       if (btnSubmit) btnSubmit.disabled = true;
       if (errBanner) {
         errBanner.style.display = 'none';
@@ -3803,7 +4026,7 @@
         window.location.reload();
       } catch (err) {
         if (errBanner) {
-          errBanner.textContent = 'Ошибка сетевого соединения с сервером';
+          errBanner.textContent = 'Нет связи с сервером автодиагностики. Проверьте подключение к сети автосервиса.';
           errBanner.style.display = 'block';
         }
       } finally {

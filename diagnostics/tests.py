@@ -781,4 +781,27 @@ class AIdealAutoComprehensiveTests(TransactionTestCase):
             403,
         )
 
+    def test_16_legal_pages_and_cancel_generation(self):
+        """Проверка страниц Пользовательского соглашения, Политики конфиденциальности и API отмены."""
+        # 1. Страницы документов
+        terms_resp = self.client.get("/terms/")
+        self.assertEqual(terms_resp.status_code, 200)
+        self.assertContains(terms_resp, "Пользовательское соглашение")
+        self.assertContains(terms_resp, "GPL")
+
+        privacy_resp = self.client.get("/privacy/")
+        self.assertEqual(privacy_resp.status_code, 200)
+        self.assertContains(privacy_resp, "Политика конфиденциальности")
+
+        # 2. Endpoint отмены генерации
+        cancel_resp = self.client.post(
+            "/api/cancel/",
+            data=json.dumps({"session_id": "non_existent_session"}),
+            content_type="application/json",
+        )
+        self.assertEqual(cancel_resp.status_code, 200)
+        data = cancel_resp.json()
+        self.assertTrue(data.get("cancelled"))
+
+
 

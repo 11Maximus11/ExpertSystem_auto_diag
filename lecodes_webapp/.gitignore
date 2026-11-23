@@ -1,0 +1,13 @@
+# LeCodes per-checkout state: generated IDE types + this machine's sync cursor
+# (.lecodes/manifest.json). Regenerate with `lecodes update` / re-attach with `lecodes link`.
+.lecodes/
+
+# Render / preview outputs and test failure frames
+screenshot.png
+shots/
+tests/.artifacts/
+tests/.shots/
+
+node_modules/
+
+dist/

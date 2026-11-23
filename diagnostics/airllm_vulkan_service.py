@@ -53,6 +53,11 @@ from .schemas import (
 logger = logging.getLogger("diagnostics.airllm")
 
 
+class GenerationCancelledError(Exception):
+    """Исключение при принудительной отмене генерации ответа модели пользователем."""
+    pass
+
+
 SYSTEM_INVENTORY_TEMPLATES: Dict[str, List[Dict[str, Any]]] = {
     "engine": [
         {
@@ -566,10 +571,37 @@ class AirLLMVulkanOrchestrator:
         self.vulkan_status = init_vulkan_environment(verbose=False)
         self.rag_engine = VehicleExpertEngine()
         self._model_lock = threading.Lock()
+        self._cancel_events: Dict[str, threading.Event] = {}
+        self._cancel_lock = threading.Lock()
         self._airllm_model = None
         self._processor = None
         self._loaded_model_id: Optional[str] = None
         self._last_inference_ms: int = 0
+
+    def register_cancel_event(self, session_id: str, event: threading.Event) -> None:
+        """Регистрирует событие отмены для диагностической сессии."""
+        with self._cancel_lock:
+            self._cancel_events[str(session_id)] = event
+
+    def unregister_cancel_event(self, session_id: str) -> None:
+        """Удаляет событие отмены сессии после завершения генерации."""
+        with self._cancel_lock:
+            self._cancel_events.pop(str(session_id), None)
+
+    def cancel_generation(self, session_id: Optional[str] = None) -> bool:
+        """
+        Устанавливает флаг отмены для указанной сессии или всех активных генераций.
+        Возвращает True, если было отменено хотя бы одно событие.
+        """
+        with self._cancel_lock:
+            if session_id and str(session_id) in self._cancel_events:
+                self._cancel_events[str(session_id)].set()
+                return True
+            cancelled = False
+            for ev in list(self._cancel_events.values()):
+                ev.set()
+                cancelled = True
+            return cancelled
 
     def _resolve_local_model_and_shards(self, settings_obj) -> Tuple[Path, Path]:
         local_dir = BASE_DIR / "models" / "gemma-4-12B-it"
@@ -1138,7 +1170,10 @@ class AirLLMVulkanOrchestrator:
         global_summary: str,
         settings_obj,
         dialog_state: Optional[Dict[str, Any]] = None,
+        cancel_event: Optional[threading.Event] = None,
     ) -> Optional[str]:
+        if cancel_event and cancel_event.is_set():
+            raise GenerationCancelledError("Генерация диагностического ответа отменена пользователем.")
         if os.environ.get("AUTODIAG_FAST_TEST") == "1":
             return None
         dialog_state = dialog_state or {}
@@ -1414,6 +1449,8 @@ class AirLLMVulkanOrchestrator:
 
         t_start = time.perf_counter()
         with self._model_lock:
+            if cancel_event and cancel_event.is_set():
+                raise GenerationCancelledError("Генерация диагностического ответа отменена пользователем.")
             try:
                 prompt_str = processor.apply_chat_template(
                     chat_messages,
@@ -1461,6 +1498,20 @@ class AirLLMVulkanOrchestrator:
                         eos_ids.append(int(tok_eos))
 
                 gen_temp = 0.55 if is_greeting_or_casual else 0.38
+
+                stopping_criteria = None
+                if cancel_event is not None:
+                    from transformers import StoppingCriteria, StoppingCriteriaList
+
+                    class EventStoppingCriteria(StoppingCriteria):
+                        def __init__(self, ev: threading.Event):
+                            self.ev = ev
+
+                        def __call__(self, input_ids: torch.LongTensor, scores: torch.FloatTensor, **kwargs) -> bool:
+                            return self.ev.is_set()
+
+                    stopping_criteria = StoppingCriteriaList([EventStoppingCriteria(cancel_event)])
+
                 with torch.inference_mode():
                     gen_ids = model.generate(
                         **model_inputs,
@@ -1473,7 +1524,11 @@ class AirLLMVulkanOrchestrator:
                         top_k=64,
                         repetition_penalty=1.07,
                         use_cache=True,
+                        stopping_criteria=stopping_criteria,
                     )
+
+                if cancel_event and cancel_event.is_set():
+                    raise GenerationCancelledError("Генерация диагностического ответа отменена пользователем.")
 
                 new_tokens = gen_ids[0][input_len:]
                 decoded = tok.decode(new_tokens, skip_special_tokens=True).strip()
@@ -1489,6 +1544,9 @@ class AirLLMVulkanOrchestrator:
                     "greeting" if is_greeting_or_casual else ("followup" if is_followup else "diag"),
                 )
                 return decoded
+            except GenerationCancelledError:
+                logger.info("[AirLLM Gemma 4] Генерация прервана по событию отмены.")
+                raise
             except Exception as exc:
                 logger.error("[AirLLM Gemma 4] Ошибка во время генерации: %s", exc)
                 return None
@@ -1506,6 +1564,7 @@ class AirLLMVulkanOrchestrator:
         image_analyses: List[Dict[str, Any]],
         doc_analyses: List[Dict[str, Any]],
         voice_info: Optional[Dict[str, Any]] = None,
+        cancel_event: Optional[threading.Event] = None,
     ) -> DiagnosticStructuredResponse:
         """
         Полный цикл обработки запроса:
@@ -1514,6 +1573,9 @@ class AirLLMVulkanOrchestrator:
         3. Генерация ответа через AirLLM Google Gemma 4 12B на GPU.
         4. Разбор гибридного вывода (текст диагноста + компактный JSON) и автообрезка по последнему предложению.
         """
+        if cancel_event and cancel_event.is_set():
+            raise GenerationCancelledError("Генерация диагностического ответа отменена пользователем.")
+
         tool_calls, rag_hits, dtc_cards = self.execute_function_calls(
             query=query,
             attached_codes=attached_codes,
@@ -1521,6 +1583,9 @@ class AirLLMVulkanOrchestrator:
             doc_analyses=doc_analyses,
             voice_info=voice_info,
         )
+
+        if cancel_event and cancel_event.is_set():
+            raise GenerationCancelledError("Генерация диагностического ответа отменена пользователем.")
 
         dialog_state = self._analyze_dialog_state(
             query=query,
@@ -1565,11 +1630,15 @@ class AirLLMVulkanOrchestrator:
             image_analyses=image_analyses,
             doc_analyses=doc_analyses,
             voice_info=voice_info,
-            dialog_summary=session.summary or "",
+            dialog_summary=getattr(session, "summary", "") or "",
             global_summary=global_summary or "",
             settings_obj=settings_obj,
             dialog_state=dialog_state,
+            cancel_event=cancel_event,
         )
+
+        if cancel_event and cancel_event.is_set():
+            raise GenerationCancelledError("Генерация диагностического ответа отменена пользователем.")
 
         if llm_output:
             validated = validate_and_coerce_structured_json(
@@ -1599,6 +1668,37 @@ class AirLLMVulkanOrchestrator:
             )
             scaffolding.mentor_reply = truncate_to_last_sentence(scaffolding.mentor_reply)
         return scaffolding
+
+    def generate_diagnostic_response(
+        self,
+        query: str,
+        session=None,
+        settings_obj=None,
+        recent_messages: Optional[List[Any]] = None,
+        attached_codes: Optional[List[str]] = None,
+        image_analyses: Optional[List[Dict[str, Any]]] = None,
+        doc_analyses: Optional[List[Dict[str, Any]]] = None,
+        voice_info: Optional[Dict[str, Any]] = None,
+        cancel_event: Optional[threading.Event] = None,
+        **kwargs,
+    ) -> DiagnosticStructuredResponse:
+        """
+        Основной цикл генерации диагностического ответа с проверкой Event отмены.
+        При установленном Event немедленно прерывает инференс, освобождая блокировки.
+        """
+        if cancel_event and cancel_event.is_set():
+            raise GenerationCancelledError("Генерация диагностического ответа отменена пользователем.")
+        return self.diagnose_and_respond(
+            query=query,
+            session=session,
+            settings_obj=settings_obj,
+            recent_messages=recent_messages or [],
+            attached_codes=attached_codes or [],
+            image_analyses=image_analyses or [],
+            doc_analyses=doc_analyses or [],
+            voice_info=voice_info,
+            cancel_event=cancel_event,
+        )
 
 
 # Глобальный экземпляр оркестратора AirLLM Gemma 4 12B

@@ -11,6 +11,7 @@
 ---
 
 ## Содержание
+
 1. [Быстрый старт и автозагрузка модели](#1-быстрый-старт-и-автозагрузка-модели)
 2. [Архитектура и ключевые возможности](#2-архитектура-и-ключевые-возможности)
 3. [Послойный движок AirLLM для Google Gemma 4 12B](#3-послойный-движок-airllm-для-google-gemma-4-12b)
@@ -23,7 +24,8 @@
 10. [Структура проекта и относительные пути](#10-структура-проекта-и-относительные-пути)
 11. [Строгий JSON-формат, Function Calling и чеклисты ремонта](#11-строгий-json-формат-function-calling-и-чеклисты-ремонта)
 12. [Запуск в Docker и отладка в VSCode](#12-запуск-в-docker-и-отладка-в-vscode)
-13. [Справочник REST API и автотесты](#13-справочник-rest-api-и-автотесты)
+13. [Сборка APK, эмуляция Android и запуск на чистом ПК (CLI и VS Code)](#13-сборка-apk-эмуляция-android-и-запуск-на-чистом-пк-cli-и-vs-code)
+14. [Справочник REST API и автотесты](#14-справочник-rest-api-и-автотесты)
 
 ---
 
@@ -33,6 +35,7 @@
 > Личный HuggingFace токен указывать в коде не требуется (при необходимости передайте его через переменную окружения `$env:HF_TOKEN`).
 
 ### Способ А. Запуск в одну команду на Windows (PowerShell)
+
 Скрипт `run_dev.ps1` сам создаст `.venv`, установит PyTorch с поддержкой GPU CUDA 12.4, скачает и подготовит шарды Gemma 4 12B, применит миграции и запустит веб-интерфейс:
 
 ```powershell
@@ -40,6 +43,7 @@
 ```
 
 ### Способ Б. Пошаговая ручная установка на Windows (PowerShell)
+
 ```powershell
 # 1. Создание виртуального окружения
 python -m venv .venv
@@ -62,12 +66,14 @@ python -m venv .venv
 ```
 
 ### Способ В. Запуск на Linux (Bash)
+
 ```bash
 chmod +x run_dev.sh
 ./run_dev.sh
 ```
 
 ### Адреса после запуска
+
 - **Главный веб-интерфейс (Desktop + Mobile PWA):** [http://127.0.0.1:8000/](http://127.0.0.1:8000/)
 - **Режим для AR-очков (RayNeo Optical / Видео-фон):** [http://127.0.0.1:8000/ar/](http://127.0.0.1:8000/ar/)
 - **Консольный режим (CLI):** `.\.venv\Scripts\python.exe MAIN_app_with_LLM.py`
@@ -112,7 +118,8 @@ chmod +x run_dev.sh
 
 ## 3. Послойный движок AirLLM для Google Gemma 4 12B
 
-В модуле [`diagnostics/airllm_vulkan_service.py`](file:///d:/GDrive/Документы/Visual%20Studio%202022/ExpertSystem_auto_diag/diagnostics/airllm_vulkan_service.py) реализован движок **`AdaptiveAirLLMGemma4`**:
+В модуле [`diagnostics/airllm_vulkan_service.py`](<file:///d:/GDrive/Документы/Visual%20Studio%202022/ExpertSystem_auto_diag/diagnostics/airllm_vulkan_service.py>) реализован движок **`AdaptiveAirLLMGemma4`**:
+
 - **Модель**: `google/gemma-4-12B-it-qat-w4a16-ct` (12 миллиардов параметров, 48 декодер-слоев, 4-битное квантование весов W4A16, 7.54 ГБ).
 - **Нарезка**: Модель разделена на **52 независимых шарда** safetensors (`model.language_model.embed_tokens`, `model.language_model.layers.0..47`, `model.language_model.norm`, `model.embed_vision`, `model.embed_audio`).
 - **GPU VRAM & DMA Residency**:
@@ -123,7 +130,8 @@ chmod +x run_dev.sh
 
 ## 4. Гибридная RAG-система на базе BERT и FAISS
 
-Архитектура RAG в [`engine.py`](file:///d:/GDrive/Документы/Visual%20Studio%202022/ExpertSystem_auto_diag/engine.py) полностью воспроизводит эталонную логику коммита `4c196ae3d4751845fefce7e8f1cde6f77bdb37ed` и работает автоматически из коробки:
+Архитектура RAG в [`engine.py`](<file:///d:/GDrive/Документы/Visual%20Studio%202022/ExpertSystem_auto_diag/engine.py>) полностью воспроизводит эталонную логику коммита `4c196ae3d4751845fefce7e8f1cde6f77bdb37ed` и работает автоматически из коробки:
+
 1. **Векторный поиск**: Модель `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2` формирует плотные эмбеддинги для базы знаний `kb_data.json` и эталонной телеметрии `VehicleDiagnosticSample.txt` (32 733 записи). Индекс `faiss.IndexFlatIP` отбирает топ-10 семантических кандидатов.
 2. **Лексический поиск**: `BM25Okapi` и триграммный N-gram анализатор отбирают топ-10 лексических кандидатов с принудительным бустингом точных кодов OBD-II (DTC).
 3. **Объединение и реранкинг**: Модель `cross-encoder/mmarco-mMiniLMv2-L12-H384-v1` выполняет глубокое попарное переранжирование объединенного пула кандидатов с учетом формулы остаточного ресурса `(100 - health_index) / 200`.
@@ -135,8 +143,9 @@ chmod +x run_dev.sh
 ## 5. Нативный аудиовход (Gemma 4 embed_audio) и чистое хранение вложений в БД (Base64 Data URI)
 
 Все прикреплённые материалы (фотографии узлов, снимки с камеры, логи OBD-II, документы PDF/DOCX и аудиозаписи) сохраняются **напрямую в базе данных SQLite в виде base64 Data URI** (`data:<mime>;base64,...`), без записи файлов на диск сервера:
+
 - **Полная автономность и безопасность**: На сервере не накапливаются временные файлы в директории `media/`, а резервное копирование и экспорт диалогов инкапсулированы внутри базы данных.
-- **Прямой нативный аудиовход (Direct Gemma 4 Audio)**: Сервис [`diagnostics/voice_service.py`](file:///d:/GDrive/Документы/Visual%20Studio%202022/ExpertSystem_auto_diag/diagnostics/voice_service.py) декодирует аудиозаписи любых форматов (`.webm`, `.wav`, `.mp3`, `.ogg`, `.m4a`) в **16 кГц моно float32 тензор** с фильтрацией DC offset и нормализацией амплитуды для аудио-проектора `model.embed_audio` Gemma 4. **Сторонние модели распознавания речи (Whisper) полностью исключены** — распознавание русской речи мастера и акустический анализ шумов автомобиля осуществляются исключительно нативно архитектурой Google Gemma 4 12B Unified.
+- **Прямой нативный аудиовход (Direct Gemma 4 Audio)**: Сервис [`diagnostics/voice_service.py`](<file:///d:/GDrive/Документы/Visual%20Studio%202022/ExpertSystem_auto_diag/diagnostics/voice_service.py>) декодирует аудиозаписи любых форматов (`.webm`, `.wav`, `.mp3`, `.ogg`, `.m4a`) в **16 кГц моно float32 тензор** с фильтрацией DC offset и нормализацией амплитуды для аудио-проектора `model.embed_audio` Gemma 4. **Сторонние модели распознавания речи (Whisper) полностью исключены** — распознавание русской речи мастера и акустический анализ шумов автомобиля осуществляются исключительно нативно архитектурой Google Gemma 4 12B Unified.
 
 ---
 
@@ -144,15 +153,18 @@ chmod +x run_dev.sh
 
 1. **Окно контекста (`context_window_tokens`)**: Расширено до **`32768` токенов (32K)** по умолчанию. Это позволяет загружать детальные диагностические карты, дампы телеметрии и длинную историю диалога.
 2. **Бюджет ответа модели (`max_new_tokens`)**: Установлен на уровне **`5000` токенов** для формирования развернутых инструкций по ремонту.
-3. **Автообрезка по предложениям (`truncate_to_last_sentence`)**: Механизм в [`diagnostics/schemas.py`](file:///d:/GDrive/Документы/Visual%20Studio%202022/ExpertSystem_auto_diag/diagnostics/schemas.py) отслеживает границы предложений (точки, вопросительные и восклицательные знаки, закрывающие кавычки и скобки) и гарантирует, что ответ модели никогда не обрывается на полуслове.
+3. **Автообрезка по предложениям (`truncate_to_last_sentence`)**: Механизм в [`diagnostics/schemas.py`](<file:///d:/GDrive/Документы/Visual%20Studio%202022/ExpertSystem_auto_diag/diagnostics/schemas.py>) отслеживает границы предложений (точки, вопросительные и восклицательные знаки, закрывающие кавычки и скобки) и гарантирует, что ответ модели никогда не обрывается на полуслове.
 4. **Стиль ответа**: Системный промпт инструктирует модель писать емким, технически точным языком, без лишней «воды» и повторения банальных инструкций.
 
 ---
 
 ## 7. Динамический воркер памяти и удержание 5 последних реплик
 
-1. **Динамический расчет бюджета контекста**: Фоновый воркер [`diagnostics/context_worker.py`](file:///d:/GDrive/Документы/Visual%20Studio%202022/ExpertSystem_auto_diag/diagnostics/context_worker.py) динамически вычисляет объем свободного места в окне 32K токенов:
-   $$\text{free\_context} = \text{context\_window} - \text{reserved\_tokens} - \text{recent\_tokens}$$
+1. **Динамический расчет бюджета контекста**: Фоновый воркер [`diagnostics/context_worker.py`](<file:///d:/GDrive/Документы/Visual%20Studio%202022/ExpertSystem_auto_diag/diagnostics/context_worker.py>) динамически вычисляет объем свободного места в окне 32K токенов:
+   $$
+   \text{free\_context} = \text{context\_window} - \text{reserved\_tokens} - \text{recent\_tokens}
+   $$
+
    и адаптирует степень сжатия фоновой сводки под размер активного контекста.
 2. **Прямая оперативная память (5 последних реплик)**: В рабочий промпт нейросети передаются **последние 5 сообщений пользователя и 5 ответов ИИ** с сохранением ключевых фактов, кодов ошибок и статуса чекбоксов.
 3. **Мгновенный сброс (Zero-Wait Preemption)**: При отправке нового вопроса фоновый воркер мгновенно сбрасывается (`0 мс`), отвечая без задержек.
@@ -162,25 +174,28 @@ chmod +x run_dev.sh
 ## 8. Двойной AR-режим для очков RayNeo и видеокамер
 
 На странице `/ar/` (кнопка **«AR HUD»** в шапке) реализованы два подрежима:
+
 1. **Подрежим 1: «RayNeo Optical»**:
    - Чисто черный оптический фон (`#000000`). На MicroOLED экранах AR-очков (RayNeo X2, Air 2) черный цвет не излучает свет и становится 100% прозрачным в поле зрения.
    - Окно визира камеры (`#arWindowCamera`) отображается для прицеливания и съемки проблемных узлов.
 2. **Подрежим 2: «Камера-фон (Video Passthrough)»**:
    - Полноэкранный живой видеопоток с камеры смартфона или веб-камеры в качестве фонового слоя. Предназначен для очков без прозрачного экрана и видео-шлемов.
    - Внутреннее окно камеры автоматически скрывается, исключая дублирование картинки.
+
 - **Интегрированная навигация и сессии в AR**:
-   - Выпадающий список сессий (`#arSessionSelect`) и кнопка создания нового диалога (`#btnArNewSession`) прямо в верхней панели статуса AR.
-   - Переключение диалогов мгновенно подгружает историю сообщений в окно ассистента (`#arWindowAssistant`).
+  - Выпадающий список сессий (`#arSessionSelect`) и кнопка создания нового диалога (`#btnArNewSession`) прямо в верхней панели статуса AR.
+  - Переключение диалогов мгновенно подгружает историю сообщений в окно ассистента (`#arWindowAssistant`).
 - **Стейджинг материалов в AR HUD (`#arStagingBar`)**:
-   - Все прикрепленные аудиозаписи, сделанные снимки с камеры и добавленные коды DTC отображаются в виде интерактивных чипов прямо над панелью ввода в AR с возможностью удаления перед отправкой.
+  - Все прикрепленные аудиозаписи, сделанные снимки с камеры и добавленные коды DTC отображаются в виде интерактивных чипов прямо над панелью ввода в AR с возможностью удаления перед отправкой.
 - **Быстрые действия в поле зрения**:
-   - Кнопка мгновенной съемки и отправки фото (`#btnArSnapInAssistant`), голосовая запись (`#btnArVoiceTriggerAssistant`), перетаскивание плавающих панелей (`Pointer Events`).
+  - Кнопка мгновенной съемки и отправки фото (`#btnArSnapInAssistant`), голосовая запись (`#btnArVoiceTriggerAssistant`), перетаскивание плавающих панелей (`Pointer Events`).
 
 ---
 
 ## 9. Многопользовательская изоляция, проекты и авторизация
 
 Система поддерживает как гостевой режим работы, так и полноценную изоляцию рабочих пространств:
+
 - **Изоляция сессий и проектов**: Каждый зарегистрированный пользователь видит исключительно свои проекты автодиагностики, историю диалогов, прикрепленные фото и аудиозаписи.
 - **Управление сессиями**: Закрепление важных чатов (Pin), тегирование по агрегатам автомобиля (ДВС, АКПП, Тормоза, Электрика и др.), переименование на лету и удаление отдельных сообщений или целых диалогов с автоматической синхронизацией памяти контекста.
 - **Архитектура базы данных и репозитория**:
@@ -261,44 +276,131 @@ ExpertSystem_auto_diag/
 ## 12. Запуск в Docker и отладка в VSCode
 
 ### Docker Compose
+
 ```bash
 # Сборка и запуск контейнера с пробросом GPU
 docker compose up --build -d
 ```
 
 ### Отладка в VSCode
+
 В файле `.vscode/launch.json` преднастроены профили отладки (клавиша **F5**):
+
 - **`Django: AIdeal Auto (AirLLM Gemma 4 12B + Adaptive GPU VRAM)`** — запуск сервера Django с предзагрузкой модели в GPU VRAM.
 - **`Django: Тестирование системы (Gemma 4 + RAG + Worker)`** — запуск полного набора автотестов.
 - **`RAG Benchmark: Оценка точности и Vulkan (evaluate_model.py)`** — тестирование RAG-ядра.
 
 ---
 
-## 13. Справочник REST API и автотесты
+## 13. Сборка APK, эмуляция Android и запуск на чистом ПК (CLI и VS Code)
 
-| Метод | Эндпоинт | Назначение |
-|---|---|---|
-| `GET` | `/` | Главный интерфейс (Mobile-First PWA + Desktop) |
-| `GET` | `/ar/` | Режим для AR-очков (RayNeo Optical / Видео-фон) |
-| `POST` | `/api/auth/register/` | Регистрация нового пользователя |
-| `POST` | `/api/auth/login/` | Авторизация (вход) пользователя |
-| `POST` | `/api/auth/logout/` | Выход из системы |
-| `GET` | `/api/auth/status/` | Проверка текущего статуса авторизации |
-| `POST` | `/api/ask/` | Диагностический запрос (текст, фото, аудио, документы, коды DTC) |
-| `GET/POST`| `/api/projects/` | Список проектов пользователя и создание нового проекта |
-| `GET/POST`| `/api/sessions/` | Список сессий пользователя и создание нового диалога |
-| `GET/PATCH`| `/api/sessions/<id>/` | Детали сессии и история сообщений |
-| `POST` | `/api/sessions/<id>/pin/` | Закрепление/открепление диалога |
-| `POST` | `/api/sessions/<id>/tag/` | Установка тега узла/системы авто |
-| `POST` | `/api/sessions/<id>/rename/` | Переименование диалога |
-| `POST` | `/api/messages/<id>/delete/` | Удаление одного сообщения из чата и контекста |
-| `POST` | `/api/messages/delete/` | Пакетное удаление выбранных сообщений или очистка чата |
-| `GET` | `/api/worker-status/<session_id>/` | Статус динамического воркера памяти |
-| `POST` | `/api/messages/<id>/toggle-task/` | Сохранение состояния чекбоксов ремонта/инвентаря |
-| `GET` | `/api/dtc/?q=...&system=...` | Поиск по словарю кодов DTC и телеметрии |
-| `GET/POST` | `/api/settings/` | Управление настройками AirLLM, GPU VRAM и памятью |
+В папке `lecodes_webapp` находится нативное мобильное приложение **ИИдеал Авто (le.codes)** на TypeScript + Native Android (Gradle / Kotlin / J2V8 / OkHttp). Оно работает в **едином потоке с сервером Django** и поддерживает автономное чтение OBD-II (ELM327 Bluetooth / Wi-Fi), запись речи, камеру и двухрежимный ландшафтный AR / VR HUD.
+
+### А. Требования для сборки на чистом ПК (Windows / Linux / macOS)
+
+1. **Node.js 20 LTS или новее** (в комплекте с `npm`).
+   - Проверка: `node -v && npm -v`
+2. **Java Development Kit (JDK) 17** (`compileOptions` проекта собраны под `JavaVersion.VERSION_17`; установить напр. Eclipse Temurin 17 / Microsoft Build of OpenJDK 17 и задать `JAVA_HOME`).
+   - Проверка: `java -version`
+3. **Android SDK (Command-line Tools / Android Studio)**:
+   - Платформы и инструменты: **Android SDK Platform 36** (`compileSdk = 36`, `targetSdk = 36`, `minSdk = 23`), **Android SDK Build-Tools**, **Android SDK Platform-Tools (`adb`)** и **Android Emulator** (системный образ Google APIs x86_64/arm64, напр. `Pixel 5 API 34`).
+   - Пропишите переменные окружения `ANDROID_HOME` (на Windows обычно `C:\Users\<User>\AppData\Local\Android\Sdk` или `C:\Program Files (x86)\Android\android-sdk`) и добавьте `%ANDROID_HOME%\platform-tools` + `%ANDROID_HOME%\emulator` в `PATH`.
+   - Укажите путь к SDK в файле `lecodes_webapp/android/local.properties` (если не создался автоматически):
+     ```properties
+     sdk.dir=C\:\\Users\\<User>\\AppData\\Local\\Android\\Sdk
+     ```
+4. **Python 3.11+ / 3.12** и виртуальное окружение `.venv` в корне репозитория с зависимостями из `requirements.txt` для бэкенда Django + AirLLM.
+
+### Б. Пошаговая сборка APK и запуск с чистого листа (терминал PowerShell / Bash)
+
+```powershell
+# 1. Запустите локальный сервер Django (из корня репозитория)
+.\.venv\Scripts\python.exe manage.py migrate
+.\.venv\Scripts\python.exe manage.py runserver 0.0.0.0:8000
+
+# 2. Установите JS-зависимости мобильного клиента и скомпилируйте бандл под Android
+cd lecodes_webapp
+npm ci
+npx lecodes-cli app sync android
+
+# 3. Соберите Debug APK через Gradle
+cd android
+# (Опционально) --init-script build_cache.init.gradle.kts выносит папку build с облачных/сетевых дисков (GDrive) в локальный профиль
+.\gradlew.bat assembleDebug --init-script build_cache.init.gradle.kts
+```
+
+> **Примечание о расположении APK:**
+>
+> - Без `--init-script build_cache.init.gradle.kts` готовый APK лежит в `lecodes_webapp/android/app/build/outputs/apk/debug/app-debug.apk`.
+> - При использовании `build_cache.init.gradle.kts` или скрипта `.vscode/scripts/build_and_run.ps1` путь сборки перенаправляется в `C:\Users\<USER>\.android_build\aideal-autodiag-lecodes\app\outputs\apk\debug\app-debug.apk` (отредактируйте `build_cache.init.gradle.kts` под свой путь пользователя на новом ПК).
+> - Для **Release APK** настройте `lecodes_webapp/android/keystore.properties` (или переменные `LECODES_ANDROID_KEYSTORE_FILE`, `LECODES_ANDROID_KEYSTORE_PASSWORD`, `LECODES_ANDROID_KEY_ALIAS`, `LECODES_ANDROID_KEY_PASSWORD`) и выполните `.\gradlew.bat assembleRelease`.
+
+### В. Запуск эмулятора, проброс порта 8000 и установка APK
+
+```powershell
+# 1. Посмотреть доступные AVD-профили и запустить эмулятор (или открыть Device Manager в Android Studio)
+emulator -list-avds
+emulator -avd pixel_5_-_api_34 -no-snapshot-load
+
+# 2. Дождаться загрузки и пробросить локальный сервер Django внутрь эмулятора / физического телефона (по USB-отладке):
+adb wait-for-device
+adb reverse tcp:8000 tcp:8000
+
+# 3. Установить собранный APK и выдать системные разрешения (камера для AR, микрофон для голосовых)
+adb install -r path\to\app-debug.apk
+adb shell pm grant com.mmcco.aidealauto android.permission.CAMERA
+adb shell pm grant com.mmcco.aidealauto android.permission.RECORD_AUDIO
+
+# 4. Запустить приложение
+adb shell am start -n com.mmcco.aidealauto/.MainActivity
+```
+
+> **Адрес бэкенда внутри приложения:** по умолчанию клиент настроен на `http://localhost:8000`. После выполнения `adb reverse tcp:8000 tcp:8000` запросы с телефона или эмулятора идут напрямую на запущенный локально `runserver`. Для изменения адреса без пересборки откройте **Настройки**, нажмите **10 раз** на плашку версии приложения для разблокировки **Инженерного меню (Dev Mode)** и выберите нужный пресет или введите URL сервера.
+
+### Г. Эмуляция, Hot-Reload и Full-Stack запуск в VS Code
+
+В репозитории преднастроены `.vscode/tasks.json`, `.vscode/launch.json` и вспомогательные PowerShell-скрипты в `.vscode/scripts/`:
+
+- **Запуск эмулятора (`Ctrl+Shift+P` -> `Tasks: Run Task`)**:
+  - `Android: Запустить эмулятор Pixel 5 (API 34)` (вызывает `.vscode/scripts/run_emulator.ps1`)
+  - `Android: Запустить эмулятор Pixel 7 (API 26)`
+- **Сборка, `adb reverse` и запуск APK в 1 клик**:
+  - `Android: Собрать и запустить APK (le.codes)` (вызывает `.vscode/scripts/build_and_run.ps1`: выполняет `npx lecodes-cli app sync android`, `assembleDebug`, `adb reverse tcp:8000 tcp:8000`, `adb install -r` и `am start`)
+- **Быстрый цикл разработки UI**:
+  - `Android: Hot-Reload JS бандла (le.codes sync)` — пересобирает `src/*.ts` за ~0.5 сек без полной пересборки Gradle APK.
+  - `Android: Показать Logcat (LeCodes + AIdeal)` — живой поток нативных логов (`LeCodes`, `AIdealMainActivity`, `AndroidRuntime`).
+- **Запуск всего стека по клавише `F5` (`.vscode/launch.json`)**:
+  - **`🚀 Full-Stack: Django Server + Android App (Pixel)`** — составная конфигурация (`compounds`), которая одновременно поднимает отладочный сервер Django и выполняет сборку/деплой Android-приложения на эмулятор Pixel.
+  - **`Android JVM: Прикрепить отладчик Device Tools (Kotlin/Java)`** — подключение JVM-отладчика к процессу `com.mmcco.aidealauto`.
+
+---
+
+## 14. Справочник REST API и автотесты
+
+| Метод    | Эндпоинт                     | Назначение                                                                                             |
+| ------------- | ------------------------------------ | ---------------------------------------------------------------------------------------------------------------- |
+| `GET`       | `/`                                | Главный интерфейс (Mobile-First PWA + Desktop)                                                   |
+| `GET`       | `/ar/`                             | Режим для AR-очков (RayNeo Optical / Видео-фон)                                             |
+| `POST`      | `/api/auth/register/`              | Регистрация нового пользователя                                                     |
+| `POST`      | `/api/auth/login/`                 | Авторизация (вход) пользователя                                                       |
+| `POST`      | `/api/auth/logout/`                | Выход из системы                                                                                   |
+| `GET`       | `/api/auth/status/`                | Проверка текущего статуса авторизации                                          |
+| `POST`      | `/api/ask/`                        | Диагностический запрос (текст, фото, аудио, документы, коды DTC) |
+| `GET/POST`  | `/api/projects/`                   | Список проектов пользователя и создание нового проекта           |
+| `GET/POST`  | `/api/sessions/`                   | Список сессий пользователя и создание нового диалога               |
+| `GET/PATCH` | `/api/sessions/<id>/`              | Детали сессии и история сообщений                                                   |
+| `POST`      | `/api/sessions/<id>/pin/`          | Закрепление/открепление диалога                                                     |
+| `POST`      | `/api/sessions/<id>/tag/`          | Установка тега узла/системы авто                                                     |
+| `POST`      | `/api/sessions/<id>/rename/`       | Переименование диалога                                                                      |
+| `POST`      | `/api/messages/<id>/delete/`       | Удаление одного сообщения из чата и контекста                             |
+| `POST`      | `/api/messages/delete/`            | Пакетное удаление выбранных сообщений или очистка чата           |
+| `GET`       | `/api/worker-status/<session_id>/` | Статус динамического воркера памяти                                              |
+| `POST`      | `/api/messages/<id>/toggle-task/`  | Сохранение состояния чекбоксов ремонта/инвентаря                     |
+| `GET`       | `/api/dtc/?q=...&system=...`       | Поиск по словарю кодов DTC и телеметрии                                            |
+| `GET/POST`  | `/api/settings/`                   | Управление настройками AirLLM, GPU VRAM и памятью                                   |
 
 ### Запуск тестов и бенчмарка RAG
+
 ```powershell
 # Запуск полного набора автотестов (11 тестов)
 powershell -Command "$env:AUTODIAG_FAST_TEST='1'; .\.venv\Scripts\python.exe manage.py test diagnostics -v 2"

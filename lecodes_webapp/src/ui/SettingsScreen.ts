@@ -1,512 +1,821 @@
 /**
- * Экран «Настройки & Инженерное меню» (Settings & Dev Mode).
- * Полное соответствие оригинальному сайту:
- * 1. Инженерное меню (Dev Mode):
- *    - Базовый URL Django API (пресеты: 10.0.2.2:8000 для эмулятора, localhost:8000, Wi-Fi 192.168.x.x, относительный)
- *    - Замер задержки (Ping / Health check)
- * 2. Междиалоговая память (Cross-Dialog Memory):
- *    - Переключатель передачи контекста между разными проверками
- *    - Глобальная память (выжимка всех сессий) с кнопкой очистки
- * 3. Кэширование ресурсов и офлайн-словарь DTC
- * 4. Аппаратные сенсоры, AR-очки RayNeo, Samsung DeX, Bluetooth/Serial
- * 5. Пасхалка (Easter Egg) переключения режима разработчика по клику на версию
+ * Экран настроек, аккаунта мастера, междиалоговой памяти и скрытого инженерного меню.
+ * Полное соответствие веб-версии + 100% реактивные тёмная и светлая темы:
+ * - Вход / Регистрация / Выход / Удаление аккаунта + кликабельные Условия и Политика
+ * - Переключение Светлой и Тёмной тем оформления
+ * - Междиалоговая память ИИ (переключатель, редактируемая сводка, сохранение, очистка)
+ * - Статус аппаратных модулей (Камера, Микрофон, Речь)
+ * - Инженерное меню (Dev Mode), скрытое за 10 тапами по блоку версии,
+ *   с пресетом Локальный ПК http://localhost:8000 (adb reverse) и диагностикой связи.
  *
  * Лицензия: GPL-3.0
  */
 
-import { apiClient } from "../api/BackendApiClient";
-import { cacheManager, CacheStats } from "../cache/ResourceCacheManager";
-import { WebBluetoothOBD } from "../obd/WebBluetoothOBD";
-import { WebSerialOBD } from "../obd/WebSerialOBD";
-import { createAuthModal } from "./AuthModal";
-import { HeaderBar, LucideIcon, PrimaryButton, SecondaryButton, THEME } from "./components";
+import { apiClient, DEFAULT_BACKEND_URL } from "../api/BackendApiClient";
+import { cacheManager } from "../cache/ResourceCacheManager";
+import { appState, createWelcomeMessage } from "../state/appState";
+import { AuthUser } from "../types";
+import {
+  AppHeader,
+  currentThemeSignal,
+  LucideIcon,
+  openConfirmModal,
+  PrimaryButton,
+  SecondaryButton,
+  StatusBadge,
+  THEME,
+  toggleTheme
+} from "./components";
 
 export interface SettingsScreenCallbacks {
-  userSignal?: any;
-  onOpenAuth?: (mode?: "login" | "register") => void;
+  onOpenAr?: () => void;
+  onServerUrlChanged?: (newUrl: string) => void;
+  onAuthChanged?: (user: AuthUser) => void;
 }
 
 export function createSettingsScreen(callbacks?: SettingsScreenCallbacks): any {
-  const apiUrlSignal = signal(apiClient.getBaseUrl());
-  const cacheStatsSignal = signal<CacheStats>(cacheManager.getStats());
-  const syncMsgSignal = signal("");
+  const urlTextSignal = signal<string>(apiClient.getBaseUrl());
+  const pingStateSignal = signal<"idle" | "running" | "ok" | "crit">("idle");
+  const pingMessageSignal = signal<string>("Связь не проверена");
 
-  // Модальное окно авторизации для экрана настроек
-  const authModal = createAuthModal({
-    onAuthSuccess: (u) => {
-      if (callbacks?.userSignal) {
-        callbacks.userSignal.value = u;
-      }
-    }
-  });
-
-  const handleLogout = async () => {
-    await apiClient.logout();
-    if (callbacks?.userSignal) {
-      callbacks.userSignal.value = { username: "", is_authenticated: false };
-    }
-  };
-
-  const handleDeleteAccount = async () => {
-    const ok = await apiClient.deleteAccount();
-    if (ok) {
-      if (callbacks?.userSignal) {
-        callbacks.userSignal.value = { username: "", is_authenticated: false };
-      }
-    }
-  };
-
-  // Реактивное состояние для междиалоговой памяти
-  const crossMemorySignal = signal<boolean>(true);
-  const globalSummarySignal = signal<string>(
-    "Сводка знаний: Автомобили Lada Vesta, Skoda Octavia. Характерные проблемы: пропуски зажигания 2-3 цилиндр, загрязнение ДМРВ, датчики скорости ABS."
+  // Авторизация / регистрация
+  const authModeSignal = signal<"login" | "register">("login");
+  const authLoginSignal = signal<string>("");
+  const authEmailSignal = signal<string>("");
+  const authPasswordSignal = signal<string>("");
+  const firstLoginConsentedSignal = signal<boolean>(
+    cacheManager.getSetting<boolean>("first_login_legal_accepted", false)
   );
+  const termsAcceptedSignal = signal<boolean>(false);
+  const needsConsent = () =>
+    authModeSignal.value === "register" || !firstLoginConsentedSignal.value;
+  const authErrorSignal = signal<string>("");
+  const isAuthSubmittingSignal = signal<boolean>(false);
 
-  // Реактивное состояние для инженерного меню
-  const isDevUnlockedSignal = signal<boolean>(cacheManager.getSetting("dev_menu_unlocked", true));
-  const tapCountSignal = signal(0);
-  const tapNoticeSignal = signal("");
-  const devTestResultSignal = signal("");
-  const isTestingSignal = signal(false);
+  // Междиалоговая память ИИ
+  const memoryEditSignal = signal<string>(appState.globalMemorySummarySignal.value || "");
+  const isMemorySavingSignal = signal<boolean>(false);
 
-  const hasBt = WebBluetoothOBD.isSupported();
-  const hasSerial = WebSerialOBD.isSupported();
-  const hasCache = cacheManager.isCacheApiSupported();
+  // Инженерное меню строго скрыто в обычном режиме до 10 явных нажатий в текущей сессии
+  cacheManager.saveSetting("dev_menu_unlocked", false);
+  const devUnlockedSignal = signal<boolean>(false);
+  const versionTapCountSignal = signal<number>(0);
 
-  // Загрузка настроек с бэкенда
-  apiClient.getSettings().then(settings => {
-    if (settings) {
-      crossMemorySignal.value = settings.cross_dialog_memory_enabled;
-      if (settings.global_memory_summary) {
-        globalSummarySignal.value = settings.global_memory_summary;
-      }
-    }
+  const header = AppHeader({
+    title: "ИИДЕАЛ АВТО",
+    onOpenAr: () => callbacks?.onOpenAr?.()
   });
 
-  const handleVersionTap = () => {
-    tapCountSignal.value++;
-    const remaining = 7 - tapCountSignal.value;
+  // =========================================================================
+  // СЕКЦИЯ 1: УЧЕТНАЯ ЗАПИСЬ МАСТЕРА (ВХОД / РЕГИСТРАЦИЯ / ПРОФИЛЬ)
+  // =========================================================================
 
-    if (remaining > 0 && remaining < 5) {
-      tapNoticeSignal.value = `Нажмите ещё ${remaining} раз для переключения режима разработчика...`;
-    } else if (remaining <= 0) {
-      tapCountSignal.value = 0;
-      isDevUnlockedSignal.value = !isDevUnlockedSignal.value;
-      cacheManager.saveSetting("dev_menu_unlocked", isDevUnlockedSignal.value);
-      tapNoticeSignal.value = isDevUnlockedSignal.value
-        ? "Инженерное меню разработчика разблокировано!"
-        : "Инженерное меню скрыто";
-    }
-  };
-
-  const handleSaveDevUrl = (urlToSave: string) => {
-    const clean = urlToSave.trim().replace(/\/+$/, "");
-    apiClient.setBaseUrl(clean);
-    apiUrlSignal.value = apiClient.getBaseUrl();
-    devTestResultSignal.value = `Адрес стенда сохранен: ${apiUrlSignal.value || "Относительный путь (/)"}`;
-  };
-
-  const handleTestPing = async (targetUrl: string) => {
-    if (isTestingSignal.value) return;
-    isTestingSignal.value = true;
-    devTestResultSignal.value = `Проверка связи с ${targetUrl || "хостом"}...`;
-
-    try {
-      const res = await apiClient.testConnection(targetUrl);
-      if (res.ok) {
-        devTestResultSignal.value = `[OK] ${res.message}`;
-      } else {
-        devTestResultSignal.value = `[ВНИМАНИЕ] ${res.message}`;
-      }
-    } catch (e: any) {
-      devTestResultSignal.value = `[ОШИБКА] Не удалось подключиться: ${e.message}`;
-    } finally {
-      isTestingSignal.value = false;
-    }
-  };
-
-  const handleToggleCrossMemory = async () => {
-    crossMemorySignal.value = !crossMemorySignal.value;
-    await apiClient.saveSettings({ cross_dialog_memory_enabled: crossMemorySignal.value });
-  };
-
-  const handleClearGlobalMemory = async () => {
-    globalSummarySignal.value = "Глобальная память очищена.";
-    await apiClient.clearGlobalMemory();
-  };
-
-  const handleSyncDtc = async () => {
-    syncMsgSignal.value = "Синхронизация словаря кодов...";
-    try {
-      const count = await apiClient.syncDtcDictionary();
-      cacheStatsSignal.value = cacheManager.getStats();
-      syncMsgSignal.value = `Успешно загружено кодов: ${count}`;
-    } catch (e: any) {
-      syncMsgSignal.value = `Ошибка синхронизации: ${e.message}`;
-    }
-  };
-
-  const handleClearCache = async () => {
-    await cacheManager.clearCache();
-    cacheStatsSignal.value = cacheManager.getStats();
-    syncMsgSignal.value = "Кэш приложения очищен";
-  };
-
-  const header = HeaderBar(
-    "Настройки & Инженерное меню",
-    "Конфигурация сервера, междиалоговой памяти и датчиков"
-  );
-
-  // --- БЛОК УЧЕТНОЙ ЗАПИСИ МАСТЕРА ---
-  const isAuthenticated = () => !!callbacks?.userSignal?.value?.is_authenticated;
-  const currentUsername = () => callbacks?.userSignal?.value?.username || "Гость";
-
-  const accountSection = UIColumn(
-    UIRow(
-      LucideIcon("lucide:user", 16, THEME.accentOrange),
-      UIText(" Учетная запись мастера").style({
-        color: THEME.textPrimary,
-        fontSize: 14,
-        fontWeight: "bold",
-        marginLeft: 4,
-        flex: 1
-      }),
-      UIText(() => (isAuthenticated() ? "Авторизован" : "Гостевой режим")).style({
-        color: () => (isAuthenticated() ? THEME.statusOk : THEME.textMuted),
-        fontSize: 11,
-        fontWeight: "bold"
-      })
-    ).style({ alignItems: "center", marginBottom: 8, width: "100%" }),
-
-    UIText(() =>
-      isAuthenticated()
-        ? `Вы вошли как мастер «${currentUsername()}». Доступны облачные отчеты и история ремонтов.`
-        : "Вы не вошли в систему. Локальные данные сохраняются только на этом устройстве."
-    ).style({
-      color: THEME.textMuted,
-      fontSize: 11,
-      lineHeight: 16,
-      marginBottom: 10
-    }),
-
-    // Кнопки для гостя: [Войти] [Регистрация]
-    UIRow(
-      PrimaryButton("Войти в аккаунт", () => (callbacks?.onOpenAuth ? callbacks.onOpenAuth("login") : authModal.show("login"))),
-      UIRow().style({ width: 8 }),
-      SecondaryButton("Регистрация", () => (callbacks?.onOpenAuth ? callbacks.onOpenAuth("register") : authModal.show("register")))
-    ).style({
-      alignItems: "center",
-      width: "100%",
-      display: () => (isAuthenticated() ? "none" : "flex")
-    }),
-
-    // Кнопки для авторизованного мастера: [Выйти из аккаунта] [Удалить профиль]
-    UIRow(
-      SecondaryButton("Выйти из аккаунта", handleLogout),
-      UIRow().style({ width: 8 }),
-      UIButton(
-        UIText("Удалить профиль").style({ color: THEME.statusCrit, fontSize: 12, fontWeight: "600" })
-      )
-        .style({
-          backgroundColor: "rgba(239, 68, 68, 0.12)",
-          borderColor: "rgba(239, 68, 68, 0.35)",
-          borderWidth: 1,
-          borderRadius: 8,
-          paddingHorizontal: 12,
-          paddingVertical: 8,
-          $pressed: { opacity: 0.7 }
-        })
-        .onClick(handleDeleteAccount)
-    ).style({
-      alignItems: "center",
-      width: "100%",
-      display: () => (isAuthenticated() ? "flex" : "none")
-    })
-  ).style({
-    backgroundColor: THEME.bgSurface,
-    borderRadius: 12,
-    padding: 14,
-    borderWidth: 1,
-    borderColor: THEME.borderStrong,
-    marginBottom: 12,
-    width: "100%"
-  });
-
-  // --- БЛОК ИНЖЕНЕРНОГО МЕНЮ СТЕНДА ---
-  let devUrlInputField: any = null;
-  const devUrlInputText = signal(apiUrlSignal.value);
-
-  devUrlInputField = UIInput()
+  const authLoginInput = UIInput()
     .style({
-      placeholder: "http://10.0.2.2:8000 или http://192.168.1.100:8000",
-      backgroundColor: THEME.bgBase,
-      color: "#ffffff",
-      borderRadius: 8,
+      placeholder: "Логин / Имя пользователя (от 3 симв.)",
+      placeholderColor: () => THEME.inputPlaceholder,
+      backgroundColor: () => THEME.bgInput,
+      color: () => THEME.textPrimary,
+      borderWidth: 1.5,
+      borderColor: () => THEME.borderStrong,
+      borderRadius: 9,
       paddingHorizontal: 12,
-      paddingVertical: 9,
+      paddingVertical: 10,
       fontSize: 13,
-      borderWidth: 1,
-      borderColor: THEME.borderSubtle,
-      width: "100%",
-      marginBottom: 8
+      width: "100%"
     })
-    .onChange((val: string) => {
-      devUrlInputText.value = val;
+    .onChange((v: string) => {
+      authLoginSignal.value = v;
     });
 
-  const presetBtn = (name: string, url: string) => {
+  const authEmailInput = UIInput()
+    .style({
+      placeholder: "Email (необязательно, для облачных отчётов)",
+      placeholderColor: () => THEME.inputPlaceholder,
+      backgroundColor: () => THEME.bgInput,
+      color: () => THEME.textPrimary,
+      borderWidth: 1.5,
+      borderColor: () => THEME.borderStrong,
+      borderRadius: 9,
+      paddingHorizontal: 12,
+      paddingVertical: 10,
+      fontSize: 13,
+      type: "email",
+      width: "100%",
+      display: () => (authModeSignal.value === "register" ? "flex" : "none")
+    })
+    .onChange((v: string) => {
+      authEmailSignal.value = v;
+    });
+
+  const authPasswordInput = UIInput()
+    .style({
+      placeholder: "Пароль (от 6 символов)",
+      placeholderColor: () => THEME.inputPlaceholder,
+      backgroundColor: () => THEME.bgInput,
+      color: () => THEME.textPrimary,
+      borderWidth: 1.5,
+      borderColor: () => THEME.borderStrong,
+      borderRadius: 9,
+      paddingHorizontal: 12,
+      paddingVertical: 10,
+      fontSize: 13,
+      type: "password",
+      width: "100%"
+    })
+    .onChange((v: string) => {
+      authPasswordSignal.value = v;
+    });
+
+  const applyAuthenticatedState = async (user: AuthUser) => {
+    appState.currentUserSignal.value = user;
+    callbacks?.onAuthChanged?.(user);
+    appState.sessionsRefreshCounterSignal.value++;
+
+    // Загружаем облачные настройки и междиалоговую память пользователя
+    const srvSettings = await apiClient.getSettings();
+    appState.crossMemoryEnabledSignal.value = srvSettings.cross_dialog_memory_enabled;
+    appState.globalMemorySummarySignal.value = srvSettings.global_memory_summary || "";
+    memoryEditSignal.value = appState.globalMemorySummarySignal.value;
+    memoryTextArea.value = memoryEditSignal.value;
+  };
+
+  const handleAuthSubmit = async () => {
+    const username = (authLoginInput.value || authLoginSignal.value || "").trim();
+    const email = (authEmailInput.value || authEmailSignal.value || "").trim();
+    const password = (authPasswordInput.value || authPasswordSignal.value || "").trim();
+
+    if (username.length < 3) {
+      authErrorSignal.value = "Логин должен содержать минимум 3 символа";
+      return;
+    }
+    if (password.length < 6) {
+      authErrorSignal.value = "Пароль должен содержать минимум 6 символов";
+      return;
+    }
+    if (needsConsent() && !termsAcceptedSignal.value) {
+      authErrorSignal.value =
+        "Подтвердите согласие на cookies, Пользовательское соглашение и Политику конфиденциальности";
+      return;
+    }
+    if (authModeSignal.value === "register") {
+      if (email && !email.includes("@")) {
+        authErrorSignal.value = "Укажите корректный Email или оставьте поле пустым";
+        return;
+      }
+    }
+
+    authErrorSignal.value = "";
+    isAuthSubmittingSignal.value = true;
+    try {
+      const res =
+        authModeSignal.value === "login"
+          ? await apiClient.login(username, password)
+          : await apiClient.register(username, password, email || undefined);
+
+      if (res.success && res.is_authenticated) {
+        cacheManager.saveSetting("first_login_legal_accepted", true);
+        cacheManager.saveSetting("first_entry_legal_accepted", true);
+        firstLoginConsentedSignal.value = true;
+        authPasswordInput.value = "";
+        authPasswordSignal.value = "";
+        await applyAuthenticatedState({
+          username: res.username || username,
+          email: res.email || email || undefined,
+          is_staff: res.user?.is_staff,
+          is_authenticated: true
+        });
+        toast(
+          authModeSignal.value === "login"
+            ? `Добро пожаловать, ${res.username || username}!`
+            : `Аккаунт ${res.username || username} создан`
+        );
+      } else {
+        authErrorSignal.value =
+          res.error ||
+          (authModeSignal.value === "login" ? "Неверный логин или пароль" : "Ошибка регистрации");
+      }
+    } catch (err: any) {
+      authErrorSignal.value = `Ошибка связи: ${err?.message || err}`;
+    } finally {
+      isAuthSubmittingSignal.value = false;
+    }
+  };
+
+  const authModeTab = (label: string, mode: "login" | "register") => {
+    const active = () => authModeSignal.value === mode;
     return UIButton(
-      UIText(name).style({ color: THEME.accentCyan, fontSize: 11, fontWeight: "500" })
+      UIText(label).style({
+        color: () => (active() ? "#ffffff" : THEME.textSecondary),
+        fontSize: 12,
+        fontWeight: "bold"
+      })
     )
       .style({
-        backgroundColor: "rgba(56, 189, 248, 0.12)",
-        borderColor: "rgba(56, 189, 248, 0.35)",
-        borderWidth: 1,
-        borderRadius: 6,
-        paddingHorizontal: 8,
-        paddingVertical: 4,
-        marginRight: 6,
-        marginBottom: 6,
-        $pressed: { opacity: 0.7 }
+        flex: 1,
+        paddingVertical: 8,
+        borderRadius: 8,
+        backgroundColor: () => (active() ? THEME.accentOrange : "transparent"),
+        alignItems: "center",
+        justifyContent: "center"
       })
       .onClick(() => {
-        devUrlInputText.value = url;
-        if (devUrlInputField) devUrlInputField.value = url;
-        handleSaveDevUrl(url);
+        authModeSignal.value = mode;
+        termsAcceptedSignal.value = false;
+        authErrorSignal.value = "";
       });
   };
 
-  const engineeringSection = UIColumn(
+  const accountCard = UIColumn(
     UIRow(
-      UIText("Инженерное меню стенда (Dev Mode)").style({ color: THEME.accentOrange, fontSize: 14, fontWeight: "bold", flex: 1 }),
-      UIRow(
-        UIText("● Разблокировано").style({ color: THEME.statusOk, fontSize: 10, fontWeight: "bold" })
-      ).style({
-        backgroundColor: "rgba(34, 197, 94, 0.15)",
-        borderRadius: 6,
-        paddingHorizontal: 6,
-        paddingVertical: 2
-      })
-    ).style({ alignItems: "center", marginBottom: 6, width: "100%" }),
+      LucideIcon("lucide:user", 18, () => THEME.accentOrange),
+      UIText("Учётная запись мастера").style({
+        color: () => THEME.textPrimary,
+        fontSize: 15,
+        fontWeight: "bold",
+        flex: 1
+      }),
+      StatusBadge(
+        () => (appState.currentUserSignal.value.is_authenticated ? "ok" : "idle"),
+        () =>
+          appState.currentUserSignal.value.is_authenticated
+            ? `В сети: ${appState.currentUserSignal.value.username}`
+            : "Гостевой режим"
+      )
+    ).style({ alignItems: "center", gap: 8, width: "100%" }),
 
-    UIText("Базовый адрес API бэкенда Django для Android-эмулятора и сети автосервиса:").style({
-      color: THEME.textMuted,
-      fontSize: 11,
-      marginBottom: 8
+    // Блок авторизованного профиля
+    UIColumn(
+      UIText(() => {
+        const u = appState.currentUserSignal.value;
+        return u.email ? `Мастер: ${u.username} (${u.email})` : `Мастер: ${u.username}`;
+      }).style({
+        color: () => THEME.textSecondary,
+        fontSize: 12
+      }),
+      UIText("Ваши диалоги, проекты и междиалоговая память синхронизируются с сервером.").style({
+        color: () => THEME.textMuted,
+        fontSize: 11
+      }),
+      UIRow(
+        SecondaryButton(
+          "Выйти",
+          async () => {
+            await apiClient.logout();
+            appState.currentUserSignal.value = { username: "", is_authenticated: false };
+            appState.messagesSignal.value = [createWelcomeMessage()];
+            appState.sessionsRefreshCounterSignal.value++;
+            toast("Вы вышли из аккаунта");
+          },
+          "lucide:log-out"
+        ),
+        UISpacer(),
+        UIButton(
+          UIRow(
+            LucideIcon("lucide:trash-2", 14, () => THEME.statusCrit),
+            UIText("Удалить аккаунт").style({
+              color: () => THEME.statusCrit,
+              fontSize: 12,
+              fontWeight: "bold"
+            })
+          ).style({ alignItems: "center", gap: 5 })
+        )
+          .style({
+            backgroundColor: "rgba(239, 68, 68, 0.14)",
+            borderWidth: 1,
+            borderColor: "rgba(239, 68, 68, 0.35)",
+            paddingHorizontal: 10,
+            paddingVertical: 8,
+            borderRadius: 9
+          })
+          .onClick(() => {
+            openConfirmModal({
+              title: "Удалить аккаунт навсегда?",
+              message: "Профиль и вся облачная история диагностик будут безвозвратно удалены.",
+              confirmLabel: "Удалить",
+              onConfirm: async () => {
+                const res = await apiClient.deleteAccount();
+                if (res.success) {
+                  appState.currentUserSignal.value = { username: "", is_authenticated: false };
+                  appState.messagesSignal.value = [createWelcomeMessage()];
+                  appState.sessionsRefreshCounterSignal.value++;
+                  toast("Аккаунт удалён");
+                } else {
+                  toast(res.error || "Ошибка удаления аккаунта");
+                }
+              }
+            });
+          })
+      ).style({ alignItems: "center", width: "100%", marginTop: 4 })
+    ).style({
+      gap: 8,
+      width: "100%",
+      display: () => (appState.currentUserSignal.value.is_authenticated ? "flex" : "none")
     }),
 
-    devUrlInputField,
+    // Блок гостя (форма Входа / Регистрации)
+    UIColumn(
+      UIText("Войдите или зарегистрируйтесь для облачного хранения проектов, чеклистов и памяти ИИ:").style({
+        color: () => THEME.textSecondary,
+        fontSize: 12,
+        lineHeight: 17
+      }),
 
-    UIText("Быстрые пресеты стенда:").style({ color: THEME.textMuted, fontSize: 11, marginBottom: 4 }),
-    UIRow(
-      presetBtn("10.0.2.2 (VS Emulator)", "http://10.0.2.2:8000"),
-      presetBtn("localhost:8000", "http://localhost:8000"),
-      presetBtn("Wi-Fi (192.168.1.100)", "http://192.168.1.100:8000"),
-      presetBtn("Относительный (/)", "")
-    ).style({ flexWrap: "wrap", width: "100%", marginBottom: 8 }),
+      UIRow(authModeTab("Вход", "login"), authModeTab("Регистрация", "register")).style({
+        backgroundColor: () => THEME.bgElevated,
+        borderRadius: 10,
+        padding: 3,
+        width: "100%"
+      }),
 
-    UIRow(
-      SecondaryButton(
-        () => (isTestingSignal.value ? "Тест..." : "Ping"),
-        () => handleTestPing(devUrlInputText.value || apiUrlSignal.value)
-      ),
-      UIRow().style({ width: 8 }),
-      PrimaryButton("Сохранить и применить", () => handleSaveDevUrl(devUrlInputText.value))
-    ).style({ alignItems: "center", width: "100%", marginBottom: 8 }),
+      UIRow(
+        LucideIcon("lucide:circle-alert", 15, () => THEME.statusCrit),
+        UIText(() => authErrorSignal.value).style({
+          color: () => THEME.statusCrit,
+          fontSize: 11,
+          lineHeight: 15,
+          flex: 1
+        })
+      ).style({
+        backgroundColor: "rgba(239, 68, 68, 0.14)",
+        borderWidth: 1,
+        borderColor: "rgba(239, 68, 68, 0.35)",
+        borderRadius: 8,
+        paddingHorizontal: 10,
+        paddingVertical: 7,
+        alignItems: "center",
+        gap: 6,
+        width: "100%",
+        display: () => (authErrorSignal.value ? "flex" : "none")
+      }),
 
-    UIText(() => devTestResultSignal.value).style({
-      color: () => (devTestResultSignal.value.startsWith("[OK]") ? THEME.statusOk : THEME.statusWarn),
-      fontSize: 11,
-      lineHeight: 16
+      authLoginInput,
+      authEmailInput,
+      authPasswordInput,
+
+      UIColumn(
+        UIRow(
+          UIButton(
+            UIBox(
+              LucideIcon("lucide:check", 12, "#ffffff").style({
+                display: () => (termsAcceptedSignal.value ? "flex" : "none")
+              })
+            ).style({
+              width: 18,
+              height: 18,
+              borderRadius: 5,
+              borderWidth: 1.5,
+              borderColor: () => (termsAcceptedSignal.value ? THEME.statusOk : THEME.borderStrong),
+              backgroundColor: () => (termsAcceptedSignal.value ? THEME.statusOk : "transparent"),
+              alignItems: "center",
+              justifyContent: "center"
+            })
+          )
+            .style({ padding: 2 })
+            .onClick(() => {
+              termsAcceptedSignal.value = !termsAcceptedSignal.value;
+            }),
+          UIText("Принимаю использование cookies и кэша, Пользовательское соглашение и Политику конфиденциальности (152-ФЗ РФ)").style({
+            color: () => THEME.textSecondary,
+            fontSize: 11,
+            lineHeight: 15,
+            flex: 1
+          })
+        ).style({ alignItems: "flex-start", gap: 8, width: "100%" }),
+
+        UIRow(
+          UIButton(
+            UIText("Пользовательское соглашение").style({
+              color: () => THEME.accentCyan,
+              fontSize: 10,
+              textDecorationLine: "underline"
+            })
+          ).onClick(() => {
+            openURL(`${apiClient.getBaseUrl()}/terms/`).catch(() => {});
+          }),
+          UIText("•").style({ color: () => THEME.textMuted, fontSize: 10 }),
+          UIButton(
+            UIText("Политика конфиденциальности").style({
+              color: () => THEME.accentCyan,
+              fontSize: 10,
+              textDecorationLine: "underline"
+            })
+          ).onClick(() => {
+            openURL(`${apiClient.getBaseUrl()}/privacy/`).catch(() => {});
+          })
+        ).style({ alignItems: "center", gap: 6, paddingLeft: 26 })
+      ).style({
+        gap: 4,
+        width: "100%",
+        display: () => (needsConsent() ? "flex" : "none")
+      }),
+
+      PrimaryButton(
+        () =>
+          isAuthSubmittingSignal.value
+            ? "Выполняется..."
+            : authModeSignal.value === "login"
+              ? "Войти в аккаунт"
+              : "Создать аккаунт",
+        handleAuthSubmit,
+        isAuthSubmittingSignal
+      ).style({ width: "100%" })
+    ).style({
+      gap: 9,
+      width: "100%",
+      display: () => (appState.currentUserSignal.value.is_authenticated ? "none" : "flex")
     })
   ).style({
-    backgroundColor: THEME.bgSurface,
-    borderRadius: 12,
-    padding: 14,
+    backgroundColor: () => THEME.bgSurface,
     borderWidth: 1,
-    borderColor: THEME.borderStrong,
-    marginBottom: 12,
+    borderColor: () => THEME.borderDefault,
+    borderRadius: 14,
+    padding: 14,
+    gap: 10,
     width: "100%"
   });
 
-  // --- БЛОК МЕЖДИАЛОГОВОЙ ПАМЯТИ (Requirement #4 из оригинального сайта) ---
-  const memorySection = UIColumn(
+  // =========================================================================
+  // СЕКЦИЯ 2: ТЕМА ОФОРМЛЕНИЯ (ТЁМНАЯ / СВЕТЛАЯ)
+  // =========================================================================
+
+  const setTheme = (mode: "dark" | "light") => {
+    currentThemeSignal.value = mode;
+    cacheManager.saveSetting("theme_mode", mode);
+  };
+
+  const themeBtn = (label: string, mode: "dark" | "light", iconName: string) => {
+    const active = () => currentThemeSignal.value === mode;
+    return UIButton(
+      UIRow(
+        LucideIcon(iconName, 16, () => (active() ? "#ffffff" : THEME.textSecondary)),
+        UIText(label).style({
+          color: () => (active() ? "#ffffff" : THEME.textSecondary),
+          fontSize: 12,
+          fontWeight: "bold"
+        })
+      ).style({ alignItems: "center", gap: 6 })
+    )
+      .style({
+        flex: 1,
+        paddingVertical: 10,
+        borderRadius: 9,
+        backgroundColor: () => (active() ? THEME.accentOrange : THEME.bgElevated),
+        borderWidth: 1,
+        borderColor: () => (active() ? THEME.accentOrange : THEME.borderDefault),
+        alignItems: "center",
+        justifyContent: "center"
+      })
+      .onClick(() => setTheme(mode));
+  };
+
+  const themeCard = UIColumn(
     UIRow(
-      UIText("Междиалоговая память (Cross-Dialog Memory)").style({ color: THEME.textPrimary, fontSize: 14, fontWeight: "bold", flex: 1 }),
+      LucideIcon("lucide:sun", 17, () => THEME.accentOrange),
+      UIText("Оформление интерфейса").style({
+        color: () => THEME.textPrimary,
+        fontSize: 14,
+        fontWeight: "bold",
+        flex: 1
+      })
+    ).style({ alignItems: "center", gap: 8, width: "100%" }),
+    UIRow(
+      themeBtn("Тёмная (Стенд)", "dark", "lucide:moon"),
+      themeBtn("Светлая (Мастерская)", "light", "lucide:sun")
+    ).style({ gap: 8, width: "100%" })
+  ).style({
+    backgroundColor: () => THEME.bgSurface,
+    borderWidth: 1,
+    borderColor: () => THEME.borderDefault,
+    borderRadius: 14,
+    padding: 14,
+    gap: 10,
+    width: "100%"
+  });
+
+  // =========================================================================
+  // СЕКЦИЯ 3: МЕЖДИАЛОГОВАЯ ПАМЯТЬ И АППАРАТНЫЕ ДАТЧИКИ (ПЕРЕНЕСЕНО С ГЛАВНОЙ)
+  // =========================================================================
+
+  const memoryTextArea = UITextArea()
+    .style({
+      placeholder: "Долгосрочная память об автомобилях, предпочтениях и ремонтах...",
+      placeholderColor: () => THEME.inputPlaceholder,
+      backgroundColor: () => THEME.bgInput,
+      color: () => THEME.textPrimary,
+      borderWidth: 1.5,
+      borderColor: () => THEME.borderStrong,
+      borderRadius: 9,
+      padding: 10,
+      fontSize: 12,
+      minHeight: 74,
+      maxHeight: 150,
+      width: "100%"
+    })
+    .onChange((val: string) => {
+      memoryEditSignal.value = val;
+    });
+
+  effect(() => {
+    const val = appState.globalMemorySummarySignal.value || "";
+    memoryEditSignal.value = val;
+    memoryTextArea.value = val;
+  });
+
+  const memoryCard = UIColumn(
+    UIRow(
+      LucideIcon("lucide:cpu", 17, () => THEME.accentCyan),
+      UIText("Междиалоговая память ИИ").style({
+        color: () => THEME.textPrimary,
+        fontSize: 14,
+        fontWeight: "bold",
+        flex: 1
+      }),
       UIButton(
-        UIText(() => (crossMemorySignal.value ? "ВКЛ" : "ВЫКЛ")).style({
-          color: () => (crossMemorySignal.value ? THEME.statusOk : THEME.textMuted),
+        UIText(() => (appState.crossMemoryEnabledSignal.value ? "ВКЛ" : "ВЫКЛ")).style({
+          color: "#ffffff",
           fontSize: 11,
           fontWeight: "bold"
         })
       )
         .style({
-          backgroundColor: () => (crossMemorySignal.value ? "rgba(34, 197, 94, 0.15)" : THEME.bgElevated),
-          borderColor: () => (crossMemorySignal.value ? THEME.statusOk : THEME.borderSubtle),
-          borderWidth: 1,
-          borderRadius: 6,
-          paddingHorizontal: 8,
-          paddingVertical: 3
+          backgroundColor: () =>
+            appState.crossMemoryEnabledSignal.value ? THEME.statusOk : THEME.textMuted,
+          paddingHorizontal: 10,
+          paddingVertical: 5,
+          borderRadius: 8
         })
-        .onClick(handleToggleCrossMemory)
-    ).style({ alignItems: "center", marginBottom: 6, width: "100%" }),
+        .onClick(async () => {
+          const next = !appState.crossMemoryEnabledSignal.value;
+          appState.crossMemoryEnabledSignal.value = next;
+          await apiClient.saveSettings({ cross_dialog_memory_enabled: next });
+          toast(next ? "Междиалоговая память включена" : "Междиалоговая память выключена");
+        })
+    ).style({ alignItems: "center", gap: 8, width: "100%" }),
 
-    UIText("Позволяет модели помнить историю ремонтов и повторяющиеся неисправности между разными автомобилями и сессиями:").style({
-      color: THEME.textMuted,
+    UIText("Позволяет ассистенту помнить параметры вашего автопарка и выполненные работы между разными диалогами.").style({
+      color: () => THEME.textMuted,
       fontSize: 11,
-      marginBottom: 8
+      lineHeight: 16
     }),
 
-    UIColumn(
-      UIText(() => globalSummarySignal.value).style({
-        color: THEME.textSecondary,
-        fontSize: 11,
-        lineHeight: 16
-      })
-    ).style({
-      backgroundColor: THEME.bgBase,
-      borderRadius: 8,
-      padding: 10,
-      borderWidth: 1,
-      borderColor: THEME.borderSubtle,
-      marginBottom: 8,
-      width: "100%"
-    }),
+    memoryTextArea,
 
     UIRow(
+      SecondaryButton(
+        "Очистить",
+        () => {
+          openConfirmModal({
+            title: "Очистить глобальную память?",
+            message: "Накопленная сводка знаний о прошлых ремонтах будет сброшена.",
+            confirmLabel: "Очистить",
+            onConfirm: async () => {
+              const ok = await apiClient.clearGlobalMemory();
+              appState.globalMemorySummarySignal.value = "";
+              memoryEditSignal.value = "";
+              memoryTextArea.value = "";
+              toast(ok ? "Глобальная память очищена" : "Сброшено локально");
+            }
+          });
+        },
+        "lucide:trash-2"
+      ),
       UISpacer(),
-      SecondaryButton("Очистить глобальную память", handleClearGlobalMemory)
-    ).style({ width: "100%" })
-  ).style({
-    backgroundColor: THEME.bgSurface,
-    borderRadius: 12,
-    padding: 14,
-    borderWidth: 1,
-    borderColor: THEME.borderSubtle,
-    marginBottom: 12,
-    width: "100%"
-  });
-
-  // --- БЛОК КЭШИРОВАНИЯ И ОФЛАЙНА ---
-  const cacheSection = UIColumn(
-    UIText("Кэш базы знаний и офлайн-режим").style({ color: THEME.textPrimary, fontSize: 14, fontWeight: "bold" }),
-    UIText("Интеллектуальное кэширование кодов DTC и сессий:")
-      .style({ color: THEME.textMuted, fontSize: 11, marginTop: 2, marginBottom: 8 }),
-
-    UIRow(
-      UIText("Кодов ошибок в локальном кэше: ").style({ color: THEME.textMuted, fontSize: 12 }),
-      UIText(() => `${cacheStatsSignal.value.dtcCount}`).style({ color: THEME.accentCyan, fontSize: 12, fontWeight: "bold" })
-    ).style({ marginBottom: 4 }),
-
-    UIRow(
-      UIText("Сохраненных сессий оффлайн: ").style({ color: THEME.textMuted, fontSize: 12 }),
-      UIText(() => `${cacheStatsSignal.value.sessionsCount || 0}`).style({ color: THEME.accentOrange, fontSize: 12, fontWeight: "bold" })
-    ).style({ marginBottom: 10 }),
-
-    UIRow(
-      PrimaryButton("Синхронизировать DTC", handleSyncDtc),
-      UIRow().style({ width: 8 }),
-      SecondaryButton("Очистить кэш", handleClearCache)
+      PrimaryButton(
+        () => (isMemorySavingSignal.value ? "Сохранение..." : "Сохранить память"),
+        async () => {
+          const txt = (memoryTextArea.value || memoryEditSignal.value || "").trim();
+          isMemorySavingSignal.value = true;
+          appState.globalMemorySummarySignal.value = txt;
+          const ok = await apiClient.saveSettings({
+            cross_dialog_memory_enabled: appState.crossMemoryEnabledSignal.value,
+            global_memory_summary: txt
+          });
+          isMemorySavingSignal.value = false;
+          toast(ok ? "Память синхронизирована с сервером" : "Сохранено локально");
+        },
+        isMemorySavingSignal
+      )
     ).style({ alignItems: "center", width: "100%" }),
 
-    UIText(() => syncMsgSignal.value).style({ color: THEME.statusWarn, fontSize: 11, marginTop: 6 })
+    // Статус модулей устройства
+    UIRow(
+      UIText(
+        `Модули: Камера ${UICameraNode.supported ? "OK" : "—"} • Микрофон ${
+          AudioRecorder.supported ? "OK" : "—"
+        } • Речь ${SpeechRecognizer.supported ? "OK" : "—"}`
+      ).style({
+        color: () => THEME.textMuted,
+        fontSize: 10
+      })
+    ).style({ marginTop: 4, width: "100%" })
   ).style({
-    backgroundColor: THEME.bgSurface,
-    borderRadius: 12,
-    padding: 14,
+    backgroundColor: () => THEME.bgSurface,
     borderWidth: 1,
-    borderColor: THEME.borderSubtle,
-    marginBottom: 12,
+    borderColor: () => THEME.borderDefault,
+    borderRadius: 13,
+    padding: 13,
+    gap: 9,
     width: "100%"
   });
 
-  // --- БЛОК АППАРАТНЫХ ВОЗМОЖНОСТЕЙ, AR & СЕНСОРОВ ---
-  const renderCapRow = (name: string, supported: boolean, desc: string) => {
-    return UIRow(
-      UIRow().style({
-        width: 8,
-        height: 8,
-        borderRadius: 4,
-        backgroundColor: supported ? THEME.statusOk : THEME.statusCrit,
-        marginRight: 8,
-        alignSelf: "center",
-        flexShrink: 0
-      }),
-      UIColumn(
-        UIText(name).style({ color: THEME.textPrimary, fontSize: 12, fontWeight: "bold" }),
-        UIText(desc).style({ color: THEME.textMuted, fontSize: 11, marginTop: 1 })
-      ).style({ flex: 1 }),
-      UIText(supported ? "Поддерживается" : "Не поддерживается")
-        .style({ color: supported ? THEME.statusOk : THEME.statusCrit, fontSize: 11, fontWeight: "bold", alignSelf: "center", flexShrink: 0, marginLeft: 6 })
-    ).style({
-      paddingVertical: 8,
-      borderBottomWidth: 1,
-      borderColor: THEME.borderSubtle,
+  // =========================================================================
+  // СЕКЦИЯ 4: СКРЫТОЕ ИНЖЕНЕРНОЕ МЕНЮ (10 НАЖАТИЙ ПО БЛОКУ ВЕРСИИ)
+  // =========================================================================
+
+  const urlInput = UIInput()
+    .style({
+      placeholder: DEFAULT_BACKEND_URL,
+      placeholderColor: () => THEME.inputPlaceholder,
+      backgroundColor: () => THEME.bgInput,
+      color: () => THEME.textPrimary,
+      borderWidth: 1.5,
+      borderColor: () => THEME.borderStrong,
+      borderRadius: 9,
+      paddingHorizontal: 11,
+      paddingVertical: 9,
+      fontSize: 13,
+      type: "url",
       width: "100%"
+    })
+    .onChange((val: string) => {
+      urlTextSignal.value = val;
     });
+  urlInput.value = apiClient.getBaseUrl();
+
+  const applyServerUrl = (newUrl: string) => {
+    const clean = newUrl.trim().replace(/\/+$/, "") || DEFAULT_BACKEND_URL;
+    urlTextSignal.value = clean;
+    urlInput.value = clean;
+    apiClient.setBaseUrl(clean);
+    callbacks?.onServerUrlChanged?.(clean);
+    toast(`Сервер задан: ${clean}`);
   };
 
-  const hardwareSection = UIColumn(
-    UIText("Аппаратные интерфейсы, AR & Сенсоры").style({ color: THEME.textPrimary, fontSize: 14, fontWeight: "bold" }),
-    UIText("Прямой проброс датчиков, внешних экранов и AR-очков:")
-      .style({ color: THEME.textMuted, fontSize: 11, marginTop: 2, marginBottom: 8 }),
-    renderCapRow("AR HUD & Smart Glasses", true, "Очки RayNeo, XREAL, Rokid, Viture и режим Samsung DeX"),
-    renderCapRow("Датчики ориентации (3DoF)", true, "Гироскоп, акселерометр, компас и вектор вращения"),
-    renderCapRow("Микрофон & Аудиопоток", true, "Голосовой ввод симптомов и акустическая диагностика шумов ДВС"),
-    renderCapRow("Все камеры & Эндоскопы", true, "Основная, фронтальная, USB-бороскопы и тепловизоры FLIR"),
-    renderCapRow("Web Bluetooth API", hasBt, "ELM327 BLE и беспроводные OBD-сканеры"),
-    renderCapRow("Web Serial API", hasSerial, "USB/COM сканеры (FTDI, CH340, CP2102)"),
-    renderCapRow("Cache Storage API", hasCache, "Офлайн-хранилище базы знаний DTC")
+  const runPing = async () => {
+    const target = (urlInput.value || urlTextSignal.value || apiClient.getBaseUrl()).trim();
+    applyServerUrl(target);
+    pingStateSignal.value = "running";
+    pingMessageSignal.value = "Подключение...";
+    const res = await apiClient.testConnection(target);
+    pingStateSignal.value = res.ok ? "ok" : "crit";
+    pingMessageSignal.value = res.message;
+  };
+
+  const devMenuCard = UIColumn(
+    UIColumn(
+      UIRow(
+        LucideIcon("lucide:sliders-horizontal", 17, () => THEME.accentCyan),
+        UIText("Инженерное меню стенда (Dev Mode)").style({
+          color: () => THEME.accentCyan,
+          fontSize: 14,
+          fontWeight: "bold",
+          flex: 1
+        })
+      ).style({ alignItems: "center", gap: 7, width: "100%" }),
+      UIRow(
+        StatusBadge(() => pingStateSignal.value, () => pingMessageSignal.value)
+      ).style({ width: "100%" })
+    ).style({ gap: 6, width: "100%" }),
+
+    UIText("Адрес Django бэкенда (для adb reverse по умолчанию http://localhost:8000):").style({
+      color: () => THEME.textMuted,
+      fontSize: 11
+    }),
+
+    UIRow(
+      SecondaryButton("Локалхост (:8000)", () => applyServerUrl("http://localhost:8000")),
+      SecondaryButton("Эмулятор (10.0.2.2)", () => applyServerUrl("http://10.0.2.2:8000"))
+    ).style({ gap: 8, width: "100%" }),
+
+    urlInput,
+
+    UIRow(
+      PrimaryButton("Сохранить URL", () => {
+        applyServerUrl(urlInput.value || urlTextSignal.value);
+      }),
+      SecondaryButton("Пинг /api/", () => {
+        void runPing();
+      }, "lucide:wifi")
+    ).style({ gap: 8, width: "100%" }),
+
+    UIRow(
+      SecondaryButton(
+        "Синхронизировать DTC",
+        async () => {
+          const cnt = await apiClient.syncDtcDictionary();
+          toast(cnt > 0 ? `Загружено кодов: ${cnt}` : "Словарь недоступен или пуст");
+        },
+        "lucide:refresh-cw"
+      ),
+      UISpacer(),
+      SecondaryButton("Скрыть меню", () => {
+        devUnlockedSignal.value = false;
+        versionTapCountSignal.value = 0;
+        cacheManager.saveSetting("dev_menu_unlocked", false);
+        toast("Инженерное меню скрыто");
+      })
+    ).style({ alignItems: "center", width: "100%", marginTop: 4 })
   ).style({
-    backgroundColor: THEME.bgSurface,
-    borderRadius: 12,
-    padding: 14,
-    borderWidth: 1,
-    borderColor: THEME.borderSubtle,
-    marginBottom: 12,
-    width: "100%"
+    backgroundColor: () => THEME.bgSurface,
+    borderWidth: 1.5,
+    borderColor: () => THEME.accentCyan,
+    borderRadius: 13,
+    padding: 13,
+    gap: 9,
+    width: "100%",
+    display: () => (devUnlockedSignal.value ? "flex" : "none")
   });
 
-  // --- НИЖНЯЯ ПЛАШКА С ВЕРСИЕЙ (Easter Egg) ---
-  const versionEasterEggButton = UIButton(
-    UIColumn(
-      UIText("ИИдеал-Авто • Версия 1.0.0 (le.codes Native Client)").style({
-        color: THEME.textMuted,
-        fontSize: 12,
-        textAlign: "center"
-      }),
-      UIText("Движок: le.codes SDK 2.14+ • Лицензия: GPL-3.0").style({
-        color: "#475569",
-        fontSize: 10,
-        textAlign: "center",
-        marginTop: 2
-      }),
-      UIText(() => tapNoticeSignal.value).style({
-        color: THEME.statusWarn,
-        fontSize: 11,
-        textAlign: "center",
-        marginTop: 4
-      })
-    ).style({ alignItems: "center" })
+  // =========================================================================
+  // СЕКЦИЯ 5: КАРТОЧКА О ПРИЛОЖЕНИИ (10 ТАПОВ ДЛЯ РАЗБЛОКИРОВКИ DEV MODE)
+  // =========================================================================
+
+  const versionCard = UIButton(
+    UIRow(
+      LucideIcon("lucide:lock", 15, () =>
+        devUnlockedSignal.value ? THEME.statusOk : THEME.textMuted
+      ),
+      UIColumn(
+        UIText("ИИдеал-Авто Native • Версия 2.2 (GPL-3.0)").style({
+          color: () => THEME.textPrimary,
+          fontSize: 12,
+          fontWeight: "bold"
+        }),
+        UIText(() => {
+          if (devUnlockedSignal.value) {
+            return `Инженерный режим активен • ${urlTextSignal.value}`;
+          }
+          const taps = versionTapCountSignal.value;
+          if (taps >= 6) {
+            return `Нажмите ещё ${Math.max(1, 10 - taps)} раз для открытия Dev Menu`;
+          }
+          return `Экспертная система автодиагностики`;
+        }).style({
+          color: () => THEME.textMuted,
+          fontSize: 11
+        })
+      ).style({ flex: 1, gap: 2 })
+    ).style({ alignItems: "center", gap: 9, width: "100%" })
   )
     .style({
-      paddingVertical: 10,
-      alignItems: "center",
-      justifyContent: "center",
-      $pressed: { opacity: 0.6 }
+      backgroundColor: () => THEME.bgSurface,
+      borderWidth: 1,
+      borderColor: () => THEME.borderDefault,
+      borderRadius: 12,
+      padding: 12,
+      width: "100%"
     })
-    .onClick(handleVersionTap);
+    .onClick(() => {
+      if (devUnlockedSignal.value) return;
+      const next = versionTapCountSignal.value + 1;
+      versionTapCountSignal.value = next;
+      if (next >= 10) {
+        devUnlockedSignal.value = true;
+        toast("Инженерное меню разблокировано (до перезапуска)");
+      }
+    });
 
-  const scrollBody = UIScrollable(
-    UIColumn(
-      accountSection,
-      engineeringSection,
-      memorySection,
-      cacheSection,
-      hardwareSection,
-      versionEasterEggButton
-    ).style({ padding: 14, maxWidth: 860, alignSelf: "center", width: "100%", paddingBottom: 24 })
-  ).style({ flex: 1, width: "100%" });
+  const legalFooterRow = UIRow(
+    UIButton(
+      UIText("Пользовательское соглашение").style({
+        color: () => THEME.accentCyan,
+        fontSize: 11,
+        textDecorationLine: "underline"
+      })
+    ).onClick(() => {
+      openURL(`${apiClient.getBaseUrl()}/terms/`).catch(() => {});
+    }),
+    UIText("•").style({ color: () => THEME.textMuted, fontSize: 11 }),
+    UIButton(
+      UIText("Политика (152-ФЗ)").style({
+        color: () => THEME.accentCyan,
+        fontSize: 11,
+        textDecorationLine: "underline"
+      })
+    ).onClick(() => {
+      openURL(`${apiClient.getBaseUrl()}/privacy/`).catch(() => {});
+    })
+  ).style({
+    width: "100%",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    paddingBottom: 8
+  });
 
-  return UIScreen(header, scrollBody, authModal.node).style({ backgroundColor: THEME.bgBase, flex: 1, width: "100%", height: "100%" });
+  return UIColumn(
+    header,
+    UIScrollable(
+      UIColumn(accountCard, themeCard, memoryCard, devMenuCard, versionCard, legalFooterRow).style({
+        width: "100%",
+        padding: 12,
+        gap: 10
+      })
+    ).style({ flex: 1, width: "100%", backgroundColor: () => THEME.bgBase })
+  ).style({
+    flex: 1,
+    width: "100%",
+    backgroundColor: () => THEME.bgBase
+  });
 }

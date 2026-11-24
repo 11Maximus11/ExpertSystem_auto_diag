@@ -1,362 +1,680 @@
 /**
- * Экран «Проекты и Диалоги» (Sessions & Projects History).
- * Точное воспроизведение функциональности боковой панели оригинального сайта:
- * - Иерархия проектов и диалогов (стиль AIBPMN)
- * - Тегирование сессий (Все, ДВС, АКПП, Электрика, Тормоза, CAN)
- * - Закрепление (Pin) важных диалогов
- * - Переименование и удаление диалогов и проектов
- * - Карточка фонового воркера выжимки контекста (Summary памяти)
+ * Экран проектов, сессий диагностики и памяти текущей сессии.
+ * 100% паритет с боковым меню сайта:
+ * - Создание / переименование / удаление проектов
+ * - Создание / открытие / переименование / закрепление / тегирование / удаление сессий
+ * - Поиск и фильтрация сессий по тегам ("ДВС", "АКПП", "Электрика", и т.д.)
+ * - Работа как с облачным сервером (авторизован), так и локально в Демо-режиме
+ * - Просмотр и редактирование сжатой памяти текущей сессии (worker summary)
  *
  * Лицензия: GPL-3.0
  */
 
 import { apiClient } from "../api/BackendApiClient";
 import { cacheManager } from "../cache/ResourceCacheManager";
+import { appState, createWelcomeMessage, generateUuidV4 } from "../state/appState";
 import { DiagnosticSessionItem, ProjectItem } from "../types";
-import { HeaderBar, PrimaryButton, SecondaryButton, THEME } from "./components";
+import {
+  AppHeader,
+  LucideIcon,
+  openConfirmModal,
+  openTextPromptModal,
+  PrimaryButton,
+  SecondaryButton,
+  StatusBadge,
+  THEME
+} from "./components";
 
 export interface SessionsHistoryCallbacks {
-  onSelectSession?: (session: DiagnosticSessionItem) => void;
-  onNewSession?: (projectId?: string | number | null) => void;
+  onOpenSession?: (sessionId: string) => void;
+  onOpenAr?: () => void;
+  onOpenSettings?: () => void;
 }
 
 export function createSessionsHistoryScreen(callbacks?: SessionsHistoryCallbacks): any {
-  const sessionsSignal = signal<DiagnosticSessionItem[]>(cacheManager.getCachedSessions());
   const projectsSignal = signal<ProjectItem[]>([]);
-  const activeTagSignal = signal<string>("");
-  const activeSessionSummarySignal = signal<string>("Контекст сессии синхронизирован с экспертной моделью.");
-  const isLoadingSignal = signal(false);
+  const sessionsSignal = signal<DiagnosticSessionItem[]>([]);
+  const filterTagSignal = signal<string>("all");
+  const filterQuerySignal = signal<string>("");
+  const summaryEditSignal = signal<string>(appState.sessionSummarySignal.value || "");
+  const isLoadingSignal = signal<boolean>(false);
 
-  const TAGS = ["Все", "ДВС", "АКПП", "Электрика", "Тормоза", "Подвеска", "CAN-шина"];
+  const TAG_OPTIONS = ["all", "ДВС", "АКПП", "Электрика", "Тормоза", "Подвеска", "CAN-шина"];
 
-  const projectsContainer = UIColumn().style({ marginBottom: 12, width: "100%" });
-  const sessionsContainer = UIColumn().style({ width: "100%" });
+  const header = AppHeader({
+    title: "ИИДЕАЛ АВТО",
+    onOpenAr: () => callbacks?.onOpenAr?.(),
+    onOpenSettings: () => callbacks?.onOpenSettings?.()
+  });
 
-  const renderProjectItem = (p: ProjectItem) => {
-    return UIRow(
-      UIText(p.name).style({ color: THEME.textPrimary, fontSize: 12, fontWeight: "bold", flex: 1 }),
-      UIButton(UIText("+ Чат").style({ color: THEME.accentOrange, fontSize: 11, fontWeight: "bold" }))
-        .style({ paddingHorizontal: 6, paddingVertical: 2, backgroundColor: THEME.bgElevated, borderRadius: 4, marginRight: 6 })
-        .onClick(async () => {
-          const s = await apiClient.createSession(p.id);
-          if (s && callbacks?.onSelectSession) callbacks.onSelectSession(s);
-        }),
-      UIButton(UIText("✕").style({ color: THEME.textMuted, fontSize: 11 }))
-        .style({ padding: 3 })
-        .onClick(async () => {
-          await apiClient.deleteProject(p.id);
-          loadData();
-        })
-    ).style({
-      backgroundColor: THEME.bgElevated,
-      padding: 8,
-      borderRadius: 8,
-      alignItems: "center",
-      marginBottom: 6,
+  const summaryInput = UITextArea()
+    .style({
+      placeholder: "Здесь сохраняется автоматическая сжатая выжимка контекста текущего диалога...",
+      placeholderColor: () => THEME.inputPlaceholder,
+      backgroundColor: () => THEME.bgInput,
+      color: () => THEME.textPrimary,
+      borderWidth: 1.5,
+      borderColor: () => THEME.borderStrong,
+      borderRadius: 9,
+      padding: 10,
+      fontSize: 12,
+      minHeight: 72,
+      maxHeight: 150,
       width: "100%"
+    })
+    .onChange((val: string) => {
+      summaryEditSignal.value = val;
     });
-  };
 
-  const renderAll = () => {
-    const projs = projectsSignal.value;
-    const projNodes: any[] = [];
-    if (projs.length > 0) {
-      projNodes.push(
-        UIText("Группы проектов:").style({ color: THEME.textMuted, fontSize: 11, fontWeight: "bold", marginBottom: 6 })
-      );
-      projs.forEach(p => {
-        projNodes.push(renderProjectItem(p));
-      });
-    }
-    projectsContainer.setContent(projNodes);
+  effect(() => {
+    const s = appState.sessionSummarySignal.value || "";
+    summaryEditSignal.value = s;
+    summaryInput.value = s;
+  });
 
-    const list = sessionsSignal.value;
-    const sessionNodes: any[] = [];
-    if (list.length === 0) {
-      sessionNodes.push(
-        UIColumn(
-          UIText("Нет сохраненных сессий.").style({ color: THEME.textMuted, fontSize: 13, textAlign: "center" }),
-          UIText("Нажмите «+ Диалог», чтобы начать новую проверку автомобиля.")
-            .style({ color: "#64748b", fontSize: 11, textAlign: "center", marginTop: 4 })
-        ).style({ paddingVertical: 30, alignItems: "center", width: "100%" })
-      );
-    } else {
-      list.forEach(s => {
-        sessionNodes.push(renderSessionItem(s));
-      });
-    }
-    sessionsContainer.setContent(sessionNodes);
-  };
-
-  // Загрузка данных
-  const loadData = async () => {
+  const refreshData = async () => {
     isLoadingSignal.value = true;
     try {
-      const [projects, sessions] = await Promise.all([
+      if (!appState.currentUserSignal.value.is_authenticated) {
+        projectsSignal.value = appState.demoProjectsSignal.value;
+        sessionsSignal.value = appState.demoSessionsSignal.value;
+        return;
+      }
+      const [projs, sess] = await Promise.all([
         apiClient.getProjects(),
-        apiClient.getSessions(undefined, activeTagSignal.value === "Все" ? "" : activeTagSignal.value)
+        apiClient.getSessions()
       ]);
-      projectsSignal.value = projects;
-      sessionsSignal.value = sessions;
-      renderAll();
+      projectsSignal.value = projs;
+      sessionsSignal.value = sess;
     } finally {
       isLoadingSignal.value = false;
     }
   };
 
-  loadData();
-
-  // Модалка создания проекта
-  let newProjectModal: any = null;
-  const projectNameInput = UIInput().style({
-    placeholder: "Название проекта (напр. ТО Газель Next)",
-    backgroundColor: THEME.bgBase,
-    color: "#ffffff",
-    borderRadius: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    fontSize: 14,
-    borderWidth: 1,
-    borderColor: THEME.borderSubtle,
-    width: "100%",
-    marginBottom: 12
+  effect(() => {
+    const _tick = appState.sessionsRefreshCounterSignal.value;
+    const _auth = appState.currentUserSignal.value.is_authenticated;
+    void _tick;
+    void _auth;
+    void refreshData();
   });
 
-  newProjectModal = UIModal(
-    UIColumn(
-      UIRow(
-        UIText("Новый проект диагностики").style({ color: THEME.textPrimary, fontSize: 14, fontWeight: "bold", flex: 1 }),
-        UIButton(UIText("✕").style({ color: THEME.textMuted, fontSize: 13 }))
-          .style({ padding: 4 })
-          .onClick(() => newProjectModal.hide())
-      ).style({ alignItems: "center", marginBottom: 10, width: "100%" }),
+  const openSessionDialog = async (session: DiagnosticSessionItem) => {
+    appState.currentSessionIdSignal.value = session.id;
+    appState.currentSessionTitleSignal.value = session.title;
+    appState.selectedMessageIdsSignal.value = [];
+    cacheManager.saveSetting("active_session_id", session.id);
 
-      projectNameInput,
+    if (!appState.currentUserSignal.value.is_authenticated) {
+      const savedMsgs = appState.demoMessagesBySession[session.id] || [createWelcomeMessage()];
+      appState.messagesSignal.value = savedMsgs;
+      const lastAi = [...savedMsgs].reverse().find(m => m.role === "assistant") || savedMsgs[0];
+      appState.latestAssistantMessageSignal.value = lastAi;
+      appState.vehicleSignal.value = session.vehicle_info || appState.vehicleSignal.value;
+      appState.sessionSummarySignal.value = session.summary || "";
+      callbacks?.onOpenSession?.(session.id);
+      return;
+    }
 
-      UIRow(
-        SecondaryButton("Отмена", () => newProjectModal.hide()),
-        UISpacer(),
-        PrimaryButton("Создать проект", async () => {
-          const name = (projectNameInput.value || "").trim();
-          if (name) {
-            await apiClient.createProject(name);
-            projectNameInput.value = "";
-            newProjectModal.hide();
-            loadData();
-          }
-        })
-      ).style({ alignItems: "center", width: "100%" })
-    ).style({
-      backgroundColor: THEME.bgSurface,
-      borderRadius: 14,
-      padding: 16,
-      borderWidth: 1,
-      borderColor: THEME.borderStrong,
-      width: "90%",
-      maxWidth: 380
-    })
-  );
+    toast("Загрузка диалога...");
+    const detail = await apiClient.getSessionDetail(session.id);
+    if (detail) {
+      appState.currentSessionTitleSignal.value = detail.title;
+      appState.vehicleSignal.value = detail.vehicle_info || "";
+      appState.sessionSummarySignal.value = detail.summary || "";
+      if (detail.worker_status) {
+        appState.workerStatusSignal.value = detail.worker_status;
+      }
+      const msgs = detail.messages.length > 0 ? detail.messages : [createWelcomeMessage()];
+      appState.messagesSignal.value = msgs;
+      const lastAi = [...msgs].reverse().find(m => m.role === "assistant") || msgs[0];
+      appState.latestAssistantMessageSignal.value = lastAi;
+      callbacks?.onOpenSession?.(session.id);
+    } else {
+      const msgs = await apiClient.getSessionMessages(session.id);
+      appState.messagesSignal.value = msgs.length > 0 ? msgs : [createWelcomeMessage()];
+      callbacks?.onOpenSession?.(session.id);
+    }
+  };
 
-  // Шапка экрана
-  const header = HeaderBar(
-    "Проекты и Диалоги",
-    "История диагностик и база сохраненных сессий",
-    UIRow(
-      SecondaryButton("+ Проект", () => newProjectModal.show()),
-      UIRow().style({ width: 6 }),
-      PrimaryButton("+ Диалог", async () => {
-        const newSess = await apiClient.createSession();
-        if (newSess && callbacks?.onSelectSession) {
-          callbacks.onSelectSession(newSess);
-        } else {
-          loadData();
+  const handleCreateProject = () => {
+    openTextPromptModal({
+      title: "Новый проект / автомобиль",
+      subtitle: "Группируйте диагностики по одному автомобилю или заказ-наряду",
+      placeholder: "Например: BMW E60 M54 — капремонт",
+      confirmLabel: "Создать",
+      onConfirm: async name => {
+        if (!name) return;
+        if (!appState.currentUserSignal.value.is_authenticated) {
+          const p: ProjectItem = { id: "demo-p-" + Date.now(), name };
+          appState.demoProjectsSignal.value = [p, ...appState.demoProjectsSignal.value];
+          await refreshData();
+          return;
         }
-      })
-    )
-  );
+        const created = await apiClient.createProject(name);
+        if (created) {
+          await refreshData();
+          toast("Проект создан");
+        } else {
+          toast("Не удалось создать проект");
+        }
+      }
+    });
+  };
 
-  // Фильтр по тегам
-  const tagsRow = UIRow(
-    ...TAGS.map(tag => {
-      const isSelected = () => (activeTagSignal.value === tag || (tag === "Все" && !activeTagSignal.value));
-      return UIButton(
-        UIText(tag).style({
-          color: () => (isSelected() ? "#ffffff" : THEME.textSecondary),
-          fontSize: 11,
-          fontWeight: () => (isSelected() ? "bold" : "500")
-        })
-      )
-        .style({
-          backgroundColor: () => (isSelected() ? THEME.accentOrange : THEME.bgElevated),
-          paddingHorizontal: 10,
-          paddingVertical: 5,
-          borderRadius: 8,
-          marginRight: 6,
-          marginBottom: 6,
-          borderWidth: 1,
-          borderColor: () => (isSelected() ? THEME.accentOrange : THEME.borderSubtle)
-        })
-        .onClick(() => {
-          activeTagSignal.value = tag === "Все" ? "" : tag;
-          loadData();
-        });
+  const handleCreateSession = async (projectId: string | number | null = null) => {
+    const title = "Диагностика #" + (sessionsSignal.value.length + 1);
+    const welcome = createWelcomeMessage();
+    if (!appState.currentUserSignal.value.is_authenticated) {
+      const id = generateUuidV4();
+      const s: DiagnosticSessionItem = {
+        id,
+        title,
+        project_id: projectId,
+        tag: "",
+        is_pinned: false,
+        vehicle_info: appState.vehicleSignal.value,
+        summary: "",
+        updated_at: "Сейчас",
+        message_count: 0
+      };
+      appState.demoMessagesBySession[id] = [welcome];
+      appState.demoSessionsSignal.value = [s, ...appState.demoSessionsSignal.value];
+      await refreshData();
+      await openSessionDialog(s);
+      return;
+    }
+
+    const created = await apiClient.createSession(projectId, title, appState.vehicleSignal.value);
+    if (created) {
+      await refreshData();
+      await openSessionDialog(created);
+    } else {
+      toast("Ошибка создания диалога");
+    }
+  };
+
+  const searchInput = UIInput()
+    .style({
+      placeholder: "Поиск диалога или авто...",
+      placeholderColor: () => THEME.inputPlaceholder,
+      backgroundColor: () => THEME.bgInput,
+      color: () => THEME.textPrimary,
+      borderWidth: 1.5,
+      borderColor: () => THEME.borderStrong,
+      borderRadius: 9,
+      paddingHorizontal: 11,
+      paddingVertical: 8,
+      fontSize: 12,
+      flex: 1
     })
-  ).style({ flexWrap: "wrap", marginBottom: 10, width: "100%" });
+    .onChange((val: string) => {
+      filterQuerySignal.value = val;
+    });
 
-  // Карточка сессии
-  const renderSessionItem = (s: DiagnosticSessionItem) => {
-    const isPinned = signal(Boolean(s.is_pinned));
+  const contentListContainer = UIColumn().style({ width: "100%", gap: 10 });
 
+  const renderSessionRow = (s: DiagnosticSessionItem) => {
+    const isActive = s.id === appState.currentSessionIdSignal.value;
     return UIColumn(
       UIRow(
-        UIButton(
-          UIText(() => (isPinned.value ? "[Закреплен]" : "[Закрепить]")).style({
-            color: () => (isPinned.value ? THEME.accentOrange : THEME.textMuted),
-            fontSize: 10,
+        LucideIcon(s.is_pinned ? "lucide:pin" : "lucide:message-square-plus", 15, () =>
+          s.is_pinned ? THEME.accentOrange : THEME.accentCyan
+        ),
+        UIColumn(
+          UIText(s.title || "Диагностика").style({
+            color: () => THEME.textPrimary,
+            fontSize: 13,
             fontWeight: "bold",
-            marginRight: 6
-          })
-        )
-          .style({ padding: 2 })
-          .onClick(async () => {
-            isPinned.value = !isPinned.value;
-            s.is_pinned = isPinned.value;
-            await apiClient.setSessionPinned(s.id, isPinned.value);
+            numberOfLines: 1
           }),
-
-        UIText(s.title || "Диалог диагностики").style({
-          color: THEME.textPrimary,
-          fontSize: 13,
-          fontWeight: "bold",
-          flex: 1
-        }),
-
-        UIButton(UIText("✕").style({ color: THEME.textMuted, fontSize: 11, fontWeight: "bold" }))
-          .style({ padding: 4 })
-          .onClick(async () => {
-            await apiClient.deleteSession(s.id);
-            sessionsSignal.value = sessionsSignal.value.filter(item => item.id !== s.id);
+          UIText(
+            [
+              s.vehicle_info || "",
+              s.tag ? `#${s.tag}` : "",
+              s.updated_at || ""
+            ]
+              .filter(Boolean)
+              .join(" • ")
+          ).style({
+            color: () => THEME.textMuted,
+            fontSize: 10,
+            numberOfLines: 1
           })
-      ).style({ alignItems: "center", width: "100%" }),
+        ).style({ flex: 1, gap: 2 }),
+        ...(isActive
+          ? [
+              UIBox(
+                UIText("Активен").style({
+                  color: "#ffffff",
+                  fontSize: 9,
+                  fontWeight: "bold"
+                })
+              ).style({
+                backgroundColor: () => THEME.statusOk,
+                paddingHorizontal: 6,
+                paddingVertical: 2,
+                borderRadius: 5
+              })
+            ]
+          : [])
+      ).style({ alignItems: "center", gap: 8, width: "100%", marginBottom: 6 }),
 
-      // Подстрока автомобиля и тега
       UIRow(
-        s.tag
-          ? UIRow(
-              UIText(s.tag).style({ color: THEME.accentCyan, fontSize: 10, fontWeight: "bold" })
-            ).style({
-              backgroundColor: "rgba(56, 189, 248, 0.15)",
-              borderColor: "rgba(56, 189, 248, 0.35)",
-              borderWidth: 1,
-              borderRadius: 4,
-              paddingHorizontal: 5,
-              paddingVertical: 1,
-              marginRight: 8
-            })
-          : null,
-
-        UIText(s.vehicle_info || "Автомобиль не указан").style({
-          color: s.vehicle_info ? THEME.accentOrange : THEME.textMuted,
-          fontSize: 11,
-          flex: 1
+        PrimaryButton("Открыть", () => {
+          void openSessionDialog(s);
         }),
-
-        UIText(s.updated_at || s.created_at || "Недавно").style({
-          color: THEME.textMuted,
-          fontSize: 10
-        })
-      ).style({ alignItems: "center", marginTop: 4, width: "100%" }),
-
-      // Кнопка открыть
-      UIRow(
-        UIText(`Сообщений: ${s.message_count || 0}`).style({ color: THEME.textMuted, fontSize: 10 }),
-        UISpacer(),
-        SecondaryButton("Открыть диалог →", () => {
-          callbacks?.onSelectSession?.(s);
-        })
-      ).style({ alignItems: "center", marginTop: 8, width: "100%" })
+        UIButton(LucideIcon("lucide:pin", 14, () => (s.is_pinned ? THEME.accentOrange : THEME.textSecondary)))
+          .style({
+            width: 32,
+            height: 32,
+            borderRadius: 8,
+            backgroundColor: () => THEME.bgElevated,
+            borderWidth: 1,
+            borderColor: () => THEME.borderDefault,
+            alignItems: "center",
+            justifyContent: "center"
+          })
+          .onClick(async () => {
+            if (!appState.currentUserSignal.value.is_authenticated) {
+              appState.demoSessionsSignal.value = appState.demoSessionsSignal.value.map(d =>
+                d.id === s.id ? { ...d, is_pinned: !d.is_pinned } : d
+              );
+            } else {
+              await apiClient.setSessionPinned(s.id, !s.is_pinned);
+            }
+            await refreshData();
+          }),
+        UIButton(LucideIcon("lucide:pencil", 14, () => THEME.textSecondary))
+          .style({
+            width: 32,
+            height: 32,
+            borderRadius: 8,
+            backgroundColor: () => THEME.bgElevated,
+            borderWidth: 1,
+            borderColor: () => THEME.borderDefault,
+            alignItems: "center",
+            justifyContent: "center"
+          })
+          .onClick(() => {
+            openTextPromptModal({
+              title: "Переименовать диалог",
+              initialValue: s.title,
+              onConfirm: async val => {
+                if (!val) return;
+                if (!appState.currentUserSignal.value.is_authenticated) {
+                  appState.demoSessionsSignal.value = appState.demoSessionsSignal.value.map(d =>
+                    d.id === s.id ? { ...d, title: val } : d
+                  );
+                } else {
+                  await apiClient.renameSession(s.id, val);
+                }
+                if (isActive) appState.currentSessionTitleSignal.value = val;
+                await refreshData();
+              }
+            });
+          }),
+        UIButton(LucideIcon("lucide:tag", 14, () => THEME.accentCyan))
+          .style({
+            width: 32,
+            height: 32,
+            borderRadius: 8,
+            backgroundColor: () => THEME.bgElevated,
+            borderWidth: 1,
+            borderColor: () => THEME.borderDefault,
+            alignItems: "center",
+            justifyContent: "center"
+          })
+          .onClick(() => {
+            openTextPromptModal({
+              title: "Тег диалога",
+              initialValue: s.tag || "",
+              quickChips: ["ДВС", "АКПП", "Электрика", "Тормоза", "Подвеска", "CAN-шина"],
+              onConfirm: async val => {
+                if (!appState.currentUserSignal.value.is_authenticated) {
+                  appState.demoSessionsSignal.value = appState.demoSessionsSignal.value.map(d =>
+                    d.id === s.id ? { ...d, tag: val } : d
+                  );
+                } else {
+                  await apiClient.setSessionTag(s.id, val);
+                }
+                await refreshData();
+              }
+            });
+          }),
+        UIButton(LucideIcon("lucide:trash-2", 14, () => THEME.statusCrit))
+          .style({
+            width: 32,
+            height: 32,
+            borderRadius: 8,
+            backgroundColor: "rgba(239, 68, 68, 0.14)",
+            borderWidth: 1,
+            borderColor: "rgba(239, 68, 68, 0.35)",
+            alignItems: "center",
+            justifyContent: "center"
+          })
+          .onClick(() => {
+            openConfirmModal({
+              title: "Удалить диалог?",
+              message: `Диалог «${s.title}» будет удалён без возможности восстановления.`,
+              confirmLabel: "Удалить",
+              onConfirm: async () => {
+                if (!appState.currentUserSignal.value.is_authenticated) {
+                  appState.demoSessionsSignal.value = appState.demoSessionsSignal.value.filter(
+                    d => d.id !== s.id
+                  );
+                } else {
+                  const res = await apiClient.deleteSession(s.id);
+                  if (res.active_session_id) {
+                    appState.currentSessionIdSignal.value = res.active_session_id;
+                  }
+                }
+                await refreshData();
+                toast("Диалог удалён");
+              }
+            });
+          })
+      ).style({ alignItems: "center", gap: 6, width: "100%" })
     ).style({
-      backgroundColor: THEME.bgSurface,
-      borderRadius: 10,
+      backgroundColor: () => THEME.bgSurface,
+      borderWidth: isActive ? 1.5 : 1,
+      borderColor: () => (isActive ? THEME.accentOrange : THEME.borderDefault),
+      borderRadius: 11,
       padding: 10,
-      borderWidth: 1,
-      borderColor: () => (isPinned.value ? THEME.borderStrong : THEME.borderSubtle),
-      marginBottom: 8,
       width: "100%"
     });
   };
 
-  // Карточка воркера сжатия контекста (Summary)
-  const workerCard = UIColumn(
+  const renderLists = () => {
+    const q = filterQuerySignal.value.trim().toLowerCase();
+    const t = filterTagSignal.value;
+
+    const filteredSessions = [...sessionsSignal.value]
+      .sort((a, b) => Number(Boolean(b.is_pinned)) - Number(Boolean(a.is_pinned)))
+      .filter(s => {
+        if (t !== "all" && (s.tag || "").toLowerCase() !== t.toLowerCase()) return false;
+        if (q) {
+          const hay = `${s.title} ${s.vehicle_info || ""} ${s.tag || ""}`.toLowerCase();
+          if (!hay.includes(q)) return false;
+        }
+        return true;
+      });
+
+    const blocks: any[] = [];
+
+    // Секция проектов (папки)
+    if (projectsSignal.value.length > 0) {
+      blocks.push(
+        UIText("Проекты (Группы авто)").style({
+          color: () => THEME.accentCyan,
+          fontSize: 12,
+          fontWeight: "bold"
+        })
+      );
+
+      for (const proj of projectsSignal.value) {
+        const projSessions = filteredSessions.filter(s => String(s.project_id) === String(proj.id));
+        blocks.push(
+          UIColumn(
+            UIRow(
+              LucideIcon("lucide:folder-clock", 16, () => THEME.accentOrange),
+              UIText(proj.name).style({
+                color: () => THEME.textPrimary,
+                fontSize: 13,
+                fontWeight: "bold",
+                flex: 1
+              }),
+              UIButton(LucideIcon("lucide:plus", 15, () => THEME.accentCyan))
+                .style({ padding: 4 })
+                .onClick(() => {
+                  void handleCreateSession(proj.id);
+                }),
+              UIButton(LucideIcon("lucide:pencil", 14, () => THEME.textMuted))
+                .style({ padding: 4 })
+                .onClick(() => {
+                  openTextPromptModal({
+                    title: "Переименовать проект",
+                    initialValue: proj.name,
+                    onConfirm: async val => {
+                      if (!val) return;
+                      if (!appState.currentUserSignal.value.is_authenticated) {
+                        appState.demoProjectsSignal.value = appState.demoProjectsSignal.value.map(p =>
+                          p.id === proj.id ? { ...p, name: val } : p
+                        );
+                      } else {
+                        await apiClient.renameProject(proj.id, val);
+                      }
+                      await refreshData();
+                    }
+                  });
+                }),
+              UIButton(LucideIcon("lucide:trash-2", 14, () => THEME.statusCrit))
+                .style({ padding: 4 })
+                .onClick(() => {
+                  openConfirmModal({
+                    title: "Удалить проект?",
+                    message: `Проект «${proj.name}» будет удалён.`,
+                    confirmLabel: "Удалить",
+                    onConfirm: async () => {
+                      if (!appState.currentUserSignal.value.is_authenticated) {
+                        appState.demoProjectsSignal.value = appState.demoProjectsSignal.value.filter(
+                          p => p.id !== proj.id
+                        );
+                      } else {
+                        await apiClient.deleteProject(proj.id);
+                      }
+                      await refreshData();
+                    }
+                  });
+                })
+            ).style({ alignItems: "center", gap: 6, width: "100%" }),
+            ...(projSessions.length > 0
+              ? projSessions.map(renderSessionRow)
+              : [
+                  UIText("В проекте пока нет диалогов — нажмите + чтобы создать").style({
+                    color: () => THEME.textMuted,
+                    fontSize: 11,
+                    paddingLeft: 4
+                  })
+                ])
+          ).style({
+            backgroundColor: () => THEME.bgElevated,
+            borderWidth: 1,
+            borderColor: () => THEME.borderDefault,
+            borderRadius: 12,
+            padding: 10,
+            gap: 8,
+            width: "100%"
+          })
+        );
+      }
+    }
+
+    // Одиночные сессии
+    const standalone = filteredSessions.filter(s => !s.project_id);
+    blocks.push(
+      UIText("Диалоги диагностики").style({
+        color: () => THEME.textPrimary,
+        fontSize: 13,
+        fontWeight: "bold",
+        marginTop: 2
+      })
+    );
+
+    if (standalone.length === 0) {
+      blocks.push(
+        UIText("Диалоги не найдены. Нажмите «+ Чат» чтобы начать новую диагностику.").style({
+          color: () => THEME.textMuted,
+          fontSize: 12,
+          paddingVertical: 10
+        })
+      );
+    } else {
+      for (const s of standalone) {
+        blocks.push(renderSessionRow(s));
+      }
+    }
+
+    contentListContainer.setContent(blocks);
+  };
+
+  effect(() => {
+    const _p = projectsSignal.value;
+    const _s = sessionsSignal.value;
+    const _t = filterTagSignal.value;
+    const _q = filterQuerySignal.value;
+    const _cur = appState.currentSessionIdSignal.value;
+    void _p;
+    void _s;
+    void _t;
+    void _q;
+    void _cur;
+    renderLists();
+  });
+
+  // Карточка сжатой памяти текущей сессии
+  const sessionMemoryCard = UIColumn(
     UIRow(
-      UIText("Память текущей сессии").style({ color: THEME.textPrimary, fontSize: 12, fontWeight: "bold", flex: 1 }),
-      UIRow(
-        UIText("● Синхронизировано").style({ color: THEME.statusOk, fontSize: 10, fontWeight: "bold" })
-      ).style({
-        backgroundColor: "rgba(34, 197, 94, 0.15)",
-        borderRadius: 6,
-        paddingHorizontal: 6,
-        paddingVertical: 2
-      })
-    ).style({ alignItems: "center", marginBottom: 6, width: "100%" }),
-
-    UIText("Фоновый воркер автоматически сжимает раннюю историю сообщений в компактную выжимку:").style({
-      color: THEME.textMuted,
-      fontSize: 10,
-      marginBottom: 6
-    }),
-
-    UIColumn(
-      UIText(() => activeSessionSummarySignal.value).style({
-        color: THEME.textSecondary,
-        fontSize: 11,
-        lineHeight: 16
-      })
-    ).style({
-      backgroundColor: THEME.bgBase,
-      borderRadius: 8,
-      padding: 8,
-      borderWidth: 1,
-      borderColor: THEME.borderSubtle,
-      width: "100%"
-    })
+      LucideIcon("lucide:cpu", 16, () => THEME.accentCyan),
+      UIText("Память текущей сессии").style({
+        color: () => THEME.textPrimary,
+        fontSize: 13,
+        fontWeight: "bold",
+        flex: 1
+      }),
+      StatusBadge(
+        () =>
+          appState.workerStatusSignal.value === "running"
+            ? "warn"
+            : appState.workerStatusSignal.value === "completed"
+              ? "ok"
+              : "idle",
+        () =>
+          appState.workerStatusSignal.value === "running"
+            ? "Сжатие..."
+            : appState.workerStatusSignal.value === "completed"
+              ? "Актуально"
+              : "Готов"
+      )
+    ).style({ alignItems: "center", gap: 6, width: "100%", marginBottom: 6 }),
+    summaryInput,
+    UIRow(
+      UISpacer(),
+      SecondaryButton(
+        "Сохранить выжимку",
+        async () => {
+          const val = (summaryInput.value || summaryEditSignal.value || "").trim();
+          appState.sessionSummarySignal.value = val;
+          if (appState.currentUserSignal.value.is_authenticated) {
+            const ok = await apiClient.setSessionSummary(
+              appState.currentSessionIdSignal.value,
+              val
+            );
+            toast(ok ? "Память сессии сохранена" : "Ошибка сохранения");
+          } else {
+            toast("Сохранено локально");
+          }
+        },
+        "lucide:check"
+      )
+    ).style({ width: "100%", marginTop: 8 })
   ).style({
-    backgroundColor: THEME.bgSurface,
-    borderRadius: 12,
-    padding: 12,
+    backgroundColor: () => THEME.bgSurface,
     borderWidth: 1,
-    borderColor: THEME.borderSubtle,
-    marginTop: 14,
+    borderColor: () => THEME.borderDefault,
+    borderRadius: 14,
+    padding: 13,
     width: "100%"
   });
 
-  // Прокручиваемый список
-  const scrollBody = UIScrollable(
-    UIColumn(
-      tagsRow,
+  renderLists();
 
-      UIRow(
-        SecondaryButton(
-          () => (isLoadingSignal.value ? "Обновление..." : "Обновить"),
-          loadData
-        ),
-        UISpacer(),
-        UIText(() => `Всего диалогов: ${sessionsSignal.value.length}`)
-          .style({ color: THEME.textMuted, fontSize: 11, alignSelf: "center" })
-      ).style({ marginBottom: 10, alignItems: "center", width: "100%" }),
+  return UIColumn(
+    header,
+    UIScrollable(
+      UIColumn(
+        // Инфобаннер гостевого режима
+        UIRow(
+          LucideIcon("lucide:user", 15, () => THEME.accentOrange),
+          UIText("Гостевой режим: войти для облачного хранения можно в Настройках").style({
+            color: () => THEME.textSecondary,
+            fontSize: 11,
+            flex: 1
+          }),
+          SecondaryButton("Войти", () => callbacks?.onOpenSettings?.())
+        ).style({
+          backgroundColor: "rgba(234, 88, 12, 0.1)",
+          borderWidth: 1,
+          borderColor: "rgba(234, 88, 12, 0.35)",
+          borderRadius: 11,
+          paddingHorizontal: 10,
+          paddingVertical: 8,
+          alignItems: "center",
+          gap: 8,
+          width: "100%",
+          display: () => (!appState.currentUserSignal.value.is_authenticated ? "flex" : "none")
+        }),
 
-      // Проекты
-      projectsContainer,
+        // Панель создания и обновления
+        UIRow(
+          PrimaryButton("+ Чат", () => {
+            void handleCreateSession(null);
+          }),
+          SecondaryButton("+ Проект", handleCreateProject, "lucide:folder-plus"),
+          UISpacer(),
+          UIButton(LucideIcon("lucide:refresh-cw", 16, () => THEME.accentCyan))
+            .style({
+              width: 36,
+              height: 36,
+              borderRadius: 9,
+              backgroundColor: () => THEME.bgElevated,
+              borderWidth: 1,
+              borderColor: () => THEME.borderDefault,
+              alignItems: "center",
+              justifyContent: "center"
+            })
+            .onClick(() => {
+              void refreshData();
+            })
+        ).style({ alignItems: "center", gap: 8, width: "100%" }),
 
-      // Список сессий
-      sessionsContainer,
+        // Поиск + фильтры по тегам
+        UIRow(searchInput).style({ width: "100%" }),
 
-      workerCard
-    ).style({ padding: 12, maxWidth: 860, alignSelf: "center", width: "100%", paddingBottom: 24 })
-  ).style({ flex: 1, width: "100%" });
+        UIScrollable(
+          UIRow(
+            ...TAG_OPTIONS.map(tag => {
+              const label = tag === "all" ? "Все теги" : `#${tag}`;
+              const act = () => filterTagSignal.value === tag;
+              return UIButton(
+                UIText(label).style({
+                  color: () => (act() ? "#ffffff" : THEME.textSecondary),
+                  fontSize: 11,
+                  fontWeight: "600"
+                })
+              )
+                .style({
+                  backgroundColor: () => (act() ? THEME.accentOrange : THEME.bgElevated),
+                  borderWidth: 1,
+                  borderColor: () => (act() ? THEME.accentOrange : THEME.borderDefault),
+                  borderRadius: 8,
+                  paddingHorizontal: 9,
+                  paddingVertical: 5
+                })
+                .onClick(() => {
+                  filterTagSignal.value = tag;
+                });
+            })
+          ).style({ gap: 6 })
+        ).style({ scrollDirection: "horizontal", showScrollbar: false, width: "100%" }),
 
-  const screen = UIScreen(header, scrollBody).style({ backgroundColor: THEME.bgBase, flex: 1, width: "100%", height: "100%" });
-  screen.widgets(newProjectModal);
-
-  return screen;
+        contentListContainer,
+        sessionMemoryCard
+      ).style({ width: "100%", padding: 12, gap: 10 })
+    ).style({ flex: 1, width: "100%", backgroundColor: () => THEME.bgBase })
+  ).style({
+    flex: 1,
+    width: "100%",
+    backgroundColor: () => THEME.bgBase
+  });
 }

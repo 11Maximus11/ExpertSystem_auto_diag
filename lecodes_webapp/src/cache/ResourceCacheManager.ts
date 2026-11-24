@@ -120,7 +120,7 @@ export class ResourceCacheManager {
     }
 
     for (const [code, info] of this.inMemoryDtc.entries()) {
-      if (systemFilter && systemFilter !== "ALL") {
+      if (systemFilter && systemFilter.toUpperCase() !== "ALL") {
         const sf = systemFilter.toUpperCase();
         const infSys = (info.system || "").toUpperCase();
         const matchSys = infSys === sf ||

@@ -1,379 +1,514 @@
 /**
- * Экран «Инспектор: Чеклист ремонта & Словарь DTC» (Inspector Panel).
- * Точное воспроизведение двух вкладок оригинального инспектора:
- * 1. Вкладка «Чеклист & Инвентарь»:
- *    - Сводный список всех шагов диагностики и ремонта
- *    - Прогресс-бар выполнения (N из M шагов)
- *    - Инструменты, динамометрические ключи, спецприспособления и запчасти
- * 2. Вкладка «Словарь кодов DTC»:
- *    - Полнотекстовый поиск (код, симптом, решение)
- *    - Фильтры по системам P (ДВС/КПП), C (Шасси/ABS), B (Кузов), U (Сеть CAN)
- *    - Кнопка «+ В запрос» для мгновенного прикрепления кода в чат
+ * Экран инспектора ремонта & словаря кодов DTC (100% паритет с мобильной веб-версией).
+ * Вкладка 1: Интерактивный пошаговый чеклист и инвентарь из текущего вердикта ИИ
+ * (синхронизируется в реальном времени с карточкой чата, AR HUD и сервером).
+ * Вкладка 2: Полнотекстовый и системный поиск по базе кодов DTC (Django API + оффлайн кэш).
  *
  * Лицензия: GPL-3.0
  */
 
 import { apiClient } from "../api/BackendApiClient";
 import { cacheManager } from "../cache/ResourceCacheManager";
-import { ChatRepairTask, DtcCodeInfo } from "../types";
-import { DtcChip, HeaderBar, PrimaryButton, SecondaryButton, THEME } from "./components";
+import { appState, createWelcomeMessage, stageDtcCodes } from "../state/appState";
+import { DtcCodeInfo } from "../types";
+import {
+  AppHeader,
+  DtcChip,
+  LucideIcon,
+  PrimaryButton,
+  SecondaryButton,
+  THEME
+} from "./components";
 
-export function createDtcDictionaryScreen(onSelectCode?: (code: string) => void): any {
-  const activeTabSignal = signal<"checklist" | "dtc">("dtc");
+export interface DtcDictionaryCallbacks {
+  onSelectCode?: (code: string) => void;
+  onOpenAr?: () => void;
+  onOpenSettings?: () => void;
+}
 
-  // Состояние словаря DTC
-  const searchQuerySignal = signal("");
-  const currentFilterSignal = signal("ALL");
-  const resultsSignal = signal<DtcCodeInfo[]>(cacheManager.searchDtc("", "ALL"));
+export function createDtcDictionaryScreen(
+  cbOrFn?: DtcDictionaryCallbacks | ((code: string) => void)
+): any {
+  const callbacks: DtcDictionaryCallbacks =
+    typeof cbOrFn === "function" ? { onSelectCode: cbOrFn } : cbOrFn || {};
 
-  // Состояние общего чеклиста текущего ремонта
-  const checklistTasksSignal = signal<ChatRepairTask[]>([
-    { text: "Подключить сканер ELM327 в диагностический разъем OBD-II", done: true },
-    { text: "Считать подтвержденные и ожидающие коды ошибок (Mode 03/07)", done: true },
-    { text: "Проверить показания датчиков температуры ОЖ и положения дросселя", done: false },
-    { text: "Проверить давление топлива в рампе манометром (норма 3.8-4.2 бар)", done: false },
-    { text: "Осмотреть высоковольтные провода и индивидуальные катушки зажигания", done: false }
-  ]);
+  const activeSubTabSignal = signal<"checklist" | "dtc">("checklist");
+  const searchQuerySignal = signal<string>("");
+  const systemFilterSignal = signal<string>("ALL");
+  const dtcResultsSignal = signal<DtcCodeInfo[]>(cacheManager.searchDtc("", "ALL"));
+  const isSyncingSignal = signal<boolean>(false);
 
-  const inventoryItemsSignal = signal<string[]>([
-    "Сканер OBD-II ELM327 Bluetooth/USB",
-    "Мультиметр цифровой с токовыми клещами",
-    "Манометр давления топлива со штуцерами",
-    "Свечной ключ 16 мм с резиновым фиксатором",
-    "Очиститель дроссельной заслонки и ДМРВ"
-  ]);
-
-  const dtcCardsContainer = UIColumn().style({ width: "100%" });
-
-  const renderDtcCards = () => {
-    const list = resultsSignal.value;
-    const cards: any[] = [];
-    if (list.length === 0) {
-      cards.push(
-        UIColumn(
-          UIText("Кодов не найдено.").style({ color: THEME.textMuted, fontSize: 13, textAlign: "center" }),
-          UIText("Попробуйте другой поисковый запрос или сбросьте фильтр систем.")
-            .style({ color: "#64748b", fontSize: 11, textAlign: "center", marginTop: 4 }),
-          PrimaryButton("Сбросить фильтр", () => {
-            searchQuerySignal.value = "";
-            if (searchInput) searchInput.value = "";
-            setFilter("ALL");
-          })
-        ).style({ paddingVertical: 30, alignItems: "center", width: "100%" })
-      );
-    } else {
-      list.forEach(item => {
-        cards.push(renderDtcCard(item));
-      });
-    }
-    dtcCardsContainer.setContent(cards);
-  };
-
-  const updateSearch = () => {
-    resultsSignal.value = cacheManager.searchDtc(
-      searchQuerySignal.value,
-      currentFilterSignal.value
-    );
-    renderDtcCards();
-  };
-
-  const setFilter = (sys: string) => {
-    currentFilterSignal.value = sys;
-    updateSearch();
-  };
-
-  // Шапка экрана с переключателем режимов Инспектора
-  const tabBtn = (label: string, id: "checklist" | "dtc") => {
-    const isSelected = () => activeTabSignal.value === id;
-    return UIButton(
-      UIText(label).style({
-        color: () => (isSelected() ? "#ffffff" : THEME.textMuted),
-        fontSize: 12,
-        fontWeight: "bold"
-      })
-    )
-      .style({
-        backgroundColor: () => (isSelected() ? THEME.accentOrange : "transparent"),
-        paddingHorizontal: 12,
-        paddingVertical: 6,
-        borderRadius: 8,
-        marginRight: 6
-      })
-      .onClick(() => {
-        activeTabSignal.value = id;
-      });
-  };
-
-  const inspectorTabsRow = UIRow(
-    tabBtn("Словарь DTC", "dtc"),
-    tabBtn("Чеклист & Инвентарь", "checklist")
-  ).style({
-    backgroundColor: THEME.bgElevated,
-    padding: 3,
-    borderRadius: 10,
-    alignItems: "center"
+  const header = AppHeader({
+    title: "ИИДЕАЛ АВТО",
+    onOpenAr: () => callbacks.onOpenAr?.(),
+    onOpenSettings: () => callbacks.onOpenSettings?.()
   });
 
-  const header = HeaderBar(
-    "Инспектор диагностики",
-    "Чеклисты ремонта, база кодов DTC и нормативы",
-    inspectorTabsRow
-  );
-
-  // =========================================================================
-  // Режим 1: Чеклист & Инвентарь
-  // =========================================================================
-  const renderChecklistPane = () => {
-    const tasks = checklistTasksSignal.value;
-    const doneCount = tasks.filter(t => t.done).length;
-    const totalCount = tasks.length;
-    const progressPercent = totalCount > 0 ? Math.round((doneCount / totalCount) * 100) : 0;
-
-    const taskRows = tasks.map((task, idx) => {
-      const isDone = signal(Boolean(task.done));
-
-      return UIButton(
-        UIRow(
-          UIRow(
-            UIText(() => (isDone.value ? "✓" : "")).style({
-              color: "#ffffff",
-              fontSize: 12,
-              fontWeight: "bold"
-            })
-          ).style({
-            width: 20,
-            height: 20,
-            borderRadius: 5,
-            backgroundColor: () => (isDone.value ? THEME.statusOk : "transparent"),
-            borderWidth: 1.5,
-            borderColor: () => (isDone.value ? THEME.statusOk : THEME.textMuted),
-            alignItems: "center",
-            justifyContent: "center",
-            marginRight: 10
-          }),
-          UIText(task.text).style({
-            color: () => (isDone.value ? THEME.textMuted : THEME.textPrimary),
-            fontSize: 13,
-            textDecorationLine: () => (isDone.value ? "line-through" : "none"),
-            flex: 1
-          })
-        ).style({ alignItems: "flex-start", width: "100%" })
-      )
-        .style({ paddingVertical: 6, width: "100%", $pressed: { opacity: 0.7 } })
-        .onClick(() => {
-          isDone.value = !isDone.value;
-          task.done = isDone.value;
-        });
-    });
-
-    const inventoryChips = inventoryItemsSignal.value.map(item =>
+  const subTabButton = (label: string, mode: "checklist" | "dtc", iconName: string) => {
+    const active = () => activeSubTabSignal.value === mode;
+    return UIButton(
       UIRow(
-        UIText(`• ${item}`).style({ color: THEME.textPrimary, fontSize: 11, fontWeight: "500" })
-      ).style({
-        backgroundColor: "rgba(34, 197, 94, 0.12)",
-        borderColor: "rgba(34, 197, 94, 0.35)",
-        borderWidth: 1,
-        borderRadius: 6,
-        paddingHorizontal: 8,
-        paddingVertical: 5,
-        marginRight: 6,
-        marginBottom: 6
-      })
-    );
-
-    return UIColumn(
-      // Прогресс
-      UIColumn(
-        UIRow(
-          UIText("Выполнение плана проверки:").style({ color: THEME.textPrimary, fontSize: 13, fontWeight: "bold", flex: 1 }),
-          UIText(`${doneCount} из ${totalCount} (${progressPercent}%)`).style({ color: THEME.accentOrange, fontSize: 12, fontWeight: "bold" })
-        ).style({ alignItems: "center", width: "100%", marginBottom: 8 }),
-
-        UIRow(
-          UIRow().style({
-            height: 6,
-            borderRadius: 3,
-            backgroundColor: THEME.statusOk,
-            width: `${progressPercent}%`
-          })
-        ).style({
-          height: 6,
-          borderRadius: 3,
-          backgroundColor: THEME.bgBase,
-          width: "100%",
-          overflow: "hidden"
+        LucideIcon(iconName, 14, () => (active() ? "#ffffff" : THEME.textSecondary)),
+        UIText(label).style({
+          color: () => (active() ? "#ffffff" : THEME.textSecondary),
+          fontSize: 12,
+          fontWeight: "bold"
         })
-      ).style({
-        backgroundColor: THEME.bgSurface,
-        borderRadius: 12,
-        padding: 12,
+      ).style({ alignItems: "center", gap: 6 })
+    )
+      .style({
+        flex: 1,
+        paddingVertical: 9,
+        borderRadius: 9,
+        backgroundColor: () => (active() ? THEME.accentOrange : THEME.bgElevated),
         borderWidth: 1,
-        borderColor: THEME.borderSubtle,
-        marginBottom: 12,
-        width: "100%"
-      }),
-
-      // Список задач
-      UIColumn(
-        UIText("Диагностические и ремонтные манипуляции:").style({ color: THEME.statusWarn, fontSize: 12, fontWeight: "bold", marginBottom: 8 }),
-        ...taskRows
-      ).style({
-        backgroundColor: THEME.bgSurface,
-        borderRadius: 12,
-        padding: 14,
-        borderWidth: 1,
-        borderColor: THEME.borderSubtle,
-        marginBottom: 12,
-        width: "100%"
-      }),
-
-      // Инструменты и запчасти
-      UIColumn(
-        UIText("Необходимый инструмент и запчасти:").style({ color: THEME.statusOk, fontSize: 12, fontWeight: "bold", marginBottom: 8 }),
-        UIRow(...inventoryChips).style({ flexWrap: "wrap", width: "100%" })
-      ).style({
-        backgroundColor: THEME.bgSurface,
-        borderRadius: 12,
-        padding: 14,
-        borderWidth: 1,
-        borderColor: THEME.borderSubtle,
-        width: "100%"
+        borderColor: () => (active() ? THEME.accentOrange : THEME.borderDefault),
+        alignItems: "center",
+        justifyContent: "center"
       })
-    );
+      .onClick(() => {
+        activeSubTabSignal.value = mode;
+        if (mode === "dtc") {
+          void runDtcSearch();
+        }
+      });
   };
 
   // =========================================================================
-  // Режим 2: Словарь кодов DTC
+  // ВКЛАДКА 1: ЖИВОЙ ЧЕКЛИСТ & ИНВЕНТАРЬ ТЕКУЩЕЙ ДИАГНОСТИКИ
   // =========================================================================
+
+  const checklistBody = UIColumn().style({ width: "100%", gap: 10 });
+
+  const renderChecklistContent = () => {
+    const rawLatest = appState.latestAssistantMessageSignal.value;
+    const msg =
+      rawLatest && ((rawLatest.tasks && rawLatest.tasks.length > 0) || (rawLatest.inventoryItems && rawLatest.inventoryItems.length > 0))
+        ? rawLatest
+        : [...(appState.messagesSignal.value || [])]
+            .reverse()
+            .find(m => m.role === "assistant" && m.tasks && m.tasks.length > 0) ||
+          rawLatest ||
+          createWelcomeMessage();
+    const tasks = msg.tasks || [];
+    const inv = msg.inventoryItems || [];
+    const doneTasks = tasks.filter(t => t.done).length;
+    const totalTasks = tasks.length;
+    const pct = totalTasks > 0 ? Math.round((doneTasks / totalTasks) * 100) : 0;
+
+    const cards: any[] = [
+      // Карточка прогресса и контекста
+      UIColumn(
+        UIRow(
+          LucideIcon("lucide:check-check", 17, () => THEME.accentOrange),
+          UIText(msg.summaryTitle || "Чеклист ремонтных работ").style({
+            color: () => THEME.textPrimary,
+            fontSize: 14,
+            fontWeight: "bold",
+            flex: 1
+          }),
+          UIText(`${doneTasks} / ${totalTasks}`).style({
+            color: () => THEME.accentCyan,
+            fontSize: 12,
+            fontWeight: "bold"
+          })
+        ).style({ alignItems: "center", gap: 7, width: "100%", marginBottom: 6 }),
+        UIBox(
+          UIBox().style({
+            width: `${pct}%`,
+            height: 6,
+            borderRadius: 3,
+            backgroundColor: () => (pct === 100 ? THEME.statusOk : THEME.accentOrange)
+          })
+        ).style({
+          width: "100%",
+          height: 6,
+          borderRadius: 3,
+          backgroundColor: () => THEME.bgElevated,
+          marginBottom: 8
+        }),
+        UIRow(
+          UIText(`Прогресс ремонта: ${pct}%`).style({
+            color: () => THEME.textMuted,
+            fontSize: 11,
+            flex: 1
+          }),
+          ...(callbacks.onOpenAr
+            ? [
+                SecondaryButton(
+                  "Открыть в AR HUD",
+                  () => callbacks.onOpenAr?.(),
+                  "lucide:glasses"
+                )
+              ]
+            : [])
+        ).style({ alignItems: "center", width: "100%" })
+      ).style({
+        backgroundColor: () => THEME.bgSurface,
+        borderWidth: 1,
+        borderColor: () => THEME.borderDefault,
+        borderRadius: 14,
+        padding: 13,
+        width: "100%"
+      })
+    ];
+
+    if (tasks.length > 0) {
+      cards.push(
+        UIColumn(
+          UIText("Пошаговый план проверки и ремонта").style({
+            color: () => THEME.accentOrangeLight,
+            fontSize: 13,
+            fontWeight: "bold",
+            marginBottom: 4
+          }),
+          ...tasks.map((task, idx) => {
+            const checkId = task.step_number ?? task.id ?? idx + 1;
+            const titleText =
+              task.title && task.instruction && task.title !== task.instruction
+                ? `${task.title}: ${task.instruction}`
+                : task.text || task.instruction || task.title || `Шаг ${idx + 1}`;
+            return UIButton(
+              UIRow(
+                UIBox(
+                  LucideIcon("lucide:check", 12, "#ffffff").style({
+                    display: task.done ? "flex" : "none"
+                  })
+                ).style({
+                  width: 20,
+                  height: 20,
+                  borderRadius: 6,
+                  borderWidth: 1.5,
+                  borderColor: () => (task.done ? THEME.statusOk : THEME.borderStrong),
+                  backgroundColor: () => (task.done ? THEME.statusOk : "transparent"),
+                  alignItems: "center",
+                  justifyContent: "center",
+                  marginTop: 1
+                }),
+                UIColumn(
+                  UIText(`${idx + 1}. ${titleText}`).style({
+                    color: () => (task.done ? THEME.textMuted : THEME.textPrimary),
+                    fontSize: 12,
+                    lineHeight: 17,
+                    textDecorationLine: task.done ? "line-through" : "none"
+                  }),
+                  ...(task.torque_or_spec || task.safety_warning
+                    ? [
+                        UIText(
+                          [task.torque_or_spec, task.safety_warning].filter(Boolean).join(" • ")
+                        ).style({
+                          color: () => (task.safety_warning ? THEME.statusWarn : THEME.accentCyan),
+                          fontSize: 10
+                        })
+                      ]
+                    : [])
+                ).style({ flex: 1, gap: 2 })
+              ).style({ alignItems: "flex-start", gap: 9, width: "100%" })
+            )
+              .style({
+                width: "100%",
+                paddingVertical: 6,
+                borderBottomWidth: idx < tasks.length - 1 ? 1 : 0,
+                borderBottomColor: () => THEME.borderDefault
+              })
+              .onClick(() => {
+                appState.toggleTaskHandler?.(msg.id, "step", checkId, !task.done);
+              });
+          })
+        ).style({
+          backgroundColor: () => THEME.bgSurface,
+          borderWidth: 1,
+          borderColor: () => THEME.borderDefault,
+          borderRadius: 12,
+          padding: 12,
+          width: "100%",
+          gap: 4
+        })
+      );
+    }
+
+    if (inv.length > 0) {
+      cards.push(
+        UIColumn(
+          UIText("Необходимый инструмент и запчасти").style({
+            color: () => THEME.statusOk,
+            fontSize: 13,
+            fontWeight: "bold",
+            marginBottom: 4
+          }),
+          ...inv.map((item, idx) => {
+            const checkId = item.id || item.name || String(idx);
+            return UIButton(
+              UIRow(
+                UIBox(
+                  LucideIcon("lucide:check", 11, "#ffffff").style({
+                    display: item.checked ? "flex" : "none"
+                  })
+                ).style({
+                  width: 19,
+                  height: 19,
+                  borderRadius: 6,
+                  borderWidth: 1.5,
+                  borderColor: () => (item.checked ? THEME.statusOk : THEME.borderStrong),
+                  backgroundColor: () => (item.checked ? THEME.statusOk : "transparent"),
+                  alignItems: "center",
+                  justifyContent: "center"
+                }),
+                UIText(`${item.name}${item.spec ? ` — ${item.spec}` : ""}`).style({
+                  color: () => (item.checked ? THEME.textMuted : THEME.textPrimary),
+                  fontSize: 12,
+                  flex: 1,
+                  textDecorationLine: item.checked ? "line-through" : "none"
+                })
+              ).style({ alignItems: "center", gap: 8, width: "100%" })
+            )
+              .style({ width: "100%", paddingVertical: 5 })
+              .onClick(() => {
+                appState.toggleTaskHandler?.(msg.id, "inventory", checkId, !item.checked);
+              });
+          })
+        ).style({
+          backgroundColor: () => THEME.bgSurface,
+          borderWidth: 1,
+          borderColor: () => THEME.borderDefault,
+          borderRadius: 12,
+          padding: 12,
+          width: "100%",
+          gap: 3
+        })
+      );
+    }
+
+    checklistBody.setContent(cards);
+  };
+
+  effect(() => {
+    const _latest = appState.latestAssistantMessageSignal.value;
+    const _all = appState.messagesSignal.value;
+    void _latest;
+    void _all;
+    renderChecklistContent();
+  });
+
+  // =========================================================================
+  // ВКЛАДКА 2: СЛОВАРЬ КОДОВ ОШИБОК DTC
+  // =========================================================================
+
+  let searchDebounce: any = null;
+  const runDtcSearch = async () => {
+    const q = searchQuerySignal.value.trim();
+    const sys = systemFilterSignal.value;
+    const localHits = cacheManager.searchDtc(q, sys);
+    dtcResultsSignal.value = localHits;
+
+    const onlineHits = await apiClient.getDtcList(q, sys);
+    if (onlineHits && onlineHits.length > 0) {
+      dtcResultsSignal.value = onlineHits;
+      void cacheManager.cacheDtcDictionary(onlineHits);
+    }
+  };
+
   const searchInput = UIInput()
     .style({
-      placeholder: "Поиск по коду (P0300, C0050) или симптому (пропуски, смесь)...",
-      backgroundColor: THEME.bgElevated,
-      color: "#ffffff",
-      borderRadius: 8,
+      placeholder: "Код или симптом (напр. P0300)...",
+      placeholderColor: () => THEME.inputPlaceholder,
+      backgroundColor: () => THEME.bgInput,
+      color: () => THEME.textPrimary,
+      borderWidth: 1.5,
+      borderColor: () => THEME.borderStrong,
+      borderRadius: 10,
       paddingHorizontal: 12,
       paddingVertical: 9,
       fontSize: 13,
-      borderWidth: 1,
-      borderColor: THEME.borderSubtle,
       flex: 1
     })
     .onChange((val: string) => {
       searchQuerySignal.value = val;
-      updateSearch();
+      if (searchDebounce) clearTimeout(searchDebounce);
+      searchDebounce = setTimeout(() => {
+        void runDtcSearch();
+      }, 250);
     });
 
-  const filterBtn = (label: string, id: string) => {
-    const isSelected = () => currentFilterSignal.value === id;
+  const filterChip = (label: string, sys: string) => {
+    const isAct = () => systemFilterSignal.value === sys;
     return UIButton(
       UIText(label).style({
-        color: () => (isSelected() ? "#ffffff" : THEME.textMuted),
+        color: () => (isAct() ? "#ffffff" : THEME.textSecondary),
         fontSize: 11,
         fontWeight: "bold"
       })
     )
       .style({
-        backgroundColor: () => (isSelected() ? THEME.accentOrange : THEME.bgElevated),
-        borderRadius: 6,
-        paddingHorizontal: 10,
-        paddingVertical: 6,
-        marginRight: 4,
-        marginBottom: 4,
+        backgroundColor: () => (isAct() ? THEME.accentCyan : THEME.bgElevated),
         borderWidth: 1,
-        borderColor: () => (isSelected() ? THEME.accentOrange : THEME.borderSubtle),
-        $pressed: { opacity: 0.7 }
+        borderColor: () => (isAct() ? THEME.accentCyan : THEME.borderDefault),
+        borderRadius: 8,
+        paddingHorizontal: 10,
+        paddingVertical: 6
       })
-      .onClick(() => setFilter(id));
+      .onClick(() => {
+        systemFilterSignal.value = sys;
+        void runDtcSearch();
+      });
   };
 
-  const filterRow = UIRow(
-    filterBtn("Все коды", "ALL"),
-    filterBtn("P — ДВС/КПП", "P"),
-    filterBtn("C — Шасси/ABS", "C"),
-    filterBtn("B — Кузов", "B"),
-    filterBtn("U — Сеть CAN", "U")
-  ).style({ marginTop: 8, flexWrap: "wrap", width: "100%" });
+  const dtcListContainer = UIColumn().style({ width: "100%", gap: 8 });
 
-  const renderDtcCard = (info: DtcCodeInfo) => {
-    return UIColumn(
-      UIRow(
-        DtcChip(info.code),
-        UIText(info.title).style({
-          color: THEME.textPrimary,
-          fontSize: 13,
-          fontWeight: "bold",
-          flex: 1,
-          marginLeft: 4,
-          lineHeight: 18
+  const renderDtcList = () => {
+    const items = dtcResultsSignal.value || [];
+    if (items.length === 0) {
+      dtcListContainer.setContent([
+        UIText("Коды не найдены. Попробуйте обновить словарь с сервера или изменить запрос.").style({
+          color: () => THEME.textMuted,
+          fontSize: 12,
+          textAlign: "center",
+          padding: 20
         })
-      ).style({ alignItems: "center", width: "100%", marginBottom: 6 }),
+      ]);
+      return;
+    }
 
-      UIText(info.description).style({
-        color: THEME.textSecondary,
-        fontSize: 12,
-        lineHeight: 18,
-        marginBottom: 6
-      }),
-
-      info.symptoms && info.symptoms.length > 0
-        ? UIColumn(
-            UIText("Симптомы:").style({ color: THEME.statusWarn, fontSize: 11, fontWeight: "bold" }),
-            UIText(info.symptoms.join(" • ")).style({ color: THEME.textMuted, fontSize: 11, lineHeight: 16, marginTop: 2 })
-          ).style({ marginTop: 4, marginBottom: 4 })
-        : null,
-
-      info.causes && info.causes.length > 0
-        ? UIColumn(
-            UIText("Возможные причины:").style({ color: THEME.accentCyan, fontSize: 11, fontWeight: "bold" }),
-            UIText(info.causes.join(" • ")).style({ color: THEME.textMuted, fontSize: 11, lineHeight: 16, marginTop: 2 })
-          ).style({ marginTop: 4, marginBottom: 6 })
-        : null,
-
-      UIRow(
-        UISpacer(),
-        SecondaryButton("+ В запрос чата", () => {
-          onSelectCode?.(info.code);
+    dtcListContainer.setContent(
+      items.slice(0, 80).map(item =>
+        UIColumn(
+          UIRow(
+            DtcChip(item.code, () => {
+              stageDtcCodes([item.code]);
+              callbacks.onSelectCode?.(item.code);
+            }),
+            UIText(item.title || "Описание ошибки").style({
+              color: () => THEME.textPrimary,
+              fontSize: 13,
+              fontWeight: "bold",
+              flex: 1
+            }),
+            UIButton(
+              UIRow(
+                LucideIcon("lucide:plus", 12, "#ffffff"),
+                UIText("В чат").style({
+                  color: "#ffffff",
+                  fontSize: 11,
+                  fontWeight: "bold"
+                })
+              ).style({ alignItems: "center", gap: 4 })
+            )
+              .style({
+                backgroundColor: () => THEME.accentOrange,
+                paddingHorizontal: 9,
+                paddingVertical: 5,
+                borderRadius: 7
+              })
+              .onClick(() => {
+                stageDtcCodes([item.code]);
+                toast(`Код ${item.code} прикреплён в чат`);
+                callbacks.onSelectCode?.(item.code);
+              })
+          ).style({ alignItems: "center", gap: 8, width: "100%", marginBottom: 4 }),
+          ...(item.description
+            ? [
+                UIText(item.description).style({
+                  color: () => THEME.textSecondary,
+                  fontSize: 11,
+                  lineHeight: 16
+                })
+              ]
+            : [])
+        ).style({
+          backgroundColor: () => THEME.bgSurface,
+          borderWidth: 1,
+          borderColor: () => THEME.borderDefault,
+          borderRadius: 11,
+          padding: 11,
+          width: "100%"
         })
-      ).style({ width: "100%", marginTop: 4 })
-    ).style({
-      backgroundColor: THEME.bgSurface,
-      borderRadius: 12,
-      padding: 12,
-      borderWidth: 1,
-      borderColor: THEME.borderSubtle,
-      marginBottom: 10,
-      width: "100%"
-    });
-  };
-
-  const renderDtcPane = () => {
-    return UIColumn(
-      UIRow(searchInput).style({ width: "100%" }),
-      filterRow,
-      UIRow().style({ height: 10 }),
-      dtcCardsContainer
+      )
     );
   };
 
-  const checklistPane = renderChecklistPane().style({
-    display: () => (activeTabSignal.value === "checklist" ? "flex" : "none"),
-    width: "100%"
+  effect(() => {
+    const _res = dtcResultsSignal.value;
+    void _res;
+    renderDtcList();
   });
 
-  const dtcPane = renderDtcPane().style({
-    display: () => (activeTabSignal.value === "dtc" ? "flex" : "none"),
-    width: "100%"
+  const dtcSection = UIColumn(
+    UIRow(
+      searchInput,
+      UIButton(LucideIcon("lucide:refresh-cw", 16, () => THEME.accentCyan))
+        .style({
+          width: 40,
+          height: 40,
+          borderRadius: 10,
+          backgroundColor: () => THEME.bgElevated,
+          borderWidth: 1,
+          borderColor: () => THEME.borderDefault,
+          alignItems: "center",
+          justifyContent: "center"
+        })
+        .onClick(async () => {
+          isSyncingSignal.value = true;
+          const cnt = await apiClient.syncDtcDictionary();
+          isSyncingSignal.value = false;
+          await runDtcSearch();
+          toast(cnt > 0 ? `Синхронизировано кодов: ${cnt}` : "Словарь актуален");
+        })
+    ).style({ alignItems: "center", gap: 8, width: "100%" }),
+
+    UIScrollable(
+      UIRow(
+        filterChip("Все", "all"),
+        filterChip("P (ДВС/АКПП)", "P"),
+        filterChip("C (Шасси)", "C"),
+        filterChip("B (Кузов)", "B"),
+        filterChip("U (Сеть CAN)", "U")
+      ).style({ gap: 6 })
+    ).style({ scrollDirection: "horizontal", showScrollbar: false, width: "100%" }),
+
+    PrimaryButton(
+      () => `Найдено кодов: ${dtcResultsSignal.value.length}`,
+      () => {
+        void runDtcSearch();
+      },
+      isSyncingSignal
+    ).style({ width: "100%" }),
+
+    dtcListContainer
+  ).style({
+    width: "100%",
+    gap: 10,
+    display: () => (activeSubTabSignal.value === "dtc" ? "flex" : "none")
   });
 
-  // Первоначальный рендер карточек
-  renderDtcCards();
+  // Инициализация содержимого
+  renderChecklistContent();
+  renderDtcList();
 
-  const scrollBody = UIScrollable(
-    UIColumn(
-      checklistPane,
-      dtcPane
-    ).style({ padding: 12, maxWidth: 860, alignSelf: "center", width: "100%", paddingBottom: 24 })
-  ).style({ flex: 1, width: "100%" });
-
-  return UIScreen(header, scrollBody).style({ backgroundColor: THEME.bgBase, flex: 1, width: "100%", height: "100%" });
+  return UIColumn(
+    header,
+    UIRow(
+      subTabButton("Чеклист & Инвентарь", "checklist", "lucide:check-check"),
+      subTabButton("Словарь DTC", "dtc", "lucide:book-open")
+    ).style({
+      paddingHorizontal: 12,
+      paddingVertical: 8,
+      gap: 8,
+      backgroundColor: () => THEME.bgSurface,
+      borderBottomWidth: 1,
+      borderBottomColor: () => THEME.borderDefault,
+      width: "100%"
+    }),
+    UIScrollable(
+      UIColumn(
+        checklistBody.style({
+          display: () => (activeSubTabSignal.value === "checklist" ? "flex" : "none")
+        }),
+        dtcSection
+      ).style({ width: "100%", padding: 12, gap: 10 })
+    ).style({ flex: 1, width: "100%", backgroundColor: () => THEME.bgBase })
+  ).style({
+    flex: 1,
+    width: "100%",
+    backgroundColor: () => THEME.bgBase
+  });
 }

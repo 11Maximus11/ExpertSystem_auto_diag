@@ -3952,11 +3952,14 @@
         errBanner.textContent = '';
       }
       const termsGroup = el('authTermsGroup');
+      const termsChk = el('authTermsCheckbox');
+      const firstLoginAccepted = localStorage.getItem('aideal_first_login_consent_accepted') === '1';
       if (mode === 'login') {
         tabLogin?.classList.add('active');
         tabRegister?.classList.remove('active');
         if (emailGroup) emailGroup.style.display = 'none';
-        if (termsGroup) termsGroup.style.display = 'none';
+        if (termsGroup) termsGroup.style.display = firstLoginAccepted ? 'none' : 'block';
+        if (termsChk) termsChk.checked = false;
         if (btnSubmit) {
           const s = btnSubmit.querySelector('span');
           if (s) s.textContent = 'Войти';
@@ -3968,6 +3971,7 @@
         tabLogin?.classList.remove('active');
         if (emailGroup) emailGroup.style.display = 'flex';
         if (termsGroup) termsGroup.style.display = 'block';
+        if (termsChk) termsChk.checked = false;
         if (btnSubmit) {
           const s = btnSubmit.querySelector('span');
           if (s) s.textContent = 'Зарегистрироваться';
@@ -4004,11 +4008,14 @@
 
       if (!username || !password) return;
 
-      if (authMode === 'register') {
+      const needConsent =
+        authMode === 'register' ||
+        localStorage.getItem('aideal_first_login_consent_accepted') !== '1';
+      if (needConsent) {
         const termsChk = el('authTermsCheckbox');
         if (termsChk && !termsChk.checked) {
           if (errBanner) {
-            errBanner.textContent = 'Для регистрации необходимо подтвердить согласие с Пользовательским соглашением и Политикой конфиденциальности.';
+            errBanner.textContent = 'Для продолжения подтвердите согласие на использование cookie, Пользовательское соглашение и Политику конфиденциальности.';
             errBanner.style.display = 'block';
           }
           if (btnSubmit) btnSubmit.disabled = false;
@@ -4041,6 +4048,10 @@
           return;
         }
 
+        localStorage.setItem('aideal_first_login_consent_accepted', '1');
+        localStorage.setItem('aideal_cookies_accepted', '1');
+        const cookieBannerEl = el('cookieBanner');
+        if (cookieBannerEl) cookieBannerEl.style.display = 'none';
         window.location.reload();
       } catch (err) {
         if (errBanner) {

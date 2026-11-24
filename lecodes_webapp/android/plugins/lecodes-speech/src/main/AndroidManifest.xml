@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- lecodes-plugins/speech: merged into the host app's manifest by the Gradle build. The
+     microphone permission the contract's `@permission microphone` is held to (the microphone
+     feature declared optional so Play does not infer a required microphone from RECORD_AUDIO),
+     and the query that lets the app see the device's recognition service and the apps that answer
+     the language-details broadcast on Android 11+ (package visibility). -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-feature android:name="android.hardware.microphone" android:required="false" />
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <queries>
+        <intent>
+            <action android:name="android.speech.RecognitionService" />
+        </intent>
+        <intent>
+            <action android:name="android.speech.action.GET_LANGUAGE_DETAILS" />
+        </intent>
+    </queries>
+</manifest>

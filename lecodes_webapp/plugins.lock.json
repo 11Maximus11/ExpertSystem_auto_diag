@@ -5,6 +5,24 @@
       "tag": "v2.4.0",
       "commit": "b8a3adcc234a81084db83fa6dfc0a48be222215f",
       "version": "2.0.0"
+    },
+    "camera": {
+      "repo": "letary/lecodes-plugins",
+      "tag": "v2.4.0",
+      "commit": "b8a3adcc234a81084db83fa6dfc0a48be222215f",
+      "version": "2.0.0"
+    },
+    "audio-recorder": {
+      "repo": "letary/lecodes-plugins",
+      "tag": "v2.4.0",
+      "commit": "b8a3adcc234a81084db83fa6dfc0a48be222215f",
+      "version": "2.0.0"
+    },
+    "speech": {
+      "repo": "letary/lecodes-plugins",
+      "tag": "v2.4.0",
+      "commit": "b8a3adcc234a81084db83fa6dfc0a48be222215f",
+      "version": "2.0.0"
     }
   }
 }

@@ -1,192 +1,118 @@
 /**
- * Главная точка входа Android-приложения и нативного клиента ИИдеал-Авто на базе le.codes.
+ * Главная точка входа ИИдеал-Авто для платформы le.codes (Native Android & Web).
+ * Объединяет все экраны («Диагноз», «Чеклист & DTC», «OBD-2», «Сессии», «Настройки»),
+ * единый оверлей AR/VR HUD, реактивную смену тем и начальную синхронизацию с Django API.
  *
- * Полное соответствие возможностям и стилю оригинального мобильного сайта:
- * 1. Нижняя навигация Mobile-First:
- *    - «Диагноз» (Чат, мультимодальный ввод, вложения, камера, микрофон)
- *    - «Чеклист» (Инспектор задач ремонта и справочник кодов DTC)
- *    - «OBD-2» (Приборная панель, живые датчики, чтение и сброс DTC)
- *    - «Сессии» (Проекты, диалоги, теги, выжимка контекста воркера)
- *    - «Настройки» (Инженерное меню стенда, базовый URL, сквозная память)
- * 2. Мини-HUD бар телеметрии над экранами
- * 3. Поддержка AR HUD для смарт-очков RayNeo / внешних дисплеев
- * 4. Лицензия: GPL-3.0
+ * Лицензия: GPL-3.0
  */
 
 import "./src/utils/polyfills";
+
 import { apiClient } from "./src/api/BackendApiClient";
 import { cacheManager } from "./src/cache/ResourceCacheManager";
-import { obdProtocol } from "./src/obd/ELM327Protocol";
-import { AuthUser } from "./src/types";
+import { appState, createWelcomeMessage } from "./src/state/appState";
+import {
+  createArHudOverlay,
+  currentThemeSignal,
+  openFirstLaunchConsentModal,
+  THEME
+} from "./src/ui/components";
 import { createDiagnosticsScreen } from "./src/ui/DiagnosticsScreen";
 import { createDtcDictionaryScreen } from "./src/ui/DtcDictionaryScreen";
 import { createObdScannerScreen } from "./src/ui/ObdScannerScreen";
 import { createSessionsHistoryScreen } from "./src/ui/SessionsHistoryScreen";
 import { createSettingsScreen } from "./src/ui/SettingsScreen";
-import { PrimaryButton, SecondaryButton, THEME } from "./src/ui/components";
 
-// 1. Конфигурация темы приложения le.codes под стилистику сайта
-theme({
-  bg: THEME.bgBase,
-  surface: THEME.bgSurface,
-  accent: THEME.accentOrange,
-  text: THEME.textPrimary,
-  textMuted: THEME.textMuted,
-  border: THEME.borderSubtle,
-  colorScheme: "dark"
+// Глобальный двухрежимный AR / VR HUD оверлей (доступен с любого экрана)
+const arHudModal = createArHudOverlay({
+  getSensors: () => appState.obdStateSignal.value,
+  onClose: () => {}
 });
 
-// 2. Реактивное состояние оболочки
-const DEFAULT_URL = "http://10.0.2.2:8000";
-const serverUrl = signal<string>(apiClient.getBaseUrl() || DEFAULT_URL).stored("pwa_server_url");
-
-if (serverUrl.value) {
-  apiClient.setBaseUrl(serverUrl.value);
-}
-
-// Учетная запись мастера
-const currentUserSignal = signal<AuthUser>({
-  username: "",
-  is_authenticated: false
-});
-
-// Проверка сессии при старте
-apiClient.getAuthStatus().then(res => {
-  if (res && res.is_authenticated) {
-    currentUserSignal.value = {
-      username: res.username || "",
-      is_staff: res.is_staff,
-      is_authenticated: true
-    };
+const openGlobalArHud = (mode: "optical" | "vr" = "optical") => {
+  if (typeof arHudModal.openWithMode === "function") {
+    arHudModal.openWithMode(mode);
+  } else {
+    arHudModal.show();
   }
-}).catch(() => {});
-
-// Телеметрия для мини-HUD бара
-const obdState = signal({
-  rpm: 0,
-  speed: 0,
-  coolantTemp: 0,
-  batteryVoltage: 12.6,
-  status: "ELM327 готов"
-});
-
-obdProtocol.onSensorsUpdate = (s) => {
-  obdState.value = {
-    rpm: s.rpm,
-    speed: s.speed,
-    coolantTemp: s.coolantTemp,
-    batteryVoltage: s.voltage,
-    status: obdProtocol.getStatusMessage()
-  };
 };
 
-// 3. Выдвижной мини-HUD бар над экранами
-const obdMiniHud = UIColumn(
-  UIRow(
-    UIColumn(
-      UIText("RPM").style({ fontSize: 9, color: THEME.textMuted, fontWeight: "bold" }),
-      UIText(() => `${obdState.value.rpm}`).style({ fontSize: 15, fontWeight: "bold", color: THEME.accentCyan })
-    ).style({ flex: 1, alignItems: "center" }),
+let tabs: any = null;
 
-    UIColumn(
-      UIText("Скорость").style({ fontSize: 9, color: THEME.textMuted, fontWeight: "bold" }),
-      UIText(() => `${obdState.value.speed}`).style({ fontSize: 15, fontWeight: "bold", color: THEME.statusOk })
-    ).style({ flex: 1, alignItems: "center" }),
+const switchTab = (tabId: string) => {
+  if (tabs && typeof tabs.select === "function") {
+    tabs.select(tabId);
+  }
+};
 
-    UIColumn(
-      UIText("ОЖ").style({ fontSize: 9, color: THEME.textMuted, fontWeight: "bold" }),
-      UIText(() => `${obdState.value.coolantTemp}°`).style({ fontSize: 15, fontWeight: "bold", color: THEME.statusWarn })
-    ).style({ flex: 1, alignItems: "center" }),
+appState.switchTabFn = switchTab;
 
-    UIColumn(
-      UIText("АКБ").style({ fontSize: 9, color: THEME.textMuted, fontWeight: "bold" }),
-      UIText(() => `${obdState.value.batteryVoltage.toFixed(1)}V`).style({ fontSize: 15, fontWeight: "bold", color: "#a855f7" })
-    ).style({ flex: 1, alignItems: "center" }),
+// Экраны приложения внутри безопасных отступов системных панелей Android
+const wrapTabScreen = (content: any) =>
+  UIScreen(content).style({
+    width: "100%",
+    height: "100%",
+    backgroundColor: () => THEME.bgBase,
+    paddingTop: "safe-top"
+  });
 
-    UIButton(
-      UIText(() => (obdProtocol.getStatus() === "connected" && obdProtocol.getTransportType() === "demo" ? "Стоп" : "Демо")).style({
-        fontSize: 10,
-        color: "#ffffff",
-        fontWeight: "bold"
-      })
-    )
-      .style({
-        backgroundColor: THEME.accentOrange,
-        paddingHorizontal: 8,
-        paddingVertical: 5,
-        borderRadius: 6
-      })
-      .onClick(() => {
-        if (obdProtocol.getStatus() === "connected" && obdProtocol.getTransportType() === "demo") {
-          obdProtocol.disconnect();
-        } else {
-          obdProtocol.connect("demo");
-        }
-      })
-  ).style({
-    alignItems: "center",
-    paddingHorizontal: 12,
-    paddingVertical: 4,
-    backgroundColor: "rgba(9, 13, 22, 0.98)",
-    borderBottomWidth: 1,
-    borderColor: THEME.borderSubtle,
-    width: "100%"
+const diagScreen = wrapTabScreen(
+  createDiagnosticsScreen({
+    onOpenAr: () => openGlobalArHud("optical"),
+    onOpenSettings: () => switchTab("settings"),
+    onOpenObd: () => switchTab("obd"),
+    onOpenDtc: () => switchTab("dtc"),
+    onOpenSessions: () => switchTab("sessions")
   })
 );
 
-// 4. Экземпляр вкладок приложения
-let tabsInstance: any = null;
+const dtcScreen = wrapTabScreen(
+  createDtcDictionaryScreen({
+    onSelectCode: () => switchTab("diag"),
+    onOpenAr: () => openGlobalArHud("optical"),
+    onOpenSettings: () => switchTab("settings")
+  })
+);
 
-const diagnosticsScreen = createDiagnosticsScreen({
-  onToggleSidebar: () => {
-    tabsInstance?.select("sessions");
-  },
-  onNavigateToDtc: (code) => {
-    tabsInstance?.select("inspector");
-  },
-  onNavigateToObd: () => {
-    tabsInstance?.select("obd");
-  },
-  onOpenEngineeringMenu: () => {
-    tabsInstance?.select("settings");
-  },
-  onEnterAr: () => {
-    tabsInstance?.select("obd");
-  }
-});
+const obdScreen = wrapTabScreen(
+  createObdScannerScreen({
+    onOpenAr: () => openGlobalArHud("optical"),
+    onOpenSettings: () => switchTab("settings"),
+    onAttachToAi: () => switchTab("diag")
+  })
+);
 
-const inspectorScreen = createDtcDictionaryScreen((code) => {
-  tabsInstance?.select("diagnostics");
-});
+const sessionsScreen = wrapTabScreen(
+  createSessionsHistoryScreen({
+    onOpenSession: () => switchTab("diag"),
+    onOpenAr: () => openGlobalArHud("optical"),
+    onOpenSettings: () => switchTab("settings")
+  })
+);
 
-const obdScreen = createObdScannerScreen({
-  onSendDtcToAi: (codes) => {
-    tabsInstance?.select("diagnostics");
-  },
-  onOpenEngineeringMenu: () => {
-    tabsInstance?.select("settings");
-  }
-});
+const settingsScreen = wrapTabScreen(
+  createSettingsScreen({
+    onOpenAr: () => openGlobalArHud("optical"),
+    onServerUrlChanged: () => {
+      void bootstrapFromServer();
+    },
+    onAuthChanged: () => {
+      appState.sessionsRefreshCounterSignal.value++;
+    }
+  })
+);
 
-const sessionsScreen = createSessionsHistoryScreen({
-  onSelectSession: (session) => {
-    tabsInstance?.select("diagnostics");
-  }
-});
-
-const settingsScreen = createSettingsScreen();
-
-// 5. Сборка UITabs (Mobile-First 5 вкладок как в мобильной версии сайта)
-tabsInstance = UITabs({
-  diagnostics: {
+// Нижняя панель навигации по разделам
+tabs = UITabs({
+  diag: {
     label: "Диагноз",
     icon: assetIcon("lucide:bot"),
-    screen: diagnosticsScreen
+    screen: diagScreen
   },
-  inspector: {
+  dtc: {
     label: "Чеклист",
     icon: assetIcon("lucide:check-check"),
-    screen: inspectorScreen
+    screen: dtcScreen
   },
   obd: {
     label: "OBD-2",
@@ -205,17 +131,111 @@ tabsInstance = UITabs({
   }
 });
 
-// Настройка стилей таб-бара с безопасным отступом для навигационного бара Android
-tabsInstance.bar.style({
-  backgroundColor: "rgba(17, 24, 39, 0.98)",
-  borderTopWidth: 1,
-  borderColor: THEME.borderSubtle,
-  paddingBottom: 22,
-  paddingTop: 6,
-  minHeight: 68
+// Реактивная синхронизация оформления нижней панели вкладок с активной темой
+effect(() => {
+  const _mode = currentThemeSignal.value;
+  void _mode;
+  try {
+    tabs.bar.theme({
+      accent: THEME.accentOrange,
+      textMuted: THEME.textMuted,
+      surface: THEME.bgSurface,
+      border: THEME.borderDefault
+    });
+  } catch (_) {}
 });
 
-// 6. Монтирование в глобальный роутер le.codes
-Router.init(tabsInstance);
+// Инициализация навигации
+Router.init(tabs);
 
-console.log("ИИдеал-Авто (le.codes Native Client) успешно запущен. API:", serverUrl.value);
+// Системная кнопка "Назад": сначала возвращаемся на главный экран диагностики
+try {
+  tabs.onBack(() => {
+    if (tabs.tab !== "diag") {
+      tabs.select("diag");
+    }
+  });
+} catch (_) {}
+
+// =========================================================================
+// НАЧАЛЬНАЯ СИНХРОНИЗАЦИЯ С СЕРВЕРОМ ПРИ ЗАПУСКЕ ПРИЛОЖЕНИЯ
+// =========================================================================
+
+async function bootstrapFromServer(): Promise<void> {
+  try {
+    const isOnline = await apiClient.checkConnectivity();
+    if (!isOnline) {
+      return;
+    }
+
+    const auth = await apiClient.getAuthStatus();
+    if (auth.is_authenticated && auth.username) {
+      appState.currentUserSignal.value = {
+        username: auth.username,
+        email: auth.email || auth.user?.email,
+        is_staff: auth.user?.is_staff,
+        is_authenticated: true
+      };
+
+      const srvSettings = await apiClient.getSettings();
+      appState.crossMemoryEnabledSignal.value = srvSettings.cross_dialog_memory_enabled;
+      appState.globalMemorySummarySignal.value = srvSettings.global_memory_summary || "";
+
+      const sessions = await apiClient.getSessions();
+      if (sessions.length > 0) {
+        const preferredId = cacheManager.getSetting<string>("active_session_id", "");
+        const targetSession =
+          sessions.find(s => s.id === preferredId) || sessions[0];
+        const detail = await apiClient.getSessionDetail(targetSession.id);
+        if (detail) {
+          appState.currentSessionIdSignal.value = detail.id;
+          appState.currentSessionTitleSignal.value = detail.title;
+          if (detail.vehicle_info) {
+            appState.vehicleSignal.value = detail.vehicle_info;
+          }
+          appState.sessionSummarySignal.value = detail.summary || "";
+          const msgs =
+            detail.messages.length > 0 ? detail.messages : [createWelcomeMessage()];
+          appState.messagesSignal.value = msgs;
+          appState.latestAssistantMessageSignal.value =
+            [...msgs].reverse().find(m => m.role === "assistant") || msgs[0];
+        }
+      }
+      appState.sessionsRefreshCounterSignal.value++;
+    } else {
+      appState.currentUserSignal.value = { username: "", is_authenticated: false };
+    }
+  } catch (_) {}
+
+  // Фоновая синхронизация справочника DTC при первом запуске
+  try {
+    const cachedCount = cacheManager.getStats().dtcCount;
+    if (cachedCount < 20) {
+      void apiClient.syncDtcDictionary();
+    }
+  } catch (_) {}
+}
+
+// Автоматическое отслеживание онлайн-статуса и восстановление связи
+try {
+  if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
+    window.addEventListener("offline", () => {
+      appState.isOnlineSignal.value = false;
+      appState.offlineReasonSignal.value = "Нет подключения к интернету";
+    });
+    window.addEventListener("online", () => {
+      void apiClient.checkConnectivity();
+    });
+  }
+} catch (_) {}
+
+setInterval(() => {
+  if (!appState.isOnlineSignal.value) {
+    void apiClient.checkConnectivity();
+  }
+}, 10000);
+
+// При самом первом входе в приложение запрашиваем согласие на cookies, Условия и Политику (152-ФЗ)
+openFirstLaunchConsentModal();
+
+void bootstrapFromServer();

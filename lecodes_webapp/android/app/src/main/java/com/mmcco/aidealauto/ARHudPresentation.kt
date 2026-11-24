@@ -1,4 +1,4 @@
-package com.example.aidealautodiaglecodes
+package com.mmcco.aidealauto
 
 import android.app.Presentation
 import android.content.Context

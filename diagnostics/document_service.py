@@ -17,7 +17,9 @@ from typing import Any, Dict, List, Optional, Tuple
 from PIL import Image, ImageStat
 
 
-AUDIO_EXTENSIONS = {".wav", ".mp3", ".ogg", ".m4a", ".flac", ".webm", ".aac", ".opus", ".wma"}
+AUDIO_EXTENSIONS = {
+    ".wav", ".mp3", ".ogg", ".m4a", ".mp4", ".3gp", ".amr", ".flac", ".webm", ".aac", ".opus", ".wma"
+}
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif", ".tiff", ".tif", ".avif", ".jfif"}
 
 

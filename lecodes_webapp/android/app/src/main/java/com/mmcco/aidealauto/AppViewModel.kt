@@ -7,7 +7,7 @@
 //  engine's system registrations are released.
 //
 
-package com.example.aidealautodiaglecodes
+package com.mmcco.aidealauto
 
 import android.app.Activity
 import android.app.Application

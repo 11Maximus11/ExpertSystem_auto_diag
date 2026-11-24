@@ -108,7 +108,7 @@ lecodes_webapp/android/app/build/outputs/apk/debug/app-debug.apk
 
 4. **Запустите приложение**:
    ```powershell
-   & "C:\android_sdk\platform-tools\adb.exe" shell am start -n com.example.aidealautodiaglecodes/.MainActivity
+   & "C:\android_sdk\platform-tools\adb.exe" shell am start -n com.mmcco.aidealauto/.MainActivity
    ```
 
 5. **Просмотр логов в реальном времени (Logcat)**:
@@ -119,8 +119,8 @@ lecodes_webapp/android/app/build/outputs/apk/debug/app-debug.apk
 
 6. **Проверка связи в приложении**:
    - В приложении перейдите во вкладку **«Настройки»**.
-   - Нажмите **7 раз** по номеру версии (или нажмите кнопку `⚙ Инж. меню` в шапке).
-   - Убедитесь, что установлен адрес `http://10.0.2.2:8000` (IP 10.0.2.2 — это стандартный шлюз Android-эмулятора к вашему компьютеру `localhost`).
+   - Нажмите **10 раз** по плашке версии приложения (`Экспертная система автодиагностики`) для открытия скрытого **Инженерного меню (Dev Mode)**.
+   - Убедитесь, что установлен адрес `http://localhost:8000` (при пробросе `adb reverse tcp:8000 tcp:8000`) или `http://10.0.2.2:8000` (шлюз Android-эмулятора к ПК).
    - Нажмите **«Ping»** — в строке статуса отобразится время отклика сервера в миллисекундах.
 
 ---

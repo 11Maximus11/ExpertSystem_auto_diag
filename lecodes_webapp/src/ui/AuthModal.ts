@@ -1,18 +1,15 @@
 /**
  * Модальное окно авторизации и регистрации мастера (AuthModal).
- * Полное воспроизведение веб-версии:
- * - Вкладки «Вход» и «Регистрация»
- * - Поля: Логин, Email (при регистрации), Пароль
- * - Чекбокс согласия с условиями использования
- * - Баннер ошибок валидации и сервера
- * - Интеграция с Django /api/auth/
+ * Полная поддержка тёмной/светлой темы, валидация полей, кликабельные
+ * условия использования и интеграция с Django /api/auth/ (через session_key).
  *
  * Лицензия: GPL-3.0
  */
 
 import { apiClient } from "../api/BackendApiClient";
+import { cacheManager } from "../cache/ResourceCacheManager";
 import { AuthUser } from "../types";
-import { PrimaryButton, SecondaryButton, THEME } from "./components";
+import { LucideIcon, PrimaryButton, SecondaryButton, THEME } from "./components";
 
 export interface AuthModalCallbacks {
   onAuthSuccess?: (user: AuthUser) => void;
@@ -23,70 +20,110 @@ export function createAuthModal(callbacks?: AuthModalCallbacks): any {
   const authModeSignal = signal<"login" | "register">("login");
   const isSubmittingSignal = signal(false);
   const errorMessageSignal = signal("");
-  const termsAcceptedSignal = signal(true);
+  const firstLoginConsentedSignal = signal<boolean>(
+    cacheManager.getSetting<boolean>("first_login_legal_accepted", false)
+  );
+  const termsAcceptedSignal = signal(false);
+  const needsConsent = () =>
+    authModeSignal.value === "register" || !firstLoginConsentedSignal.value;
 
-  // Поля ввода
-  const usernameInput = UIInput().style({
-    placeholder: "Логин (напр. mechanic_ivan)",
-    backgroundColor: THEME.bgBase,
-    color: "#ffffff",
-    borderRadius: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    fontSize: 13,
-    borderWidth: 1,
-    borderColor: THEME.borderSubtle,
-    width: "100%",
-    marginBottom: 8
-  });
+  const usernameText = signal("");
+  const emailText = signal("");
+  const passwordText = signal("");
 
-  const emailInput = UIInput().style({
-    placeholder: "Email (необязательно, ivan@autoservice.ru)",
-    backgroundColor: THEME.bgBase,
-    color: "#ffffff",
-    borderRadius: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    fontSize: 13,
-    borderWidth: 1,
-    borderColor: THEME.borderSubtle,
-    width: "100%",
-    marginBottom: 8,
-    display: () => (authModeSignal.value === "register" ? "flex" : "none")
-  });
+  const usernameInput = UIInput()
+    .style({
+      placeholder: "Имя пользователя (логин от 3 симв.)",
+      placeholderColor: () => THEME.inputPlaceholder,
+      backgroundColor: () => THEME.bgInput,
+      color: () => THEME.textPrimary,
+      borderRadius: 9,
+      paddingHorizontal: 12,
+      paddingVertical: 10,
+      fontSize: 13,
+      borderWidth: 1.5,
+      borderColor: () => THEME.borderStrong,
+      width: "100%",
+      marginBottom: 8
+    })
+    .onChange((val: string) => {
+      usernameText.value = val;
+    });
 
-  const passwordInput = UIInput().style({
-    placeholder: "Пароль (не менее 6 символов)",
-    backgroundColor: THEME.bgBase,
-    color: "#ffffff",
-    borderRadius: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    fontSize: 13,
-    borderWidth: 1,
-    borderColor: THEME.borderSubtle,
-    width: "100%",
-    marginBottom: 10
-  });
+  const emailInput = UIInput()
+    .style({
+      placeholder: "Email (необязательно)",
+      placeholderColor: () => THEME.inputPlaceholder,
+      backgroundColor: () => THEME.bgInput,
+      color: () => THEME.textPrimary,
+      borderRadius: 9,
+      paddingHorizontal: 12,
+      paddingVertical: 10,
+      fontSize: 13,
+      borderWidth: 1.5,
+      borderColor: () => THEME.borderStrong,
+      width: "100%",
+      marginBottom: 8,
+      type: "email",
+      display: () => (authModeSignal.value === "register" ? "flex" : "none")
+    })
+    .onChange((val: string) => {
+      emailText.value = val;
+    });
+
+  const passwordInput = UIInput()
+    .style({
+      placeholder: "Пароль (не менее 6 симв.)",
+      placeholderColor: () => THEME.inputPlaceholder,
+      backgroundColor: () => THEME.bgInput,
+      color: () => THEME.textPrimary,
+      borderRadius: 9,
+      paddingHorizontal: 12,
+      paddingVertical: 10,
+      fontSize: 13,
+      borderWidth: 1.5,
+      borderColor: () => THEME.borderStrong,
+      width: "100%",
+      marginBottom: 10,
+      type: "password"
+    })
+    .onChange((val: string) => {
+      passwordText.value = val;
+    });
 
   let modal: any = null;
 
   const handleSubmit = async () => {
-    const username = (usernameInput.value || "").trim();
-    const password = (passwordInput.value || "").trim();
-    const email = (emailInput.value || "").trim();
+    const username = (usernameText.value || usernameInput.value || "").trim();
+    const password = (passwordText.value || passwordInput.value || "").trim();
+    const email = (emailText.value || emailInput.value || "").trim();
 
     if (!username) {
       errorMessageSignal.value = "Введите имя пользователя (логин)";
+      return;
+    }
+    if (username.length < 3) {
+      errorMessageSignal.value = "Логин должен содержать не менее 3 символов";
       return;
     }
     if (!password) {
       errorMessageSignal.value = "Введите пароль";
       return;
     }
-    if (authModeSignal.value === "register" && !termsAcceptedSignal.value) {
-      errorMessageSignal.value = "Необходимо принять условия обработки данных";
+    if (password.length < 6) {
+      errorMessageSignal.value = "Пароль должен содержать не менее 6 символов";
       return;
+    }
+    if (needsConsent() && !termsAcceptedSignal.value) {
+      errorMessageSignal.value =
+        "Подтвердите согласие на cookies, Пользовательское соглашение и Политику конфиденциальности";
+      return;
+    }
+    if (authModeSignal.value === "register") {
+      if (email && !email.includes("@")) {
+        errorMessageSignal.value = "Введите корректный email (с символом @) или оставьте поле пустым";
+        return;
+      }
     }
 
     errorMessageSignal.value = "";
@@ -96,9 +133,13 @@ export function createAuthModal(callbacks?: AuthModalCallbacks): any {
       if (authModeSignal.value === "login") {
         const res = await apiClient.login(username, password);
         if (res.success && res.is_authenticated) {
+          cacheManager.saveSetting("first_login_legal_accepted", true);
+          cacheManager.saveSetting("first_entry_legal_accepted", true);
+          firstLoginConsentedSignal.value = true;
           modal.hide();
           callbacks?.onAuthSuccess?.({
             username: res.username || username,
+            email: res.email || res.user?.email,
             is_staff: res.user?.is_staff,
             is_authenticated: true
           });
@@ -108,10 +149,13 @@ export function createAuthModal(callbacks?: AuthModalCallbacks): any {
       } else {
         const res = await apiClient.register(username, password, email || undefined);
         if (res.success && res.is_authenticated) {
+          cacheManager.saveSetting("first_login_legal_accepted", true);
+          cacheManager.saveSetting("first_entry_legal_accepted", true);
+          firstLoginConsentedSignal.value = true;
           modal.hide();
           callbacks?.onAuthSuccess?.({
             username: res.username || username,
-            email: email || undefined,
+            email: res.email || email || undefined,
             is_staff: res.user?.is_staff,
             is_authenticated: true
           });
@@ -126,7 +170,6 @@ export function createAuthModal(callbacks?: AuthModalCallbacks): any {
     }
   };
 
-  // Переключение вкладок
   const tabButton = (label: string, mode: "login" | "register") => {
     const isActive = () => authModeSignal.value === mode;
     return UIButton(
@@ -146,100 +189,123 @@ export function createAuthModal(callbacks?: AuthModalCallbacks): any {
       })
       .onClick(() => {
         authModeSignal.value = mode;
+        termsAcceptedSignal.value = false;
         errorMessageSignal.value = "";
       });
   };
 
   modal = UIModal(
     UIColumn(
-      // Шапка модалки
       UIRow(
-        UIText(() => (authModeSignal.value === "login" ? "Вход в ИИдеал Авто" : "Регистрация в ИИдеал Авто")).style({
-          color: THEME.textPrimary,
-          fontSize: 14,
+        LucideIcon("lucide:user", 17, () => THEME.accentOrange),
+        UIText(() =>
+          authModeSignal.value === "login" ? "Вход в ИИдеал Авто" : "Регистрация в ИИдеал Авто"
+        ).style({
+          color: () => THEME.textPrimary,
+          fontSize: 15,
           fontWeight: "bold",
           flex: 1
         }),
-        UIButton(UIText("✕").style({ color: THEME.textMuted, fontSize: 13, fontWeight: "bold" }))
+        UIButton(LucideIcon("lucide:x", 18, () => THEME.textMuted))
           .style({ padding: 4 })
           .onClick(() => {
             modal.hide();
             callbacks?.onClose?.();
           })
-      ).style({ alignItems: "center", marginBottom: 12, width: "100%" }),
+      ).style({ alignItems: "center", gap: 8, marginBottom: 12, width: "100%" }),
 
-      // Вкладки Вход / Регистрация
-      UIRow(
-        tabButton("Вход", "login"),
-        tabButton("Регистрация", "register")
-      ).style({
-        backgroundColor: THEME.bgElevated,
+      UIRow(tabButton("Вход", "login"), tabButton("Регистрация", "register")).style({
+        backgroundColor: () => THEME.bgElevated,
         borderRadius: 10,
         padding: 3,
         marginBottom: 12,
         width: "100%"
       }),
 
-      // Баннер ошибки
       UIRow(
+        LucideIcon("lucide:circle-alert", 15, () => THEME.statusCrit),
         UIText(() => errorMessageSignal.value).style({
-          color: THEME.statusCrit,
+          color: () => THEME.statusCrit,
           fontSize: 11,
-          lineHeight: 15
+          lineHeight: 15,
+          flex: 1
         })
       ).style({
-        backgroundColor: "rgba(239, 68, 68, 0.15)",
+        backgroundColor: "rgba(239, 68, 68, 0.14)",
         borderWidth: 1,
         borderColor: "rgba(239, 68, 68, 0.35)",
         borderRadius: 8,
         paddingHorizontal: 10,
-        paddingVertical: 6,
+        paddingVertical: 7,
         marginBottom: 10,
+        alignItems: "center",
+        gap: 6,
         width: "100%",
         display: () => (errorMessageSignal.value ? "flex" : "none")
       }),
 
-      // Поля
       usernameInput,
       emailInput,
       passwordInput,
 
-      // Чекбокс условий для регистрации
-      UIRow(
-        UIButton(
-          UIBox(
-            UIText(() => (termsAcceptedSignal.value ? "✓" : "")).style({
-              color: "#ffffff",
-              fontSize: 10,
-              fontWeight: "bold"
+      UIColumn(
+        UIRow(
+          UIButton(
+            UIBox(
+              LucideIcon("lucide:check", 12, "#ffffff").style({
+                display: () => (termsAcceptedSignal.value ? "flex" : "none")
+              })
+            ).style({
+              width: 18,
+              height: 18,
+              borderRadius: 5,
+              borderWidth: 1.5,
+              borderColor: () => (termsAcceptedSignal.value ? THEME.statusOk : THEME.borderStrong),
+              backgroundColor: () => (termsAcceptedSignal.value ? THEME.statusOk : "transparent"),
+              alignItems: "center",
+              justifyContent: "center"
             })
-          ).style({
-            width: 16,
-            height: 16,
-            borderRadius: 4,
-            borderWidth: 1.5,
-            borderColor: () => (termsAcceptedSignal.value ? THEME.statusOk : "#475569"),
-            backgroundColor: () => (termsAcceptedSignal.value ? THEME.statusOk : "transparent"),
-            alignItems: "center",
-            justifyContent: "center",
-            marginRight: 8
+          )
+            .style({ padding: 2 })
+            .onClick(() => {
+              termsAcceptedSignal.value = !termsAcceptedSignal.value;
+            }),
+          UIText("Принимаю использование cookies и кэша, Пользовательское соглашение и Политику конфиденциальности (152-ФЗ РФ)").style({
+            color: () => THEME.textSecondary,
+            fontSize: 11,
+            lineHeight: 15,
+            flex: 1
           })
-        ).onClick(() => {
-          termsAcceptedSignal.value = !termsAcceptedSignal.value;
-        }),
-        UIText("Согласен с обработкой данных и регламентом сервиса").style({
-          color: THEME.textMuted,
-          fontSize: 11,
-          flex: 1
-        })
+        ).style({ alignItems: "flex-start", gap: 8, width: "100%" }),
+
+        UIRow(
+          UIButton(
+            UIText("Пользовательское соглашение").style({
+              color: () => THEME.accentCyan,
+              fontSize: 10,
+              textDecorationLine: "underline"
+            })
+          ).onClick(() => {
+            openURL(`${apiClient.getBaseUrl()}/terms/`).catch(() => {});
+          }),
+          UIText("•").style({ color: () => THEME.textMuted, fontSize: 10 }),
+          UIButton(
+            UIText("Политика конфиденциальности").style({
+              color: () => THEME.accentCyan,
+              fontSize: 10,
+              textDecorationLine: "underline"
+            })
+          ).onClick(() => {
+            openURL(`${apiClient.getBaseUrl()}/privacy/`).catch(() => {});
+          })
+        ).style({ alignItems: "center", gap: 6, paddingLeft: 26 })
       ).style({
-        alignItems: "center",
+        gap: 4,
         marginBottom: 12,
         width: "100%",
-        display: () => (authModeSignal.value === "register" ? "flex" : "none")
+        display: () => (needsConsent() ? "flex" : "none")
       }),
 
-      // Кнопки
       UIRow(
         SecondaryButton("Отмена", () => {
           modal.hide();
@@ -247,21 +313,24 @@ export function createAuthModal(callbacks?: AuthModalCallbacks): any {
         }),
         UISpacer(),
         PrimaryButton(
-          () => (isSubmittingSignal.value ? "..." : authModeSignal.value === "login" ? "Войти" : "Создать аккаунт"),
-          handleSubmit
+          () => (isSubmittingSignal.value ? "Подождите..." : authModeSignal.value === "login" ? "Войти" : "Создать аккаунт"),
+          handleSubmit,
+          isSubmittingSignal
         )
       ).style({ alignItems: "center", width: "100%" })
     ).style({
-      backgroundColor: THEME.bgSurface,
-      borderRadius: 14,
-      padding: 16,
+      backgroundColor: () => THEME.bgSurface,
+      borderRadius: 18,
+      padding: 18,
       borderWidth: 1,
-      borderColor: THEME.borderStrong,
-      width: "92%",
-      maxWidth: 400
+      borderColor: () => THEME.borderStrong,
+      width: "92%"
     })
-  );
+  ).transition({
+    opacity: 0,
+    transform: "scale(0.95)",
+    duration: 210
+  });
 
   return modal;
 }
-

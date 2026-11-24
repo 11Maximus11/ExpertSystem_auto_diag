@@ -5,7 +5,7 @@
 //  Лицензия: GPL-3.0
 //
 
-package com.example.aidealautodiaglecodes
+package com.mmcco.aidealauto
 
 import android.Manifest
 import android.content.Context

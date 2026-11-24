@@ -12,6 +12,9 @@ object LeCodesRuntime {
      *  engine runs the bundle — app code resolves plugin factories at synchronous top level. */
     fun registerBundledPlugins(engine: LecodesEngine, context: Context) {
         io.letary.lecodes.plugins.browser.LeCodesBrowserPlugin.register(engine, context)
+        io.letary.lecodes.plugins.camera.LeCodesCameraPlugin.register(engine, context)
+        io.letary.lecodes.plugins.audiorecorder.LeCodesAudioRecorderPlugin.register(engine, context)
+        io.letary.lecodes.plugins.speech.LeCodesSpeechPlugin.register(engine, context)
     }
 
     /** Cold create only (savedInstanceState == null): forward the launch intent so a plugin

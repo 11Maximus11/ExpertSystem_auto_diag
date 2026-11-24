@@ -1,353 +1,406 @@
 /**
- * Экран «OBD-II Сканнер» (Прямой проброс внешних устройств через браузер/Android).
- * Работает с реальными датчиками через:
- * 1. Web Bluetooth API (ELM327 BLE / Bluetooth 4.0+)
- * 2. Web Serial API (ELM327 USB / FTDI / CH340 COM-порты)
- * 3. Встроенный Демо-симулятор ЭБУ (для тестирования и отладки)
+ * Экран приборной панели OBD-II (ELM327 BLE / USB Serial / Demo-режим).
+ * Реактивные светлая и тёмная темы, живые показатели RPM/ОЖ/АКБ/Дросселя,
+ * чтение и сброс ошибок DTC, определение VIN, отправка снимка в ИИ-диагност
+ * и прямой запуск полноэкранного AR HUD.
  *
- * Отображает живые приборы телеметрии (RPM, скорость, температура ОЖ, напряжение АКБ),
- * считывает и сбрасывает коды неисправностей DTC (Mode 03 / Mode 04),
- * и выводит консоль AT-команд.
- * Адаптирован для вертикальных экранов смартфонов.
  * Лицензия: GPL-3.0
  */
 
 import { obdProtocol } from "../obd/ELM327Protocol";
 import { WebBluetoothOBD } from "../obd/WebBluetoothOBD";
 import { WebSerialOBD } from "../obd/WebSerialOBD";
-import { DtcChip, HeaderBar, MetricCard, PrimaryButton, SecondaryButton, StatusBadge } from "./components";
+import { appState, attachObdSnapshotToStaging, stageDtcCodes } from "../state/appState";
+import { OBDConnectionStatus, OBDLiveSensors } from "../types";
+import {
+  AppHeader,
+  DtcChip,
+  LucideIcon,
+  MetricCard,
+  openConfirmModal,
+  PrimaryButton,
+  SecondaryButton,
+  StatusBadge,
+  THEME
+} from "./components";
 
 export interface ObdScannerCallbacks {
-  onSendDtcToAi?: (codes: string[]) => void;
-  onOpenEngineeringMenu?: () => void;
+  onOpenAr?: () => void;
+  onOpenSettings?: () => void;
+  onAttachToAi?: () => void;
 }
 
 export function createObdScannerScreen(callbacks?: ObdScannerCallbacks): any {
-  // Реактивные сигналы состояния соединения
-  const connStatusSignal = signal(obdProtocol.getStatus());
-  const statusMsgSignal = signal(obdProtocol.getStatusMessage());
-
-  // Сигналы живых датчиков
-  const rpmSignal = signal(0);
-  const speedSignal = signal(0);
-  const coolantSignal = signal(0);
-  const voltageSignal = signal(12.6);
-  const loadSignal = signal(0);
-  const throttleSignal = signal(0);
+  const connStatusSignal = signal<OBDConnectionStatus>("disconnected");
+  const statusTextSignal = signal<string>("ELM327 отключен");
+  const rpmSignal = signal<string>("0");
+  const speedSignal = signal<string>("0");
+  const tempSignal = signal<string>("0");
+  const throttleSignal = signal<string>("0");
+  const voltSignal = signal<string>("12.6");
+  const loadSignal = signal<string>("0");
+  const vinSignal = signal<string>("Не определён");
   const dtcListSignal = signal<string[]>([]);
-  const isReadingDtcSignal = signal(false);
-
-  // Журнал терминала
-  const terminalLogsSignal = signal<string[]>([
-    "[SYS] Готов к подключению сканера ELM327 по Web Bluetooth или Web Serial"
+  const logLinesSignal = signal<string[]>([
+    "[INFO] OBD-2 ELM327 готов к сопряжению (BLE / USB-OTG / Демо)"
   ]);
+  const cmdTextSignal = signal<string>("");
 
-  const dtcContainer = UIColumn().style({ width: "100%" });
-  const terminalLogsContainer = UIColumn().style({
-    backgroundColor: "#050914",
-    borderRadius: 8,
-    padding: 10,
-    maxHeight: 140,
-    borderWidth: 1,
-    borderColor: "#1e293b",
-    width: "100%"
-  });
+  let pollTimer: any = null;
 
-  const updateDtcUi = () => {
-    const list = dtcListSignal.value;
-    const nodes: any[] = [];
-    if (list.length === 0) {
-      nodes.push(
-        UIText("Активных кодов неисправностей не обнаружено в памяти ЭБУ.")
-          .style({ color: "#10b981", fontSize: 12, paddingVertical: 4 })
-      );
-    } else {
-      nodes.push(
-        UIRow(...list.map(c => DtcChip(c))).style({ flexWrap: "wrap", marginBottom: 8 })
-      );
-      if (callbacks?.onSendDtcToAi) {
-        nodes.push(
-          PrimaryButton("Отправить ошибки в ИИ-диагност →", () => callbacks.onSendDtcToAi?.(list))
-        );
-      }
-    }
-    dtcContainer.setContent(nodes);
+  const syncSensorsToUi = (s: OBDLiveSensors) => {
+    rpmSignal.value = String(s.rpm || 0);
+    speedSignal.value = String(s.speed || 0);
+    tempSignal.value = String(s.coolantTemp || 0);
+    throttleSignal.value = String(s.throttle || 0);
+    voltSignal.value = (s.voltage || 12.6).toFixed(1);
+    loadSignal.value = String(s.engineLoad || 0);
+    if (s.vin) vinSignal.value = s.vin;
+    dtcListSignal.value = [...(s.dtcList || [])];
+
+    // Обновляем глобальный сигнал для мини-HUD и AR-HUD
+    appState.obdStateSignal.value = {
+      ...s,
+      status: statusTextSignal.value
+    };
   };
 
-  const addLog = (dir: string, text: string) => {
-    const time = new Date().toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
-    const line = `[${time}] ${dir === "in" ? "RX <" : dir === "out" ? "TX >" : "•"} ${text}`;
-    terminalLogsSignal.value = [...terminalLogsSignal.value.slice(-25), line];
-
-    terminalLogsContainer.append(
-      UIText(line).style({
-        color: line.includes("TX") ? "#38bdf8" : line.includes("RX") ? "#34d399" : "#94a3b8",
-        fontSize: 11,
-        fontFamily: "monospace",
-        lineHeight: 16
-      })
-    );
-  };
-
-  // Первоначальный рендер
-  updateDtcUi();
-
-  // Подписка на события протокола ELM327
   obdProtocol.onStatusChange = (st, msg) => {
     connStatusSignal.value = st;
-    statusMsgSignal.value = msg;
-    addLog("info", `Статус: ${st} (${msg})`);
+    statusTextSignal.value = msg;
+    appState.obdStateSignal.value = {
+      ...appState.obdStateSignal.value,
+      status: msg
+    };
   };
 
-  obdProtocol.onSensorsUpdate = (s) => {
-    rpmSignal.value = s.rpm;
-    speedSignal.value = s.speed;
-    coolantSignal.value = s.coolantTemp;
-    voltageSignal.value = s.voltage;
-    loadSignal.value = s.engineLoad;
-    throttleSignal.value = s.throttle;
-    if (s.dtcList && s.dtcList.length !== dtcListSignal.value.length) {
-      dtcListSignal.value = s.dtcList;
-      updateDtcUi();
-    }
+  obdProtocol.onSensorsUpdate = s => {
+    syncSensorsToUi(s);
   };
 
   obdProtocol.onLog = (dir, text) => {
-    addLog(dir, text);
+    const prefix = dir === "out" ? ">" : dir === "in" ? "<" : "*";
+    const lines = [...logLinesSignal.value, `${prefix} ${text}`].slice(-30);
+    logLinesSignal.value = lines;
+  };
+
+  const stopPolling = () => {};
+
+  const startPolling = () => {};
+
+  const handleConnectDemo = async () => {
+    const ok = await obdProtocol.connect("demo");
+    if (ok) {
+      await obdProtocol.readDTC();
+      await obdProtocol.readVIN();
+      startPolling();
+      toast("Демо-эмулятор ELM327 запущен");
+    }
   };
 
   const handleConnectBt = async () => {
-    addLog("info", "Запрос Web Bluetooth устройства...");
-    await obdProtocol.connect("bluetooth");
+    if (!WebBluetoothOBD.isSupported()) {
+      toast("WebBluetooth / BLE недоступен — используйте Демо-режим или USB");
+      return;
+    }
+    const ok = await obdProtocol.connect("bluetooth");
+    if (ok) {
+      await obdProtocol.readDTC();
+      await obdProtocol.readVIN();
+      startPolling();
+    }
   };
 
-  const handleConnectSerial = async (baud: number = 38400) => {
-    addLog("info", `Запрос Web Serial COM-порта (${baud} бод)...`);
-    await obdProtocol.connect("serial", baud);
-  };
-
-  const handleConnectDemo = async () => {
-    addLog("info", "Запуск Демо-симулятора ЭБУ...");
-    await obdProtocol.connect("demo");
+  const handleConnectUsb = async () => {
+    if (!WebSerialOBD.isSupported()) {
+      toast("WebSerial USB-OTG не поддерживается этим устройством");
+      return;
+    }
+    const ok = await obdProtocol.connect("serial", 38400);
+    if (ok) {
+      await obdProtocol.readDTC();
+      await obdProtocol.readVIN();
+      startPolling();
+    }
   };
 
   const handleDisconnect = async () => {
+    stopPolling();
     await obdProtocol.disconnect();
+    toast("Сканер отключён");
   };
 
-  const handleReadDTC = async () => {
-    if (isReadingDtcSignal.value) return;
-    isReadingDtcSignal.value = true;
-    try {
-      const codes = await obdProtocol.readDTC();
-      dtcListSignal.value = codes;
-      updateDtcUi();
-    } finally {
-      isReadingDtcSignal.value = false;
-    }
-  };
-
-  const handleClearDTC = async () => {
-    const ok = await obdProtocol.clearDTC();
-    if (ok) {
-      dtcListSignal.value = [];
-      updateDtcUi();
-    }
-  };
-
-  const hasBt = WebBluetoothOBD.isSupported();
-  const hasSerial = WebSerialOBD.isSupported();
-  const isArHudSignal = signal<boolean>(false);
-
-  const header = HeaderBar(
-    "OBD-II Приборы & Датчики",
-    "Телеметрия ЭБУ и диагностика ELM327",
-    UIRow(
-      StatusBadge(
-        () => connStatusSignal.value,
-        () => statusMsgSignal.value
-      )
-    )
-  );
-
-  // Панель подключения устройств
-  const connectionBar = UIColumn(
-    UIRow(
-      UIText("Подключение:").style({ color: "#94a3b8", fontSize: 12, alignSelf: "center", marginRight: 8 }),
-      hasBt
-        ? PrimaryButton("Bluetooth BLE", handleConnectBt)
-        : null,
-      hasSerial
-        ? PrimaryButton("USB COM", () => handleConnectSerial(38400))
-        : null,
-        SecondaryButton(
-        () => (connStatusSignal.value === "connected" && obdProtocol.getTransportType() === "demo" ? "Демо (Стоп)" : "Демо-тест"),
-        () => {
-          if (connStatusSignal.value === "connected" && obdProtocol.getTransportType() === "demo") {
-            handleDisconnect();
-          } else {
-            handleConnectDemo();
-          }
-        }
-      ),
-      SecondaryButton(
-        () => (isArHudSignal.value ? "AR HUD: Вкл" : "AR HUD (Очки / DeX)"),
-        () => {
-          isArHudSignal.value = !isArHudSignal.value;
-        }
-      ),
-      UISpacer(),
-      () =>
-        connStatusSignal.value === "connected" && obdProtocol.getTransportType() !== "demo"
-          ? SecondaryButton("Отключить", handleDisconnect)
-          : null
-    ).style({ alignItems: "center", flexWrap: "wrap", gap: 6, width: "100%" })
-  ).style({
-    backgroundColor: "#0d1322",
-    padding: 12,
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: "#1e293b",
-    marginBottom: 12,
-    width: "100%"
+  const header = AppHeader({
+    title: "ИИДЕАЛ АВТО",
+    onOpenAr: () => callbacks?.onOpenAr?.(),
+    onOpenSettings: () => callbacks?.onOpenSettings?.()
   });
 
-  // Приборная панель (Сетка адаптивных датчиков с прогресс-барами)
-  // На узком экране (360-400px) карточки с minWidth 140px формируют 2 колонки, на десктопе 3.
-  const gaugesGrid = UIRow(
-    MetricCard(
-      "Обороты ЭБУ",
-      () => String(rpmSignal.value),
-      "об/мин",
-      "#38bdf8",
-      () => Math.min(1, rpmSignal.value / 7000)
-    ),
-    MetricCard(
-      "Скорость",
-      () => String(speedSignal.value),
-      "км/ч",
-      "#22c55e",
-      () => Math.min(1, speedSignal.value / 220)
-    ),
-    MetricCard(
-      "Температура ОЖ",
-      () => `${coolantSignal.value}°`,
-      "C",
-      coolantSignal.value > 105 ? "#ef4444" : coolantSignal.value < 70 ? "#38bdf8" : "#22c55e",
-      () => Math.min(1, coolantSignal.value / 120)
-    ),
-    MetricCard(
-      "Напряжение АКБ",
-      () => voltageSignal.value.toFixed(1),
-      "В",
-      "#a855f7",
-      () => Math.min(1, Math.max(0, (voltageSignal.value - 10) / 5))
-    ),
-    MetricCard(
-      "Нагрузка двигателя",
-      () => `${loadSignal.value}`,
-      "%",
-      "#ec4899",
-      () => Math.min(1, loadSignal.value / 100)
-    ),
-    MetricCard(
-      "Дроссель",
-      () => `${throttleSignal.value}`,
-      "%",
-      "#06b6d4",
-      () => Math.min(1, throttleSignal.value / 100)
-    )
-  ).style({
-    flexWrap: "wrap",
-    gap: 8,
-    marginBottom: 12,
-    width: "100%"
-  });
-
-  // Секция кодов ошибок ЭБУ (DTC)
-  const dtcSection = UIColumn(
-    UIRow(
-      UIText("Коды ошибок ЭБУ (DTC)").style({ color: "#f8fafc", fontSize: 14, fontWeight: "bold", flex: 1 }),
-      PrimaryButton(
-        () => (isReadingDtcSignal.value ? "Чтение..." : "Считать (03)"),
-        handleReadDTC
-      ),
-      UIRow().style({ width: 6 }),
-      SecondaryButton("Сброс (04)", handleClearDTC)
-    ).style({ alignItems: "center", marginBottom: 10, width: "100%", flexWrap: "wrap", gap: 6 }),
-
-    dtcContainer
-  ).style({
-    backgroundColor: "#131b2e",
-    borderRadius: 12,
-    padding: 12,
-    borderWidth: 1,
-    borderColor: "#1e293b",
-    marginBottom: 12,
-    width: "100%"
-  });
-
-  // Терминал AT команд
-  const terminalSection = UIColumn(
-    UIText("Журнал команд ELM327 / OBD-II").style({ color: "#94a3b8", fontSize: 12, fontWeight: "bold", marginBottom: 6 }),
-    terminalLogsContainer
-  ).style({
-    backgroundColor: "#0d1322",
-    borderRadius: 12,
-    padding: 12,
-    borderWidth: 1,
-    borderColor: "#1e293b",
-    width: "100%"
-  });
-
-  // Высококонтрастный AR HUD блок для смарт-очков и внешних дисплеев (AR-очки, внешние экраны, DeX)
-  const arHudCard = UIColumn(
-    UIRow(
-      UIText("AR HUD ПРОЕКЦИЯ • ОЧКИ & ВНЕШНИЙ ЭКРАН")
-        .style({ color: "#38bdf8", fontSize: 12, fontWeight: "bold" }),
-      UISpacer(),
-      UIText("3DoF Tracking активен")
-        .style({ color: "#10b981", fontSize: 11, fontWeight: "bold" })
-    ).style({ marginBottom: 6 }),
-    UIRow(
-      UIColumn(
-        UIText("СКОРОСТЬ").style({ color: "#6ee7b7", fontSize: 11, fontWeight: "bold" }),
-        UIRow(
-          UIText(() => `${speedSignal.value}`).style({ color: "#10b981", fontSize: 48, fontWeight: "bold" }),
-          UIText(" км/ч").style({ color: "#6ee7b7", fontSize: 14, alignSelf: "flex-end", marginBottom: 8, marginLeft: 4 })
-        )
-      ).style({ flex: 1, alignItems: "center" }),
-      UIColumn(
-        UIText("ОБОРОТЫ ДВС").style({ color: "#fcd34d", fontSize: 11, fontWeight: "bold" }),
-        UIRow(
-          UIText(() => `${rpmSignal.value}`).style({ color: "#f59e0b", fontSize: 48, fontWeight: "bold" }),
-          UIText(" RPM").style({ color: "#fcd34d", fontSize: 14, alignSelf: "flex-end", marginBottom: 8, marginLeft: 4 })
-        )
-      ).style({ flex: 1, alignItems: "center" })
-    ).style({ width: "100%", justifyContent: "space-around", paddingVertical: 8 }),
-    UIRow(
-      UIText(() => `ОЖ: ${coolantSignal.value}°C  |  Нагрузка: ${loadSignal.value}%  |  Дроссель: ${throttleSignal.value}%  |  АКБ: 14.1 В`)
-        .style({ color: "#93c5fd", fontSize: 12, textAlign: "center", width: "100%" })
-    ).style({ paddingBottom: 4 })
-  ).style({
-    backgroundColor: "#000000",
-    borderRadius: 14,
-    padding: 12,
-    borderWidth: 2,
-    borderColor: "#10b981",
-    marginBottom: 12,
-    width: "100%"
-  });
-
-  const scrollBody = UIScrollable(
+  // Карточка подключения к адаптеру
+  const connectionCard = UIColumn(
     UIColumn(
-      connectionBar,
-      arHudCard,
-      gaugesGrid,
-      dtcSection,
-      terminalSection
-    ).style({ padding: 14, maxWidth: 960, alignSelf: "center", width: "100%", paddingBottom: 24 })
-  ).style({ flex: 1, width: "100%" });
+      UIRow(
+        LucideIcon("lucide:gauge", 18, () => THEME.accentCyan),
+        UIText("OBD-II Сканер ELM327").style({
+          color: () => THEME.textPrimary,
+          fontSize: 14,
+          fontWeight: "bold",
+          flex: 1
+        })
+      ).style({ alignItems: "center", gap: 8, width: "100%" }),
+      UIRow(
+        StatusBadge(() => connStatusSignal.value, () => statusTextSignal.value)
+      ).style({ width: "100%" })
+    ).style({ gap: 6, width: "100%", marginBottom: 8 }),
 
-  return UIScreen(header, scrollBody).style({ backgroundColor: "#0a0f1d", flex: 1, width: "100%", height: "100%" });
+    UIRow(
+      PrimaryButton("BLE Сканер", handleConnectBt),
+      SecondaryButton("USB ELM", handleConnectUsb, "lucide:cpu"),
+      SecondaryButton("Демо ЭБУ", handleConnectDemo, "lucide:activity"),
+      UIButton(
+        UIRow(
+          LucideIcon("lucide:x", 13, "#ffffff"),
+          UIText("Откл.").style({ color: "#ffffff", fontSize: 12, fontWeight: "bold" })
+        ).style({ alignItems: "center", gap: 4 })
+      )
+        .style({
+          backgroundColor: () => THEME.statusCrit,
+          paddingHorizontal: 10,
+          paddingVertical: 8,
+          borderRadius: 9,
+          display: () => (connStatusSignal.value === "connected" ? "flex" : "none")
+        })
+        .onClick(handleDisconnect)
+    ).style({ flexWrap: "wrap", gap: 7, width: "100%", marginBottom: 8 }),
+
+    // Полоса VIN + кнопка AR HUD
+    UIRow(
+      UIText(() => `VIN: ${vinSignal.value}`).style({
+        color: () => THEME.textSecondary,
+        fontSize: 12,
+        fontWeight: "600",
+        flex: 1
+      }),
+      SecondaryButton(
+        "Определить VIN",
+        async () => {
+          if (connStatusSignal.value !== "connected") {
+            toast("Сначала подключите сканер или Демо ЭБУ");
+            return;
+          }
+          const vin = await obdProtocol.readVIN();
+          if (vin) {
+            vinSignal.value = vin;
+            if (!appState.vehicleSignal.value.includes(vin)) {
+              appState.vehicleSignal.value = appState.vehicleSignal.value
+                ? `${appState.vehicleSignal.value} (${vin})`
+                : `VIN ${vin}`;
+            }
+            toast(`VIN определён: ${vin}`);
+          } else {
+            toast("ЭБУ не вернул VIN (Mode 09 PID 02)");
+          }
+        },
+        "lucide:search"
+      ),
+      UIButton(
+        UIRow(
+          LucideIcon("lucide:glasses", 14, "#ffffff"),
+          UIText("AR HUD").style({ color: "#ffffff", fontSize: 11, fontWeight: "bold" })
+        ).style({ alignItems: "center", gap: 4 })
+      )
+        .style({
+          backgroundColor: () => THEME.accentOrange,
+          paddingHorizontal: 10,
+          paddingVertical: 8,
+          borderRadius: 9
+        })
+        .onClick(() => callbacks?.onOpenAr?.())
+    ).style({ alignItems: "center", flexWrap: "wrap", gap: 7, width: "100%" })
+  ).style({
+    backgroundColor: () => THEME.bgSurface,
+    borderWidth: 1,
+    borderColor: () => THEME.borderDefault,
+    borderRadius: 14,
+    padding: 13,
+    width: "100%"
+  });
+
+  // Сетка приборов 2x3
+  const gaugesGrid = UIColumn(
+    UIRow(
+      MetricCard("Обороты (RPM)", () => rpmSignal.value, "об/мин", () => THEME.statusOk, "lucide:activity"),
+      MetricCard("Скорость", () => speedSignal.value, "км/ч", () => THEME.accentCyan, "lucide:gauge")
+    ).style({ gap: 8, width: "100%" }),
+    UIRow(
+      MetricCard("Температура ОЖ", () => tempSignal.value, "°C", () => THEME.statusWarn, "lucide:circle-alert"),
+      MetricCard("Напряжение АКБ", () => voltSignal.value, "В", () => THEME.accentCyan, "lucide:zap")
+    ).style({ gap: 8, width: "100%" }),
+    UIRow(
+      MetricCard("Нагрузка ДВС", () => loadSignal.value, "%", () => THEME.accentOrange, "lucide:cpu"),
+      MetricCard("Дроссель TPS", () => throttleSignal.value, "%", () => THEME.accentViolet, "lucide:sliders-horizontal")
+    ).style({ gap: 8, width: "100%" })
+  ).style({ width: "100%", gap: 8 });
+
+  // Секция DTC ошибок ЭБУ
+  const dtcChipsRow = UIRow(() => {
+    const codes = dtcListSignal.value || [];
+    if (codes.length === 0) {
+      return [
+        UIText("Ошибки ЭБУ не считаны или память неисправностей чиста.").style({
+          color: () => THEME.textMuted,
+          fontSize: 12
+        })
+      ];
+    }
+    return codes.map(c =>
+      DtcChip(c, () => {
+        stageDtcCodes([c]);
+        toast(`Код ${c} добавлен в чат`);
+      })
+    );
+  }).style({ flexWrap: "wrap", gap: 7, width: "100%", marginVertical: 6 });
+
+  const dtcCard = UIColumn(
+    UIRow(
+      LucideIcon("lucide:shield-alert", 17, () => THEME.statusCrit),
+      UIText("Ошибки ЭБУ (Mode 03 / 04)").style({
+        color: () => THEME.textPrimary,
+        fontSize: 14,
+        fontWeight: "bold",
+        flex: 1
+      })
+    ).style({ alignItems: "center", gap: 7, width: "100%" }),
+    dtcChipsRow,
+    UIRow(
+      SecondaryButton(
+        "Считать DTC",
+        async () => {
+          if (connStatusSignal.value !== "connected") {
+            toast("Сначала подключите сканер или Демо ЭБУ");
+            return;
+          }
+          const codes = await obdProtocol.readDTC();
+          dtcListSignal.value = codes;
+          toast(codes.length > 0 ? `Считано ошибок: ${codes.length}` : "Ошибок не найдено");
+        },
+        "lucide:refresh-cw"
+      ),
+      SecondaryButton("Сброс (Mode 04)", () => {
+        if (connStatusSignal.value !== "connected") {
+          toast("Сканер не подключён");
+          return;
+        }
+        openConfirmModal({
+          title: "Сбросить коды ошибок ЭБУ?",
+          message: "Будет отправлена команда Mode 04 и погашен индикатор Check Engine.",
+          confirmLabel: "Сбросить",
+          onConfirm: async () => {
+            await obdProtocol.clearDTC();
+            dtcListSignal.value = [];
+            toast("Коды ошибок сброшены");
+          }
+        });
+      }),
+      UISpacer(),
+      PrimaryButton("В запрос ИИ", () => {
+        attachObdSnapshotToStaging();
+        callbacks?.onAttachToAi?.();
+      })
+    ).style({ flexWrap: "wrap", alignItems: "center", gap: 7, width: "100%", marginTop: 4 })
+  ).style({
+    backgroundColor: () => THEME.bgSurface,
+    borderWidth: 1,
+    borderColor: () => THEME.borderDefault,
+    borderRadius: 14,
+    padding: 13,
+    width: "100%"
+  });
+
+  // AT/PID терминал
+  const cmdInput = UIInput()
+    .style({
+      placeholder: "AT-команда (напр. 010C, ATI, ATZ)...",
+      placeholderColor: () => THEME.inputPlaceholder,
+      backgroundColor: () => THEME.bgInput,
+      color: () => THEME.textPrimary,
+      borderWidth: 1.5,
+      borderColor: () => THEME.borderStrong,
+      borderRadius: 9,
+      paddingHorizontal: 10,
+      paddingVertical: 8,
+      fontSize: 12,
+      flex: 1
+    })
+    .onChange((v: string) => {
+      cmdTextSignal.value = v;
+    });
+
+  const terminalCard = UIColumn(
+    UIText("Терминал ELM327 / Лог команд").style({
+      color: () => THEME.textPrimary,
+      fontSize: 13,
+      fontWeight: "bold",
+      marginBottom: 6
+    }),
+    UIColumn(() =>
+      logLinesSignal.value.map(line =>
+        UIText(line).style({
+          color: () =>
+            line.startsWith(">")
+              ? THEME.accentCyan
+              : line.startsWith("<")
+                ? THEME.statusOk
+                : THEME.textMuted,
+          fontSize: 11
+        })
+      )
+    ).style({
+      backgroundColor: () => THEME.bgInput,
+      borderWidth: 1,
+      borderColor: () => THEME.borderDefault,
+      borderRadius: 9,
+      padding: 8,
+      width: "100%",
+      minHeight: 90,
+      gap: 2,
+      marginBottom: 8
+    }),
+    UIRow(
+      cmdInput,
+      PrimaryButton("Отпр.", async () => {
+        const cmd = (cmdInput.value || cmdTextSignal.value || "").trim().toUpperCase();
+        if (!cmd) return;
+        cmdInput.value = "";
+        cmdTextSignal.value = "";
+        try {
+          await obdProtocol.sendCommand(cmd);
+        } catch (err: any) {
+          toast(`Ошибка команды: ${err?.message || err}`);
+        }
+      })
+    ).style({ alignItems: "center", gap: 8, width: "100%" })
+  ).style({
+    backgroundColor: () => THEME.bgSurface,
+    borderWidth: 1,
+    borderColor: () => THEME.borderDefault,
+    borderRadius: 14,
+    padding: 13,
+    width: "100%"
+  });
+
+  return UIColumn(
+    header,
+    UIScrollable(
+      UIColumn(connectionCard, gaugesGrid, dtcCard, terminalCard).style({
+        width: "100%",
+        padding: 12,
+        gap: 10
+      })
+    ).style({ flex: 1, width: "100%", backgroundColor: () => THEME.bgBase })
+  ).style({
+    flex: 1,
+    width: "100%",
+    backgroundColor: () => THEME.bgBase
+  });
 }

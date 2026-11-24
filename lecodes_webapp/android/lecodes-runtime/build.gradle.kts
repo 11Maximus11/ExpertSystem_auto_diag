@@ -34,4 +34,7 @@ dependencies {
     api("androidx.appcompat:appcompat:1.7.1")
     api("com.squareup.okhttp3:okhttp:4.12.0")
     api(project(":plugins:lecodes-browser"))
+    api(project(":plugins:lecodes-camera"))
+    api(project(":plugins:lecodes-audio-recorder"))
+    api(project(":plugins:lecodes-speech"))
 }

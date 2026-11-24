@@ -319,7 +319,42 @@ export class ELM327Protocol {
       this.notifySensors();
       return "44 OK";
     }
+    if (clean === "0902") {
+      return "49 02 01 57 41 55 5A 5A 5A 38 56 31 47 41 31 32 33 34 35 36";
+    }
     return "41 00 00";
+  }
+
+  /**
+   * Чтение VIN-номера автомобиля (OBD-II Mode 09 PID 02).
+   */
+  public async readVIN(): Promise<string> {
+    if (this.connectionType === "demo") {
+      this.sensors.vin = "WAUZZZ8V1GA123456";
+      this.notifySensors();
+      return this.sensors.vin;
+    }
+    if (this.status !== "connected") return "";
+    try {
+      const resp = await this.sendCommand("0902", 2500);
+      const clean = resp.replace(/\d+:/g, "").replace(/\s+/g, "").toUpperCase();
+      const idx = clean.indexOf("4902");
+      if (idx === -1) return "";
+      const hexData = clean.substring(idx + 6);
+      let vin = "";
+      for (let i = 0; i + 1 < hexData.length; i += 2) {
+        const code = parseInt(hexData.substring(i, i + 2), 16);
+        if (code >= 48 && code <= 90) {
+          vin += String.fromCharCode(code);
+        }
+      }
+      if (vin.length >= 11) {
+        this.sensors.vin = vin.slice(0, 17);
+        this.notifySensors();
+        return this.sensors.vin;
+      }
+    } catch (_) {}
+    return "";
   }
 
   // --- Парсеры PIDs OBD-II (SAE J1979) ---

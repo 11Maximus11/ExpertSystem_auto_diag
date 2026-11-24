@@ -783,15 +783,19 @@ class AIdealAutoComprehensiveTests(TransactionTestCase):
 
     def test_16_legal_pages_and_cancel_generation(self):
         """Проверка страниц Пользовательского соглашения, Политики конфиденциальности и API отмены."""
-        # 1. Страницы документов
+        # 1. Страницы документов (соответствие 152-ФЗ РФ + упоминание веб и Android com.mmcco.aidealauto)
         terms_resp = self.client.get("/terms/")
         self.assertEqual(terms_resp.status_code, 200)
         self.assertContains(terms_resp, "Пользовательское соглашение")
         self.assertContains(terms_resp, "GPL")
+        self.assertContains(terms_resp, "152-ФЗ")
+        self.assertContains(terms_resp, "com.mmcco.aidealauto")
 
         privacy_resp = self.client.get("/privacy/")
         self.assertEqual(privacy_resp.status_code, 200)
         self.assertContains(privacy_resp, "Политика конфиденциальности")
+        self.assertContains(privacy_resp, "152-ФЗ")
+        self.assertContains(privacy_resp, "com.mmcco.aidealauto")
 
         # 2. Endpoint отмены генерации
         cancel_resp = self.client.post(
@@ -802,6 +806,124 @@ class AIdealAutoComprehensiveTests(TransactionTestCase):
         self.assertEqual(cancel_resp.status_code, 200)
         data = cancel_resp.json()
         self.assertTrue(data.get("cancelled"))
+
+    def test_17_async_multipart_photo_speech_and_document(self):
+        """
+        Комплексный тест мультимодального мобильного/AR-конвейера:
+        - Загрузка фото узла (JPEG), голосового/аудиофайла (WAV/M4A с распознанной речью) и отчёта OBD (.log)
+        - Асинхронный запуск /api/ask/?async=1 -> HTTP 202 -> поллинг /api/ask/job/<id>/
+        - Авторизация по X-Session-Key (как в нативном Android-приложении le.codes)
+        """
+        import wave
+        from django.core.files.uploadedfile import SimpleUploadedFile
+
+        reg = self.client.post(
+            "/api/auth/register/",
+            data=json.dumps(
+                {
+                    "username": "mobile_mm_tester",
+                    "email": "mm@aideal.local",
+                    "password": "Password123!",
+                    "password_confirm": "Password123!",
+                }
+            ),
+            content_type="application/json",
+        )
+        self.assertEqual(reg.status_code, 201)
+        sess_key = reg.json().get("session_key")
+        self.assertTrue(bool(sess_key))
+
+        # 1. Фото узла (JPEG)
+        img = Image.new("RGB", (320, 240), color=(45, 75, 110))
+        img_buf = io.BytesIO()
+        img.save(img_buf, format="JPEG")
+        photo_file = SimpleUploadedFile("engine_node.jpg", img_buf.getvalue(), content_type="image/jpeg")
+
+        # 2. Синтетический аудиопоток 16kHz (имитация голоса/шума под капотом)
+        sr = 16000
+        t = np.linspace(0, 1.2, int(sr * 1.2), endpoint=False)
+        pcm = (np.sin(2 * np.pi * 220 * t) * 12000).astype(np.int16)
+        wav_buf = io.BytesIO()
+        with wave.open(wav_buf, "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(sr)
+            wf.writeframes(pcm.tobytes())
+        wav_bytes = wav_buf.getvalue()
+        audio_file = SimpleUploadedFile("voice_ar_speech.wav", wav_bytes, content_type="audio/wav")
+
+        # 3. Лог-файл диагностики (.log) с ошибками P0301 и P0171
+        log_bytes = (
+            "OBD2 Freeze Frame\n"
+            "DTC: P0301 Cylinder 1 Misfire Detected, P0171 System Too Lean\n"
+            "RPM=840, CoolantTemp=96C, Battery=13.9V\n"
+        ).encode("utf-8")
+        doc_file = SimpleUploadedFile("obd_scan.log", log_bytes, content_type="text/plain")
+
+        # Проверка /api/transcode-audio/ и /api/preview-document/
+        tc_resp = self.client.post(
+            "/api/transcode-audio/",
+            data={"file": SimpleUploadedFile("voice_rec.wav", wav_bytes, content_type="audio/wav")},
+            HTTP_X_SESSION_KEY=sess_key,
+        )
+        self.assertEqual(tc_resp.status_code, 200)
+        self.assertTrue(tc_resp.json().get("ok"))
+
+        prev_resp = self.client.post(
+            "/api/preview-document/",
+            data={"file": SimpleUploadedFile("obd_prev.log", log_bytes, content_type="text/plain")},
+            HTTP_X_SESSION_KEY=sess_key,
+        )
+        self.assertEqual(prev_resp.status_code, 200)
+        self.assertIn("P0301", prev_resp.json().get("detected_dtc_codes", []))
+        self.assertIn("P0171", prev_resp.json().get("detected_dtc_codes", []))
+
+        # 4. Асинхронная мультимодальная отправка на /api/ask/?async=1
+        async_resp = self.client.post(
+            "/api/ask/?async=1",
+            data={
+                "query": "Проверь катушку зажигания и подсос воздуха на фото",
+                "vehicle_info": "Skoda Octavia A7 1.4 TSI",
+                "dtc_codes": json.dumps(["P0301"]),
+                "voice_transcript": "Троит первый цилиндр на холодную при запуске",
+                "attachments": [photo_file, audio_file, doc_file],
+            },
+            HTTP_X_SESSION_KEY=sess_key,
+        )
+        self.assertEqual(async_resp.status_code, 202)
+        job_id = async_resp.json()["job_id"]
+
+        # 5. Поллинг /api/ask/job/<job_id>/
+        job_payload = None
+        for _ in range(40):
+            poll = self.client.get(f"/api/ask/job/{job_id}/", HTTP_X_SESSION_KEY=sess_key)
+            self.assertEqual(poll.status_code, 200)
+            jp = poll.json()
+            if jp["status"] in ("done", "error"):
+                job_payload = jp
+                break
+            time.sleep(0.08)
+
+        self.assertIsNotNone(job_payload)
+        self.assertEqual(job_payload["status"], "done")
+        result = job_payload["result"]
+        user_atts = result["user_message"]["attachments"]
+        att_types = [a["type"] for a in user_atts]
+        self.assertIn("image", att_types)
+        self.assertIn("audio", att_types)
+        self.assertIn("document", att_types)
+
+        audio_att = next(a for a in user_atts if a["type"] == "audio")
+        self.assertTrue(audio_att["url"].startswith("data:audio/wav;base64,"))
+        self.assertEqual(audio_att["transcript"], "Троит первый цилиндр на холодную при запуске")
+
+        tool_names = [
+            tc["tool_name"]
+            for tc in result["assistant_message"]["structured_data"].get("tool_calls", [])
+        ]
+        self.assertIn("inspect_attached_image", tool_names)
+        self.assertIn("inspect_attached_audio", tool_names)
+
 
 
 

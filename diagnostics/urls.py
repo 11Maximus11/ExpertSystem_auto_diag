@@ -20,6 +20,7 @@ urlpatterns = [
     path("api/worker-status/<uuid:session_id>/", views.api_worker_status, name="api_worker_status"),
     # Главный API диагностики, чеклистов и удаления сообщений
     path("api/ask/", views.api_ask_expert, name="api_ask_expert"),
+    path("api/ask/job/<str:job_id>/", views.api_ask_job_status, name="api_ask_job_status"),
     path("api/cancel/", views.api_cancel_generation, name="api_cancel_generation"),
     path("api/messages/delete/", views.api_delete_messages, name="api_delete_messages"),
     path("api/messages/<int:message_id>/delete/", views.api_delete_single_message, name="api_delete_single_message"),

@@ -71,7 +71,7 @@
       "command": "powershell",
       "args": [
         "-Command",
-        "cd '${workspaceFolder}/lecodes_webapp'; npx lecodes-cli app sync android; & 'C:\\Program Files (x86)\\Android\\android-sdk\\platform-tools\\adb.exe' shell am force-stop com.example.aidealautodiaglecodes; & 'C:\\Program Files (x86)\\Android\\android-sdk\\platform-tools\\adb.exe' shell am start -n com.example.aidealautodiaglecodes/.MainActivity"
+        "cd '${workspaceFolder}/lecodes_webapp'; npx lecodes-cli app sync android; & 'C:\\Program Files (x86)\\Android\\android-sdk\\platform-tools\\adb.exe' shell am force-stop com.mmcco.aidealauto; & 'C:\\Program Files (x86)\\Android\\android-sdk\\platform-tools\\adb.exe' shell am start -n com.mmcco.aidealauto/.MainActivity"
       ],
       "options": {
         "cwd": "${workspaceFolder}"

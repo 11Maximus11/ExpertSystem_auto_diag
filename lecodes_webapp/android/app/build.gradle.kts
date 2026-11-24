@@ -17,11 +17,11 @@ val keystoreProps = Properties().apply {
 fun signing(key: String, env: String): String? = keystoreProps.getProperty(key) ?: System.getenv(env)
 
 android {
-    namespace = "com.example.aidealautodiaglecodes"
+    namespace = "com.mmcco.aidealauto"
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "com.example.aidealautodiaglecodes"
+        applicationId = "com.mmcco.aidealauto"
         minSdk = 23
         targetSdk = 36
         versionCode = 1

@@ -6,7 +6,7 @@
       "type": "android-jvm",
       "request": "attach",
       "target": "select",
-      "packageName": "com.example.aidealautodiaglecodes",
+      "packageName": "com.mmcco.aidealauto",
       "projectRoot": "${workspaceFolder}/lecodes_webapp/android",
       "preLaunchTask": "Android: Собрать и запустить APK (le.codes)"
     },

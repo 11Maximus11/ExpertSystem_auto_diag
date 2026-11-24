@@ -769,6 +769,156 @@ def api_transcode_audio(request: HttpRequest) -> JsonResponse:
 # =========================================================================
 # REST API: Главный эндпоинт диагностики (Текст + Фото + Камера + Документы + DTC + Голос)
 # =========================================================================
+_ASK_JOBS: dict[str, dict[str, Any]] = {}
+_ASK_JOBS_LOCK = None
+
+
+def _get_jobs_lock():
+    global _ASK_JOBS_LOCK
+    if _ASK_JOBS_LOCK is None:
+        import threading
+        _ASK_JOBS_LOCK = threading.Lock()
+    return _ASK_JOBS_LOCK
+
+
+def _start_async_ask_job(request: HttpRequest) -> JsonResponse:
+    import threading
+    import time
+    import uuid
+    from django.contrib.auth import get_user_model
+    from django.contrib.auth.models import AnonymousUser
+    from django.core.files.uploadedfile import SimpleUploadedFile
+    from django.db import close_old_connections
+    from django.utils.datastructures import MultiValueDict
+
+    job_id = str(uuid.uuid4())
+    content_type = (request.META.get("CONTENT_TYPE") or "").lower()
+    is_multipart = "multipart/form-data" in content_type
+
+    body_bytes = b""
+    post_lists: list[tuple[str, list[str]]] = []
+    file_blobs: list[tuple[str, str, bytes, str]] = []
+
+    if is_multipart:
+        post_lists = [(k, list(v)) for k, v in request.POST.lists()]
+        for field_name in request.FILES:
+            for uf in request.FILES.getlist(field_name):
+                try:
+                    raw_bytes = uf.read()
+                    file_blobs.append((
+                        field_name,
+                        getattr(uf, "name", "attachment.bin") or "attachment.bin",
+                        raw_bytes,
+                        getattr(uf, "content_type", "application/octet-stream") or "application/octet-stream",
+                    ))
+                except Exception:
+                    pass
+    else:
+        body_bytes = request.body or b""
+
+    user_id = request.user.pk if getattr(request, "user", None) and request.user.is_authenticated else None
+    session_key = getattr(getattr(request, "session", None), "session_key", None) or ""
+    started_at = time.time()
+
+    lock = _get_jobs_lock()
+    with lock:
+        # Очищаем устаревшие задания старше 30 минут
+        stale = [k for k, v in _ASK_JOBS.items() if started_at - float(v.get("started_at", 0)) > 1800]
+        for k in stale:
+            _ASK_JOBS.pop(k, None)
+        _ASK_JOBS[job_id] = {
+            "job_id": job_id,
+            "status": "running",
+            "started_at": started_at,
+            "status_code": 202,
+            "result": None,
+            "error": None,
+        }
+
+    def _worker():
+        close_old_connections()
+        try:
+            inner_req = HttpRequest()
+            inner_req.method = "POST"
+            inner_req.path = request.path
+            inner_req._is_async_worker = True
+            ctype_hdr = "multipart/form-data" if is_multipart else (request.META.get("CONTENT_TYPE") or "application/json")
+            inner_req.META = {
+                "REQUEST_METHOD": "POST",
+                "CONTENT_TYPE": ctype_hdr,
+            }
+            inner_req._set_content_type_params(inner_req.META)
+            inner_req.content_type = "multipart/form-data" if is_multipart else "application/json"
+            if is_multipart:
+                mv_post = MultiValueDict()
+                for k, vals in post_lists:
+                    mv_post.setlist(k, vals)
+                inner_req.POST = mv_post
+                mv_files = MultiValueDict()
+                for field_name, fname, raw_b, ctype in file_blobs:
+                    mv_files.appendlist(field_name, SimpleUploadedFile(fname, raw_b, content_type=ctype))
+                inner_req.FILES = mv_files
+                inner_req._body = b""
+            else:
+                inner_req._body = body_bytes
+
+            if user_id:
+                User = get_user_model()
+                inner_req.user = User.objects.filter(pk=user_id).first() or AnonymousUser()
+            else:
+                inner_req.user = AnonymousUser()
+
+            from importlib import import_module
+            from django.conf import settings as dj_settings
+            engine = import_module(dj_settings.SESSION_ENGINE)
+            inner_req.session = engine.SessionStore(session_key or None)
+
+            resp = api_ask_expert(inner_req)
+            parsed = json.loads(resp.content.decode("utf-8") or "{}")
+            with _get_jobs_lock():
+                if job_id in _ASK_JOBS:
+                    _ASK_JOBS[job_id]["status"] = "done" if 200 <= resp.status_code < 300 else "error"
+                    _ASK_JOBS[job_id]["status_code"] = resp.status_code
+                    _ASK_JOBS[job_id]["result"] = parsed
+                    if resp.status_code >= 400:
+                        _ASK_JOBS[job_id]["error"] = parsed.get("error") or f"HTTP {resp.status_code}"
+        except Exception as exc:
+            logger.exception("Async ask job %s failed", job_id)
+            with _get_jobs_lock():
+                if job_id in _ASK_JOBS:
+                    _ASK_JOBS[job_id]["status"] = "error"
+                    _ASK_JOBS[job_id]["status_code"] = 500
+                    _ASK_JOBS[job_id]["error"] = str(exc)
+        finally:
+            close_old_connections()
+
+    threading.Thread(target=_worker, daemon=True).start()
+    return JsonResponse({"job_id": job_id, "status": "running"}, status=202)
+
+
+@require_http_methods(["GET"])
+def api_ask_job_status(request: HttpRequest, job_id: str) -> JsonResponse:
+    """Возвращает статус и результат асинхронной генерации ИИ для нативных клиентов."""
+    import time
+    with _get_jobs_lock():
+        job = _ASK_JOBS.get(str(job_id))
+        if not job:
+            return JsonResponse({"error": "Задание не найдено или устарело"}, status=404)
+        elapsed_ms = int((time.time() - float(job.get("started_at", time.time()))) * 1000)
+        payload = {
+            "job_id": job["job_id"],
+            "status": job["status"],
+            "status_code": job.get("status_code", 200),
+            "elapsed_ms": elapsed_ms,
+        }
+        if job["status"] == "done":
+            payload["result"] = job.get("result")
+        elif job["status"] == "error":
+            payload["error"] = job.get("error") or "Ошибка генерации ответа"
+            payload["result"] = job.get("result")
+        return JsonResponse(payload, status=200)
+
+
 @csrf_exempt
 @require_http_methods(["POST"])
 def api_ask_expert(request: HttpRequest) -> JsonResponse:
@@ -779,8 +929,10 @@ def api_ask_expert(request: HttpRequest) -> JsonResponse:
     3. В демо-режиме (без авторизации) выполняет полный анализ ИИ и возвращает ответ,
        НЕ сохраняя диалог, сообщения и файлы в БД.
     """
+    if request.GET.get("async") == "1" and not getattr(request, "_is_async_worker", False):
+        return _start_async_ask_job(request)
     global _DEMO_NEXT_MSG_ID
-    content_type = request.content_type or ""
+    content_type = request.content_type or request.META.get("CONTENT_TYPE") or ""
     demo_history_raw = []
     if "application/json" in content_type:
         try:
@@ -791,10 +943,10 @@ def api_ask_expert(request: HttpRequest) -> JsonResponse:
         query = str(body.get("query", "")).strip()
         vehicle_info = str(body.get("vehicle_info", "")).strip()
         dtc_codes_raw = body.get("dtc_codes", [])
-        camera_b64_list = body.get("images_b64", [])
+        camera_b64_list = list(body.get("images_b64") or body.get("images") or [])
         if body.get("image"):
             camera_b64_list.append(body["image"])
-        voice_b64 = body.get("voice_b64", "")
+        voice_b64 = body.get("voice_b64") or body.get("audio") or ""
         client_transcript = str(body.get("voice_transcript", "")).strip()
         demo_history_raw = body.get("demo_history", [])
         uploaded_files = []
@@ -1362,8 +1514,8 @@ def api_toggle_task(request: HttpRequest, message_id: int) -> JsonResponse:
 @require_http_methods(["GET"])
 def api_dtc_dictionary(request: HttpRequest) -> JsonResponse:
     q = request.GET.get("q", "").strip()
-    system_filter = request.GET.get("system", "all").strip()
-    limit = min(150, int(request.GET.get("limit", "80")))
+    system_filter = request.GET.get("system", "all").strip() or "all"
+    limit = min(500, max(1, int(request.GET.get("limit", "80"))))
 
     items = orchestrator.rag_engine.search_dtc_dictionary(
         search_term=q,
@@ -1617,15 +1769,20 @@ def api_auth_register(request: HttpRequest) -> JsonResponse:
     try:
         user = User.objects.create_user(username=username, password=password, email=email)
         login(request, user)
+        if not request.session.session_key:
+            request.session.save()
         # Создаем для нового пользователя персональный первый диалог
         _ensure_default_session(user=user)
         return JsonResponse({
             "success": True,
             "is_authenticated": True,
             "username": user.username,
+            "email": user.email,
             "is_staff": user.is_staff,
+            "session_key": request.session.session_key,
             "user": {
                 "username": user.username,
+                "email": user.email,
                 "is_staff": user.is_staff,
             },
         }, status=201)
@@ -1653,14 +1810,19 @@ def api_auth_login(request: HttpRequest) -> JsonResponse:
         return JsonResponse({"error": "Неверное имя пользователя или пароль"}, status=401)
 
     login(request, user)
+    if not request.session.session_key:
+        request.session.save()
     _ensure_default_session(user=user)
     return JsonResponse({
         "success": True,
         "is_authenticated": True,
         "username": user.username,
+        "email": user.email,
         "is_staff": user.is_staff,
+        "session_key": request.session.session_key,
         "user": {
             "username": user.username,
+            "email": user.email,
             "is_staff": user.is_staff,
         },
     })
@@ -1681,6 +1843,7 @@ def api_auth_status(request: HttpRequest) -> JsonResponse:
     return JsonResponse({
         "is_authenticated": is_auth,
         "username": request.user.username if is_auth else "",
+        "email": request.user.email if is_auth else "",
         "is_staff": request.user.is_staff if is_auth else False,
     })
 

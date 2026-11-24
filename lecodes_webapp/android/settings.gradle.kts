@@ -26,3 +26,6 @@ rootProject.name = "aideal-autodiag-lecodes"
 include(":app")
 include(":lecodes-runtime")
 include(":plugins:lecodes-browser")
+include(":plugins:lecodes-camera")
+include(":plugins:lecodes-audio-recorder")
+include(":plugins:lecodes-speech")

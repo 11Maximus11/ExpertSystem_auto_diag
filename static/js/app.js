@@ -11,8 +11,22 @@
 (function () {
   'use strict';
 
+  function generateUuidV4() {
+    if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+      try {
+        return crypto.randomUUID();
+      } catch (e) {}
+    }
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (c) {
+      const r = (Math.random() * 16) | 0,
+        v = c === 'x' ? r : (r & 0x3) | 0x8;
+      return v.toString(16);
+    });
+  }
+
   const isAuthInitial = document.body.dataset.isAuthenticated === 'true';
-  const initialSessionId = document.body.dataset.initialSession || 'demo-session-1';
+  const rawInitialSession = (document.body.dataset.initialSession || '').trim();
+  const initialSessionId = rawInitialSession && !rawInitialSession.startsWith('demo-') ? rawInitialSession : generateUuidV4();
 
   const state = {
     currentSessionId: initialSessionId,
@@ -21,6 +35,10 @@
     stagedFiles: [],
     stagedCameraShots: [],
     stagedVoiceBlob: null,
+    stagedVoiceAudioBuffer: null,
+    stagedVoicePreviewUrl: null,
+    stagedVoiceDuration: 0,
+    recordingStartTime: 0,
     stagedVoiceTranscript: '',
     isRecording: false,
     mediaRecorder: null,
@@ -75,10 +93,28 @@
   }
 
   function formatMarkdownLite(text) {
-    let safe = escapeHtml(text);
-    safe = safe.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
-    safe = safe.replace(/\*(.+?)\*/g, '<em>$1</em>');
-    return safe.replace(/\n/g, '<br/>');
+    const raw = String(text || '');
+    const lines = raw.split(/\r?\n/);
+    const inlineFmt = (str) => {
+      let s = escapeHtml(str);
+      s = s.replace(/`([^`]+)`/g, '<code class="md-code">$1</code>');
+      s = s.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+      s = s.replace(/(^|[\s(])\*([^*\n]+)\*(?=[\s.,;:!?)]|$)/g, '$1<em>$2</em>');
+      return s;
+    };
+    return lines
+      .map((line) => {
+        const trimmed = line.trim();
+        if (!trimmed) return '<div style="height:6px;"></div>';
+        const hMatch = trimmed.match(/^#{2,4}\s+(.+)$/);
+        if (hMatch) return `<div class="md-h">${inlineFmt(hMatch[1])}</div>`;
+        const ulMatch = trimmed.match(/^[-*•]\s+(.+)$/);
+        if (ulMatch) return `<div class="md-li">${inlineFmt(ulMatch[1])}</div>`;
+        const olMatch = trimmed.match(/^(\d+[.)])\s+(.+)$/);
+        if (olMatch) return `<div class="md-ol"><strong>${escapeHtml(olMatch[1])}</strong> ${inlineFmt(olMatch[2])}</div>`;
+        return `<div>${inlineFmt(trimmed)}</div>`;
+      })
+      .join('');
   }
 
   // =========================================================================
@@ -303,53 +339,385 @@
   window.showCustomDialog = showCustomDialog;
 
   // =========================================================================
-  // 1. Отрисовка очереди вложений (Staging Bar: Коды DTC, Фото, Документы, Голос)
+  // 1. Утилиты предпросмотра файлов и очереди вложений (Staging Bar)
   // =========================================================================
+  function formatFileSize(bytes) {
+    if (!bytes || isNaN(bytes)) return '';
+    if (bytes < 1024) return bytes + ' Б';
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' КБ';
+    return (bytes / (1024 * 1024)).toFixed(1) + ' МБ';
+  }
+
+  function getFileExtAndClass(filename) {
+    const parts = String(filename || '').split('.');
+    const ext = parts.length > 1 ? parts.pop().toLowerCase() : 'txt';
+    let badgeClass = 'staged-icon-generic';
+    if (['pdf'].includes(ext)) badgeClass = 'staged-icon-pdf';
+    else if (['doc', 'docx'].includes(ext)) badgeClass = 'staged-icon-docx';
+    else if (['xls', 'xlsx'].includes(ext)) badgeClass = 'staged-icon-xlsx';
+    else if (['log', 'txt', 'ini', 'cfg', 'conf'].includes(ext)) badgeClass = 'staged-icon-log';
+    else if (['csv', 'tsv'].includes(ext)) badgeClass = 'staged-icon-csv';
+    else if (['json'].includes(ext)) badgeClass = 'staged-icon-json';
+    else if (['obd'].includes(ext)) badgeClass = 'staged-icon-generic';
+    return { ext: ext.toUpperCase(), badgeClass };
+  }
+
+  function openImageLightbox(src, title) {
+    const modal = el('imageLightboxModal');
+    const imgEl = el('imageLightboxImg');
+    const titleEl = el('imageLightboxTitle');
+    if (!modal || !imgEl) return;
+    imgEl.src = src;
+    if (titleEl) titleEl.textContent = title || 'Просмотр изображения';
+    modal.style.display = 'flex';
+    modal.setAttribute('aria-hidden', 'false');
+  }
+
+  function closeImageLightbox() {
+    const modal = el('imageLightboxModal');
+    const imgEl = el('imageLightboxImg');
+    if (!modal) return;
+    modal.style.display = 'none';
+    modal.setAttribute('aria-hidden', 'true');
+    if (imgEl) imgEl.src = '';
+  }
+
+  function formatAudioTime(sec) {
+    if (isNaN(sec) || !isFinite(sec) || sec < 0) return '0:00';
+    const s = Math.floor(sec);
+    const m = Math.floor(s / 60);
+    const rem = String(s % 60).padStart(2, '0');
+    return `${m}:${rem}`;
+  }
+
+  function fetchDocPreview(file) {
+    if (!file || file._parsedDoc || file._parsing) return;
+    const isImg = (file.type && file.type.startsWith('image/')) || /\.(jpe?g|png|webp|bmp|gif)$/i.test(file.name);
+    const isAud = (file.type && file.type.startsWith('audio/')) || /\.(wav|mp3|ogg|m4a|flac|webm|aac)$/i.test(file.name);
+    if (isImg || isAud) return;
+
+    file._parsing = true;
+    renderStagingBar();
+
+    const formData = new FormData();
+    formData.append('file', file);
+
+    fetch('/api/preview-document/', {
+      method: 'POST',
+      body: formData,
+      credentials: 'same-origin',
+    })
+      .then(async (res) => {
+        file._parsing = false;
+        if (res.ok) {
+          const data = await res.json();
+          file._parsedDoc = data;
+        } else {
+          readDocLocally(file);
+        }
+        renderStagingBar();
+      })
+      .catch(() => {
+        file._parsing = false;
+        readDocLocally(file);
+        renderStagingBar();
+      });
+  }
+
+  function readDocLocally(file) {
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const text = String(e.target.result || '');
+      const dtcMatches = Array.from(new Set(text.match(/\b[PBCU][0-3][0-9A-Fa-f]{3}\b/g) || []));
+      file._parsedDoc = {
+        filename: file.name,
+        extension: (file.name.match(/\.[^.]+$/) || [''])[0].toLowerCase(),
+        size_bytes: file.size,
+        char_length: text.length,
+        is_fully_processed: text.length <= 25000,
+        processing_mode: text.length <= 25000 ? 'full' : 'smart_sampled',
+        detected_dtc_codes: dtcMatches,
+        llm_ready_text: text,
+        embedded_images: [],
+      };
+      renderStagingBar();
+    };
+    reader.onerror = () => {
+      file._parsedDoc = {
+        filename: file.name,
+        extension: '',
+        size_bytes: file.size,
+        char_length: 0,
+        is_fully_processed: true,
+        processing_mode: 'full',
+        detected_dtc_codes: [],
+        llm_ready_text: `[Файл ${file.name} прикреплен для обработки моделью]`,
+        embedded_images: [],
+      };
+      renderStagingBar();
+    };
+    reader.readAsText(file.slice(0, 1000000));
+  }
+
+  function openDocumentPreviewModal(docData) {
+    const modal = el('documentPreviewModal');
+    if (!modal || !docData) return;
+
+    const ext = (docData.extension || docData.name || '').replace(/^\./, '').toUpperCase() || 'DOC';
+    const badgeEl = el('docPreviewBadge');
+    if (badgeEl) {
+      badgeEl.textContent = ext.slice(0, 4);
+      const { badgeClass } = getFileExtAndClass(docData.filename || docData.name || 'file.txt');
+      badgeEl.className = `doc-badge-pill ${badgeClass}`;
+    }
+
+    const titleEl = el('docPreviewTitle');
+    if (titleEl) titleEl.textContent = docData.filename || docData.name || 'Технический документ';
+
+    const charsEl = el('docPreviewChars');
+    if (charsEl) charsEl.textContent = (docData.char_length || (docData.llm_ready_text || docData.extracted_text || '').length || 0).toLocaleString();
+
+    const modePill = el('docPreviewModePill');
+    const modeText = el('docPreviewModeText');
+    const isFull = docData.is_fully_processed !== false;
+    if (modePill && modeText) {
+      modePill.className = `doc-status-pill ${isFull ? 'doc-status-full' : 'doc-status-sampled'}`;
+      modeText.textContent = isFull ? 'Полный разбор (100% в промпте)' : 'Умная выборка (ошибки + телеметрия)';
+    }
+
+    const dtcWrap = el('docPreviewDtcWrap');
+    const dtcCount = el('docPreviewDtcCount');
+    const dtcs = docData.detected_dtc_codes || docData.detected_codes || [];
+    if (dtcWrap && dtcCount) {
+      if (dtcs.length) {
+        dtcWrap.style.display = 'inline-flex';
+        dtcCount.textContent = dtcs.length + ' (' + dtcs.slice(0, 4).join(', ') + (dtcs.length > 4 ? '...' : '') + ')';
+      } else {
+        dtcWrap.style.display = 'none';
+      }
+    }
+
+    const imgsWrap = el('docPreviewImagesWrap');
+    const imgsCount = el('docPreviewImagesCount');
+    const imgs = docData.embedded_images || docData.extracted_images || [];
+    if (imgsWrap && imgsCount) {
+      if (imgs.length) {
+        imgsWrap.style.display = 'inline-flex';
+        imgsCount.textContent = imgs.length;
+      } else {
+        imgsWrap.style.display = 'none';
+      }
+    }
+
+    const codeBox = el('docPreviewCodeBox');
+    if (codeBox) {
+      const promptText = docData.llm_ready_text || docData.extracted_text || docData.preview_excerpt || 'Содержимое документа не извлечено';
+      codeBox.textContent = promptText;
+    }
+
+    const imgsSection = el('docPreviewImagesSection');
+    const imgsGrid = el('docPreviewImagesGrid');
+    if (imgsSection && imgsGrid) {
+      if (imgs.length) {
+        imgsSection.style.display = 'flex';
+        imgsGrid.innerHTML = imgs.map((imgSrc, i) => `
+          <div class="doc-preview-image-thumb js-open-lightbox" data-lightbox-src="${escapeHtml(imgSrc)}" data-lightbox-title="Схема #${i + 1} из ${escapeHtml(docData.filename || 'документа')}" title="Увеличить схему">
+            <img src="${escapeHtml(imgSrc)}" alt="Схема #${i + 1}" />
+          </div>
+        `).join('');
+      } else {
+        imgsSection.style.display = 'none';
+        imgsGrid.innerHTML = '';
+      }
+    }
+
+    modal.style.display = 'flex';
+    modal.setAttribute('aria-hidden', 'false');
+  }
+
+  function closeDocumentPreviewModal() {
+    const modal = el('documentPreviewModal');
+    if (!modal) return;
+    modal.style.display = 'none';
+    modal.setAttribute('aria-hidden', 'true');
+  }
+
   function renderStagingBar() {
     const bars = [el('stagingBar'), el('arStagingBar')].filter(Boolean);
     if (!bars.length) return;
-    const chips = [];
+    const cards = [];
 
+    // 1. Коды ошибок DTC
     state.stagedCodes.forEach((code, idx) => {
-      chips.push(
-        `<span class="staged-chip">
-          <span>DTC: ${escapeHtml(code)}</span>
-          <button type="button" data-remove-code="${idx}" style="border:none;background:none;color:inherit;font-weight:700;">×</button>
+      cards.push(
+        `<span class="staged-card staged-card-dtc">
+          <span class="staged-card-icon-wrap staged-icon-generic">DTC</span>
+          <div class="staged-card-body">
+            <span class="staged-card-title">${escapeHtml(code)}</span>
+            <span class="staged-card-meta">Код ошибки</span>
+          </div>
+          <button type="button" class="staged-card-remove" data-remove-code="${idx}" title="Удалить код" aria-label="Удалить">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
         </span>`
       );
     });
 
-    state.stagedCameraShots.forEach((_, idx) => {
-      chips.push(
-        `<span class="staged-chip">
-          <span>Снимок камеры #${idx + 1}</span>
-          <button type="button" data-remove-shot="${idx}" style="border:none;background:none;color:inherit;font-weight:700;">×</button>
+    // 2. Снимки с камеры
+    state.stagedCameraShots.forEach((shot, idx) => {
+      cards.push(
+        `<span class="staged-card staged-card-photo">
+          <div class="staged-card-thumb-wrap js-open-lightbox" style="width:44px; height:44px; min-width:44px; max-width:44px; min-height:44px; max-height:44px; border-radius:8px; overflow:hidden; position:relative; flex-shrink:0; background:#000; cursor:pointer;" data-lightbox-src="${escapeHtml(shot)}" data-lightbox-title="Снимок камеры #${idx + 1}" title="Увеличить снимок">
+            <img src="${escapeHtml(shot)}" alt="Снимок #${idx + 1}" style="width:100%; height:100%; max-width:100%; max-height:100%; object-fit:cover; display:block;" />
+            <span class="staged-thumb-zoom-icon" aria-hidden="true">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+            </span>
+          </div>
+          <div class="staged-card-body">
+            <span class="staged-card-title">Снимок камеры #${idx + 1}</span>
+            <span class="staged-card-meta">Камера • JPEG</span>
+          </div>
+          <button type="button" class="staged-card-remove" data-remove-shot="${idx}" title="Удалить снимок" aria-label="Удалить">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
         </span>`
       );
     });
 
+    // 3. Загруженные файлы (фото, аудио, документы)
     state.stagedFiles.forEach((f, idx) => {
-      chips.push(
-        `<span class="staged-chip">
-          <span>Файл: ${escapeHtml(f.name)}</span>
-          <button type="button" data-remove-file="${idx}" style="border:none;background:none;color:inherit;font-weight:700;">×</button>
-        </span>`
-      );
+      const isImg = (f.type && f.type.startsWith('image/')) || /\.(jpe?g|png|webp|bmp|gif)$/i.test(f.name);
+      const isAud = (f.type && f.type.startsWith('audio/')) || /\.(wav|mp3|ogg|m4a|flac|webm|aac)$/i.test(f.name);
+
+      if (isImg) {
+        if (!f._previewUrl) {
+          try { f._previewUrl = URL.createObjectURL(f); } catch (_) {}
+        }
+        cards.push(
+          `<span class="staged-card staged-card-photo">
+            <div class="staged-card-thumb-wrap js-open-lightbox" style="width:44px; height:44px; min-width:44px; max-width:44px; min-height:44px; max-height:44px; border-radius:8px; overflow:hidden; position:relative; flex-shrink:0; background:#000; cursor:pointer;" data-lightbox-src="${escapeHtml(f._previewUrl || '')}" data-lightbox-title="${escapeHtml(f.name)}" title="Увеличить фото">
+              <img src="${escapeHtml(f._previewUrl || '')}" alt="${escapeHtml(f.name)}" style="width:100%; height:100%; max-width:100%; max-height:100%; object-fit:cover; display:block;" />
+              <span class="staged-thumb-zoom-icon" aria-hidden="true">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+              </span>
+            </div>
+            <div class="staged-card-body">
+              <span class="staged-card-title" title="${escapeHtml(f.name)}">${escapeHtml(f.name)}</span>
+              <span class="staged-card-meta">${formatFileSize(f.size) || 'Фото'}</span>
+            </div>
+            <button type="button" class="staged-card-remove" data-remove-file="${idx}" title="Удалить файл" aria-label="Удалить">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+            </button>
+          </span>`
+        );
+      } else if (isAud) {
+        if (!f._previewUrl) {
+          try { f._previewUrl = URL.createObjectURL(f); } catch (_) {}
+        }
+        const dur = (f._duration && isFinite(f._duration) && f._duration > 0) ? f._duration : 0;
+        const durTxt = dur > 0 ? `0:00 / ${formatAudioTime(dur)}` : '0:00 / --:--';
+        cards.push(
+          `<span class="staged-card staged-card-audio" data-audio-src="${escapeHtml(f._previewUrl || '')}" data-audio-dur="${dur}">
+            <div class="staged-card-icon-wrap staged-icon-audio">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+              </svg>
+            </div>
+            <div class="staged-audio-content">
+              <div class="staged-audio-top-row">
+                <span class="staged-card-title" title="${escapeHtml(f.name)}">${escapeHtml(f.name)}</span>
+                <span class="audio-time-label js-audio-time">${durTxt}</span>
+              </div>
+              <div class="staged-audio-scrubber-row">
+                <button type="button" class="btn-audio-scrub-play js-audio-play-toggle" title="Воспроизвести / Пауза" aria-label="Воспроизвести">
+                  <svg class="play-icon" width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21"/></svg>
+                  <svg class="pause-icon" width="13" height="13" viewBox="0 0 24 24" fill="currentColor" style="display:none;"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
+                </button>
+                <input type="range" class="audio-seek-slider js-audio-seek" min="0" max="100" value="0" step="0.1" aria-label="Перемотка аудио" />
+                <audio src="${escapeHtml(f._previewUrl || '')}" preload="auto" class="js-audio-element" style="position:absolute; width:0; height:0; opacity:0; pointer-events:none;"></audio>
+              </div>
+            </div>
+            <button type="button" class="staged-card-remove" data-remove-file="${idx}" title="Удалить аудио" aria-label="Удалить">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+            </button>
+          </span>`
+        );
+      } else {
+        const { ext, badgeClass } = getFileExtAndClass(f.name);
+        fetchDocPreview(f);
+        cards.push(
+          `<span class="staged-card staged-card-doc">
+            <div class="staged-card-icon-wrap ${badgeClass}">${escapeHtml(ext.slice(0, 4))}</div>
+            <div class="staged-card-body">
+              <div style="display:flex; align-items:center; gap:6px; min-width:0;">
+                <span class="staged-card-title" title="${escapeHtml(f.name)}">${escapeHtml(f.name)}</span>
+                ${f._parsedDoc ? (f._parsedDoc.is_fully_processed !== false ? '<span class="staged-doc-pill pill-full" title="Полный текст войдет в контекст модели">100%</span>' : '<span class="staged-doc-pill pill-sample" title="Умная выборка ошибок и ключевой телеметрии">Выборка</span>') : ''}
+              </div>
+              <div class="staged-card-meta-row">
+                <span class="staged-card-meta">${formatFileSize(f.size)}</span>
+                ${f._parsedDoc ? `
+                  <button type="button" class="btn-staged-doc-inspect js-open-doc-preview" data-file-idx="${idx}" title="Просмотреть точные данные, которые получит модель">
+                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>
+                    <span>Просмотреть</span>
+                  </button>
+                ` : (f._parsing ? '<span class="staged-doc-analyzing">Анализ...</span>' : `
+                  <button type="button" class="btn-staged-doc-inspect js-open-doc-preview" data-file-idx="${idx}" title="Просмотреть документ">
+                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>
+                    <span>Просмотреть</span>
+                  </button>
+                `)}
+              </div>
+            </div>
+            <button type="button" class="staged-card-remove" data-remove-file="${idx}" title="Удалить документ" aria-label="Удалить">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+            </button>
+          </span>`
+        );
+      }
     });
 
+    // 4. Записанный диктофоном голос
     if (state.stagedVoiceBlob) {
-      chips.push(
-        `<span class="staged-chip">
-          <span>Голосовая запись готова ${state.stagedVoiceTranscript ? '(' + escapeHtml(state.stagedVoiceTranscript.slice(0, 28)) + '...)' : ''}</span>
-          <button type="button" data-remove-voice="1" style="border:none;background:none;color:inherit;font-weight:700;">×</button>
+      if (!state.stagedVoicePreviewUrl) {
+        try { state.stagedVoicePreviewUrl = URL.createObjectURL(state.stagedVoiceBlob); } catch (_) {}
+      }
+      const dur = (state.stagedVoiceDuration && isFinite(state.stagedVoiceDuration) && state.stagedVoiceDuration > 0)
+        ? state.stagedVoiceDuration
+        : (state.stagedVoiceBlob._duration && isFinite(state.stagedVoiceBlob._duration) ? state.stagedVoiceBlob._duration : 0);
+      const durTxt = dur > 0 ? `0:00 / ${formatAudioTime(dur)}` : '0:00 / --:--';
+      cards.push(
+        `<span class="staged-card staged-card-audio" data-audio-src="${escapeHtml(state.stagedVoicePreviewUrl || '')}" data-audio-dur="${dur}">
+          <div class="staged-card-icon-wrap staged-icon-audio">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+            </svg>
+          </div>
+          <div class="staged-audio-content">
+            <div class="staged-audio-top-row">
+              <span class="staged-card-title">Голосовая запись</span>
+              <span class="audio-time-label js-audio-time">${durTxt}</span>
+            </div>
+            <div class="staged-audio-scrubber-row">
+              <button type="button" class="btn-audio-scrub-play js-audio-play-toggle" title="Воспроизвести / Пауза" aria-label="Воспроизвести">
+                <svg class="play-icon" width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21"/></svg>
+                <svg class="pause-icon" width="13" height="13" viewBox="0 0 24 24" fill="currentColor" style="display:none;"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
+              </button>
+              <input type="range" class="audio-seek-slider js-audio-seek" min="0" max="100" value="0" step="0.1" aria-label="Перемотка аудио" />
+              <audio src="${escapeHtml(state.stagedVoicePreviewUrl || '')}" preload="auto" class="js-audio-element" style="position:absolute; width:0; height:0; opacity:0; pointer-events:none;"></audio>
+            </div>
+          </div>
+          <button type="button" class="staged-card-remove" data-remove-voice="1" title="Удалить запись" aria-label="Удалить">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
         </span>`
       );
     }
 
-    const htmlContent = chips.join('');
+    const htmlContent = cards.join('');
     bars.forEach((bar) => {
       bar.innerHTML = htmlContent;
-      bar.style.display = chips.length ? 'flex' : 'none';
+      bar.style.display = cards.length ? 'flex' : 'none';
 
       bar.querySelectorAll('[data-remove-code]').forEach((btn) => {
         btn.addEventListener('click', () => {
@@ -365,18 +733,232 @@
       });
       bar.querySelectorAll('[data-remove-file]').forEach((btn) => {
         btn.addEventListener('click', () => {
-          state.stagedFiles.splice(Number(btn.dataset.removeFile), 1);
+          const removed = state.stagedFiles.splice(Number(btn.dataset.removeFile), 1);
+          if (removed[0] && removed[0]._previewUrl) {
+            try { URL.revokeObjectURL(removed[0]._previewUrl); } catch (_) {}
+          }
           renderStagingBar();
         });
       });
       bar.querySelectorAll('[data-remove-voice]').forEach((btn) => {
         btn.addEventListener('click', () => {
           state.stagedVoiceBlob = null;
+          state.stagedVoiceAudioBuffer = null;
           state.stagedVoiceTranscript = '';
+          state.stagedVoiceDuration = 0;
+          if (typeof stopWebAudio === 'function') stopWebAudio(true);
+          if (state.stagedVoicePreviewUrl) {
+            try { URL.revokeObjectURL(state.stagedVoicePreviewUrl); } catch (_) {}
+            state.stagedVoicePreviewUrl = null;
+          }
           renderStagingBar();
         });
       });
+
+      // Инспекция документа (кнопка "Просмотреть")
+      bar.querySelectorAll('.js-open-doc-preview').forEach((btn) => {
+        btn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const fileIdx = Number(btn.dataset.fileIdx);
+          const f = state.stagedFiles[fileIdx];
+          if (f) {
+            if (f._parsedDoc) {
+              openDocumentPreviewModal(f._parsedDoc);
+            } else {
+              openDocumentPreviewModal({
+                filename: f.name,
+                extension: (f.name.match(/\.[^.]+$/) || [''])[0],
+                char_length: f.size,
+                is_fully_processed: true,
+                llm_ready_text: 'Идет анализ содержимого документа...',
+              });
+            }
+          }
+        });
+      });
+
+      // Инициализация метаданных длительности для аудиоплееров
+      bar.querySelectorAll('audio.js-audio-element').forEach((aud) => {
+        const updateDur = () => {
+          const card = aud.closest('.staged-card-audio, .attachment-card-audio');
+          if (!card) return;
+          const timeLbl = card.querySelector('.js-audio-time');
+          let d = (aud.duration && isFinite(aud.duration) && aud.duration > 0)
+            ? aud.duration
+            : Number(card.dataset.audioDur) || 0;
+          if (d > 0) {
+            card.dataset.audioDur = String(d);
+            if (timeLbl && (!aud.currentTime || aud.currentTime === 0)) {
+              timeLbl.textContent = `0:00 / ${formatAudioTime(d)}`;
+            }
+          }
+        };
+        aud.addEventListener('loadedmetadata', updateDur);
+        aud.addEventListener('durationchange', updateDur);
+        aud.addEventListener('canplay', updateDur);
+        if (aud.duration && isFinite(aud.duration)) updateDur();
+      });
     });
+  }
+
+  function renderAttachmentsHtml(attachments) {
+    if (!Array.isArray(attachments) || !attachments.length) return '';
+    let html = '<div class="attachments-grid">';
+
+    attachments.forEach((att) => {
+      if (att.type === 'image' && att.url) {
+        html += `
+          <div class="attachment-card-photo js-open-lightbox" data-lightbox-src="${escapeHtml(att.url)}" data-lightbox-title="${escapeHtml(att.name || 'Фотография поломки')}">
+            <img src="${escapeHtml(att.url)}" alt="${escapeHtml(att.name || 'Фото узла')}" loading="lazy" />
+            <div class="attachment-photo-overlay">
+              <span class="attachment-photo-name">${escapeHtml(att.name || 'Фото узла')}</span>
+              <div class="attachment-photo-zoom-icon" title="Увеличить">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                  <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="11" y1="8" x2="11" y2="14"/><line x1="8" y1="11" x2="14" y2="11"/>
+                </svg>
+              </div>
+            </div>
+          </div>
+        `;
+      } else if (att.type === 'audio') {
+        const modeLabel = att.mode && !att.mode.toLowerCase().includes('ggml') ? att.mode : 'Gemma 4 Native Audio';
+        const attDur = att.duration || att.duration_seconds || 0;
+        const durTxt = attDur > 0 ? `0:00 / ${formatAudioTime(attDur)}` : '0:00';
+        html += `
+          <div class="attachment-card-audio" data-audio-src="${escapeHtml(att.url || '')}" data-audio-dur="${attDur}">
+            <div class="attachment-card-audio-header">
+              <div style="display:flex; align-items:center; gap:6px;">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/>
+                  <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+                  <line x1="12" y1="19" x2="12" y2="22"/>
+                </svg>
+                <span style="font-weight:600; font-size:0.78rem;">${escapeHtml(att.name || 'Голосовая запись')}</span>
+              </div>
+              <span class="attachment-audio-badge">${escapeHtml(modeLabel)}</span>
+            </div>
+            <div class="attachment-card-audio-ctrls">
+              ${att.url ? `
+                <button type="button" class="btn-audio-play-toggle js-audio-play-toggle" aria-label="Воспроизвести запись" title="Слушать">
+                  <svg class="play-icon" width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21"/></svg>
+                  <svg class="pause-icon" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="display:none;"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
+                </button>
+                <input type="range" class="audio-seek-slider js-audio-seek" min="0" max="100" value="0" step="0.1" aria-label="Перемотка аудио" style="max-width:140px; margin:0 4px;" />
+                <audio src="${escapeHtml(att.url)}" preload="auto" class="js-audio-element" style="position:absolute; width:0; height:0; opacity:0; pointer-events:none;"></audio>
+              ` : ''}
+              <div class="audio-waveform-bars" aria-hidden="true">
+                <span class="audio-wave-bar" style="height:8px;"></span>
+                <span class="audio-wave-bar" style="height:14px;"></span>
+                <span class="audio-wave-bar" style="height:20px;"></span>
+                <span class="audio-wave-bar" style="height:10px;"></span>
+                <span class="audio-wave-bar" style="height:16px;"></span>
+                <span class="audio-wave-bar" style="height:22px;"></span>
+                <span class="audio-wave-bar" style="height:12px;"></span>
+                <span class="audio-wave-bar" style="height:18px;"></span>
+                <span class="audio-wave-bar" style="height:9px;"></span>
+              </div>
+              <span class="audio-duration-txt js-audio-duration-display js-audio-time">${durTxt}</span>
+            </div>
+            ${att.transcript ? `<div class="audio-transcript-note">«${escapeHtml(att.transcript)}»</div>` : ''}
+          </div>
+        `;
+      } else {
+        // Document
+        const { ext, badgeClass } = getFileExtAndClass(att.name);
+        const isFull = att.is_fully_processed !== false;
+        const statusBadgeHtml = isFull
+          ? `<span class="doc-status-pill doc-status-full" title="Документ полностью передан в контекст модели">
+               <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+               <span>Полный разбор</span>
+             </span>`
+          : `<span class="doc-status-pill doc-status-sampled" title="Выполнена интеллектуальная выборка ошибок и ключевой телеметрии">
+               <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+               <span>Умная выборка</span>
+             </span>`;
+
+        const dtcList = Array.isArray(att.detected_codes) && att.detected_codes.length
+          ? `<div style="display:flex; gap:4px; flex-wrap:wrap; margin-top:2px;">
+               ${att.detected_codes.map((c) => `<span class="dtc-pill" style="font-size:0.68rem; padding:1px 6px;">${escapeHtml(c)}</span>`).join('')}
+             </div>`
+          : '';
+
+        const extractedImgs = Array.isArray(att.extracted_images) && att.extracted_images.length
+          ? `<div class="doc-extracted-gallery">
+               <div class="doc-extracted-gallery-label">
+                 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                   <rect width="18" height="18" x="3" y="3" rx="2" ry="2"/>
+                   <circle cx="9" cy="9" r="2"/><path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/>
+                 </svg>
+                 <span>Извлечено схем и фото: ${att.extracted_images.length}</span>
+               </div>
+               <div class="doc-extracted-gallery-grid">
+                 ${att.extracted_images.map((imgUrl, i) => `
+                   <div class="doc-extracted-thumb js-open-lightbox" data-lightbox-src="${escapeHtml(imgUrl)}" data-lightbox-title="Схема #${i + 1} из ${escapeHtml(att.name || 'документа')}" title="Увеличить">
+                     <img src="${escapeHtml(imgUrl)}" alt="Схема #${i + 1}" loading="lazy" />
+                   </div>
+                 `).join('')}
+               </div>
+             </div>`
+          : '';
+
+        const excerptBlock = att.preview_excerpt
+          ? `<div class="doc-preview-collapse">
+               <button type="button" class="doc-preview-toggle-btn js-toggle-doc-preview">
+                 <span>Предпросмотр фрагмента</span>
+                 <svg class="chevron-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                   <polyline points="6 9 12 15 18 9"/>
+                 </svg>
+               </button>
+               <div class="doc-preview-content">${escapeHtml(att.preview_excerpt)}</div>
+             </div>`
+          : '';
+
+        const docInspectJson = JSON.stringify({
+          filename: att.name,
+          extension: ext,
+          char_length: (att.llm_ready_text || att.extracted_text || att.preview_excerpt || '').length,
+          is_fully_processed: att.is_fully_processed,
+          detected_dtc_codes: att.detected_codes || [],
+          llm_ready_text: att.llm_ready_text || att.extracted_text || att.preview_excerpt || '',
+          embedded_images: att.extracted_images || [],
+        });
+
+        html += `
+          <div class="attachment-card-doc">
+            <div class="attachment-card-doc-header">
+              <span class="doc-badge-pill ${badgeClass}">${escapeHtml(ext)}</span>
+              ${statusBadgeHtml}
+            </div>
+            <div class="attachment-doc-title-row">
+              <span class="attachment-doc-name" title="${escapeHtml(att.name || 'Файл')}">${escapeHtml(att.name || 'Документ')}</span>
+              <span class="attachment-doc-size">${formatFileSize(att.size_bytes)}</span>
+            </div>
+            ${dtcList}
+            ${extractedImgs}
+            ${excerptBlock}
+            <div class="attachment-doc-footer">
+              <button type="button" class="btn-staged-doc-inspect js-chat-inspect-doc" data-doc-json="${escapeHtml(docInspectJson)}" title="Просмотреть, что передано в контекст модели">
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>
+                <span>Просмотреть</span>
+              </button>
+              ${att.url ? `
+                <a href="${escapeHtml(att.url)}" download="${escapeHtml(att.name || 'document')}" class="btn-doc-download" target="_blank" rel="noopener">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                    <polyline points="7 10 12 15 17 10"/>
+                    <line x1="12" y1="15" x2="12" y2="3"/>
+                  </svg>
+                  <span>Скачать файл</span>
+                </a>
+              ` : '<span></span>'}
+            </div>
+          </div>
+        `;
+      }
+    });
+
+    html += '</div>';
+    return html;
   }
 
   // =========================================================================
@@ -398,12 +980,21 @@
     const invDone = inventory.filter((i) => i.checked).length;
     const stepsDone = steps.filter((s) => s.completed).length;
 
+    const respType = String(sdata.response_type || 'diagnosis').toLowerCase();
+    const respLabels = {
+      diagnosis: 'Диагностика',
+      followup: 'Уточнение',
+      visual_inspection: 'Осмотр узла',
+      general: 'Консультация',
+    };
+    const respLabel = respLabels[respType] || 'Эксперт';
+
     let html = `
       <div class="diagnosis-verdict-title">
         <span>${escapeHtml(sdata.summary_title || 'Экспертное заключение')}</span>
-        <span class="badge-vulkan">JSON SCHEMA VALIDATED</span>
+        <span class="badge-diag-type badge-diag-${escapeHtml(respType)}" data-schema-validated="1">${escapeHtml(respLabel)}</span>
       </div>
-      <div style="font-size:0.9rem; color:var(--text-secondary); margin-bottom:10px;">
+      <div class="md-prose">
         ${formatMarkdownLite(sdata.mentor_reply || msg.content)}
       </div>
     `;
@@ -521,6 +1112,22 @@
       console.debug('[Gemma 4 Function Calling executed]', toolCalls);
     }
 
+    const followUp = (sdata.follow_up_question || '').trim();
+    const followUpHtml =
+      followUp && respType !== 'general'
+        ? `<button type="button" class="btn-followup-chip" data-followup-text="${escapeHtml(followUp)}" title="Подставить вопрос в поле ввода для ответа">↳ ${escapeHtml(followUp)}</button>`
+        : '<span></span>';
+
+    html += `
+      <div class="msg-footer-bar">
+        ${followUpHtml}
+        <div class="msg-utility-actions">
+          <button type="button" class="btn-card-action btn-copy-reply" data-msg-id="${escapeHtml(String(msg.id))}" title="Копировать ответ">Копировать</button>
+          ${faults.length || steps.length ? `<button type="button" class="btn-card-action btn-export-report" data-msg-id="${escapeHtml(String(msg.id))}" title="Скачать текстовый заказ-наряд">Отчёт</button>` : ''}
+        </div>
+      </div>
+    `;
+
     return html;
   }
 
@@ -535,28 +1142,7 @@
         ? `<div class="dtc-badge-row">${msg.dtc_codes.map((c) => `<span class="dtc-pill">${escapeHtml(c)}</span>`).join('')}</div>`
         : '';
 
-    let attachmentsHtml = '';
-    if (Array.isArray(msg.attachments) && msg.attachments.length) {
-      attachmentsHtml = `<div class="attachments-grid">`;
-      msg.attachments.forEach((att) => {
-        if (att.type === 'image' && att.url) {
-          attachmentsHtml += `<img src="${escapeHtml(att.url)}" alt="${escapeHtml(att.name || 'Фото поломки')}" class="attachment-thumb" />`;
-        } else if (att.type === 'audio') {
-          const modeLabel = att.mode && !att.mode.toLowerCase().includes('ggml') ? att.mode : 'Gemma 4 Native Audio';
-          attachmentsHtml += `<div class="attachment-audio-wrapper">
-            <span class="attachment-doc-chip">🎙️ Аудио (${escapeHtml(modeLabel)}): ${escapeHtml(att.transcript || '')}</span>
-            ${att.url ? `<audio controls src="${escapeHtml(att.url)}" class="attachment-audio-player" preload="none"></audio>` : ''}
-          </div>`;
-        } else {
-          if (att.url) {
-            attachmentsHtml += `<a href="${escapeHtml(att.url)}" download="${escapeHtml(att.name || 'document')}" class="attachment-doc-chip attachment-doc-link" target="_blank" rel="noopener">📄 ${escapeHtml(att.name || 'Документ')}</a>`;
-          } else {
-            attachmentsHtml += `<span class="attachment-doc-chip">📄 Документ: ${escapeHtml(att.name || 'Файл')}</span>`;
-          }
-        }
-      });
-      attachmentsHtml += `</div>`;
-    }
+    const attachmentsHtml = renderAttachmentsHtml(msg.attachments);
 
     const bodyHtml =
       msg.role === 'assistant' ? buildStructuredCardHtml(msg) : `<div>${formatMarkdownLite(msg.content)}</div>`;
@@ -698,7 +1284,7 @@
   }
 
   async function pollWorkerStatus() {
-    if (!state.currentSessionId) return;
+    if (!state.currentSessionId || state.isDemo) return;
     try {
       const resp = await fetch(`/api/worker-status/${state.currentSessionId}/`);
       if (!resp.ok) return;
@@ -948,6 +1534,14 @@
     if (!feed) return;
     const doScroll = () => {
       feed.scrollTop = feed.scrollHeight;
+      const lastChild = feed.lastElementChild;
+      if (lastChild && typeof lastChild.scrollIntoView === 'function') {
+        try {
+          lastChild.scrollIntoView({ behavior: 'smooth', block: 'end' });
+        } catch (_) {
+          feed.scrollTop = feed.scrollHeight;
+        }
+      }
       if (window.scrollX !== 0) {
         window.scrollTo(0, window.scrollY);
       }
@@ -956,8 +1550,9 @@
       doScroll();
     } else {
       requestAnimationFrame(doScroll);
-      setTimeout(doScroll, 80);
-      setTimeout(doScroll, 260);
+      setTimeout(doScroll, 50);
+      setTimeout(doScroll, 160);
+      setTimeout(doScroll, 350);
     }
   }
 
@@ -986,7 +1581,16 @@
     if (arFeed) {
       arFeed.innerHTML = '';
       if (!messages || !messages.length) {
-        arFeed.innerHTML = '<div style="color:var(--text-secondary);font-size:0.85rem;">Диалог пуст. Введите вопрос или отправьте голосовой запрос/снимок узла.</div>';
+        arFeed.innerHTML = `
+          <div class="msg-card msg-assistant" data-welcome-placeholder="1">
+            <div class="msg-header">
+              <span class="msg-role-badge">AR/VR ПОМОЩНИК • ГОТОВ</span>
+            </div>
+            <p style="font-size:0.85rem; color:var(--text-secondary); margin:0;">
+              Здравствуйте! Наведите визир на узел автомобиля, сделайте снимок или задайте голосовой вопрос.
+            </p>
+          </div>
+        `;
       } else {
         messages.forEach((m) => {
           arFeed.appendChild(renderMessageElement(m));
@@ -1065,6 +1669,12 @@
         <div class="skeleton-line w-90"></div>
         <div class="skeleton-line w-75"></div>
         <div class="skeleton-line w-60"></div>
+      </div>
+      <div style="display:flex; justify-content:flex-end; margin-top:8px;">
+        <button type="button" class="btn-cancel-generation" data-action="cancel-gen" title="Остановить генерацию ответа">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          <span>Отменить генерацию</span>
+        </button>
       </div>
     `;
 
@@ -1156,11 +1766,15 @@
       formData.append('attachments', file);
     });
     if (voiceBlobSnapshot) {
-      formData.append('attachments', voiceBlobSnapshot, 'voice_input.webm');
+      const ext = (voiceBlobSnapshot.type && voiceBlobSnapshot.type.includes('wav')) ? 'wav' : 'webm';
+      formData.append('attachments', voiceBlobSnapshot, `voice_input.${ext}`);
     }
     if (voiceTranscriptSnapshot) {
       formData.append('voice_transcript', voiceTranscriptSnapshot);
     }
+
+    // Сохраняем URL предпросмотра для оптимистичного сообщения ДО очистки состояния
+    const savedVoicePreviewUrl = state.stagedVoicePreviewUrl;
 
     // Очищаем поле ввода и панель вложений сразу
     if (typeof overrideQuery !== 'string' && queryInput) {
@@ -1170,7 +1784,11 @@
     state.stagedFiles = [];
     state.stagedCameraShots = [];
     state.stagedVoiceBlob = null;
+    state.stagedVoiceAudioBuffer = null;
     state.stagedVoiceTranscript = '';
+    state.stagedVoiceDuration = 0;
+    state.stagedVoicePreviewUrl = null;
+    if (typeof stopWebAudio === 'function') stopWebAudio(true);
     renderStagingBar();
 
     // 1. Мгновенно отображаем сообщение пользователя в чате (Optimistic UI), чтобы оно не исчезало
@@ -1184,19 +1802,38 @@
       });
     });
     filesSnapshot.forEach((f) => {
-      if (f.type && f.type.startsWith('image/')) {
-        const objUrl = URL.createObjectURL(f);
-        tempObjectUrls.push(objUrl);
-        optimisticAttachments.push({ type: 'image', url: objUrl, name: f.name });
+      const isImg = (f.type && f.type.startsWith('image/')) || /\.(jpe?g|png|webp|bmp|gif)$/i.test(f.name);
+      const isAud = (f.type && f.type.startsWith('audio/')) || /\.(wav|mp3|ogg|m4a|flac|webm|aac)$/i.test(f.name);
+      if (isImg) {
+        const objUrl = f._previewUrl || URL.createObjectURL(f);
+        if (objUrl.startsWith('blob:')) tempObjectUrls.push(objUrl);
+        optimisticAttachments.push({ type: 'image', url: objUrl, name: f.name, size_bytes: f.size });
+      } else if (isAud) {
+        const objUrl = f._previewUrl || URL.createObjectURL(f);
+        if (objUrl.startsWith('blob:')) tempObjectUrls.push(objUrl);
+        optimisticAttachments.push({
+          type: 'audio',
+          url: objUrl,
+          name: f.name,
+          size_bytes: f.size,
+          duration: f._duration || 0,
+          mode: 'Gemma 4 Native Audio',
+        });
       } else {
-        optimisticAttachments.push({ type: 'document', name: f.name });
+        optimisticAttachments.push({ type: 'document', name: f.name, size_bytes: f.size, is_fully_processed: true });
       }
     });
     if (voiceBlobSnapshot) {
+      const vUrl = savedVoicePreviewUrl || URL.createObjectURL(voiceBlobSnapshot);
+      if (vUrl.startsWith('blob:')) tempObjectUrls.push(vUrl);
       optimisticAttachments.push({
         type: 'audio',
+        url: vUrl,
+        name: 'Голосовой запрос',
+        size_bytes: voiceBlobSnapshot.size,
+        duration: voiceBlobSnapshot._duration || state.stagedVoiceDuration || 0,
         mode: 'Gemma 4 Native Audio',
-        transcript: voiceTranscriptSnapshot || 'Голосовой запрос',
+        transcript: voiceTranscriptSnapshot || 'Голосовой запрос мастера',
       });
     }
 
@@ -1216,6 +1853,22 @@
     let pendingAssistantEl = null;
     let pendingArEl = null;
 
+    // Контроллер отмены генерации
+    state.activeAbortController = new AbortController();
+
+    const triggerCancelGeneration = async () => {
+      try {
+        state.activeAbortController?.abort();
+      } catch (_) {}
+      try {
+        await fetch('/api/cancel/', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ session_id: state.currentSessionId }),
+        });
+      } catch (_) {}
+    };
+
     if (feed) {
       const welcomePlaceholder = feed.querySelector('[data-welcome-placeholder="1"]');
       if (welcomePlaceholder) {
@@ -1227,12 +1880,14 @@
 
       // 2. Сразу добавляем анимированную карточку генерации ответа ИИ
       pendingAssistantEl = createPendingGenerationCard();
+      pendingAssistantEl.querySelector('[data-action="cancel-gen"]')?.addEventListener('click', triggerCancelGeneration);
       feed.appendChild(pendingAssistantEl);
       scrollFeedToBottom();
     }
 
     if (arFeed && document.body.classList.contains('ar-glasses-mode')) {
       pendingArEl = createPendingGenerationCard();
+      pendingArEl.querySelector('[data-action="cancel-gen"]')?.addEventListener('click', triggerCancelGeneration);
       arFeed.innerHTML = '';
       arFeed.appendChild(pendingArEl);
       arFeed.scrollTop = arFeed.scrollHeight;
@@ -1242,6 +1897,7 @@
       const resp = await fetch('/api/ask/', {
         method: 'POST',
         body: formData,
+        signal: state.activeAbortController.signal,
       });
       const data = await resp.json();
       if (!resp.ok) {
@@ -1257,6 +1913,9 @@
         return;
       }
 
+      if (data.vehicle_info && vehInput && !vehInput.value.trim()) {
+        vehInput.value = data.vehicle_info;
+      }
       if (state.isDemo) {
         if (!state.demoMessagesBySession[state.currentSessionId]) {
           state.demoMessagesBySession[state.currentSessionId] = [];
@@ -1264,8 +1923,13 @@
         if (data.user_message) state.demoMessagesBySession[state.currentSessionId].push(data.user_message);
         if (data.assistant_message) state.demoMessagesBySession[state.currentSessionId].push(data.assistant_message);
         const demoSess = state.demoSessions.find((s) => String(s.id) === String(state.currentSessionId));
-        if (demoSess && data.session_title && (demoSess.title === 'Демо-диагностика' || demoSess.title.startsWith('Диагностика #'))) {
-          demoSess.title = data.session_title;
+        if (demoSess) {
+          if (data.session_title && (demoSess.title === 'Демо-диагностика' || demoSess.title.startsWith('Диагностика #'))) {
+            demoSess.title = data.session_title;
+          }
+          if (data.vehicle_info && !demoSess.vehicle_info) {
+            demoSess.vehicle_info = data.vehicle_info;
+          }
         }
       }
 
@@ -1324,20 +1988,39 @@
         setTimeout(pollWorkerStatus, 250);
       }
     } catch (err) {
-      console.error('Ошибка отправки запроса:', err);
-      if (pendingAssistantEl) {
-        pendingAssistantEl._stopAnimation?.();
-        pendingAssistantEl.innerHTML = `
-          <div class="msg-header">
-            <span class="msg-role-badge" style="color:var(--status-crit);">ОШИБКА СОЕДИНЕНИЯ С СЕРВЕРОМ</span>
-          </div>
-          <div style="font-size:0.86rem; color:var(--text-secondary);">
-            Не удалось получить ответ от сервера диагностики. Проверьте, что сервер запущен, и повторите попытку.
-          </div>
-        `;
-      }
-      if (pendingArEl) {
-        pendingArEl._stopAnimation?.();
+      if (err.name === 'AbortError') {
+        console.info('Генерация отменена автомехаником.');
+        if (pendingAssistantEl) {
+          pendingAssistantEl._stopAnimation?.();
+          pendingAssistantEl.innerHTML = `
+            <div class="msg-header">
+              <span class="msg-role-badge" style="color:var(--accent-orange);">ОТМЕНЕНО МАСТЕРОМ</span>
+            </div>
+            <div style="font-size:0.86rem; color:var(--text-secondary);">
+              Генерация ответа была прервана. Вы можете изменить ввод или повторить диагностику.
+            </div>
+          `;
+        }
+        if (pendingArEl) {
+          pendingArEl._stopAnimation?.();
+          pendingArEl.remove();
+        }
+      } else {
+        console.error('Ошибка отправки запроса:', err);
+        if (pendingAssistantEl) {
+          pendingAssistantEl._stopAnimation?.();
+          pendingAssistantEl.innerHTML = `
+            <div class="msg-header">
+              <span class="msg-role-badge" style="color:var(--status-crit);">СЕРВЕР НЕ ОТВЕЧАЕТ</span>
+            </div>
+            <div style="font-size:0.86rem; color:var(--text-secondary);">
+              Диагностический сервер временно не отвечает. Подождите минуту и повторите попытку.
+            </div>
+          `;
+        }
+        if (pendingArEl) {
+          pendingArEl._stopAnimation?.();
+        }
       }
     } finally {
       tempObjectUrls.forEach((u) => {
@@ -1402,6 +2085,13 @@
             state.stagedCodes.push(code);
             renderStagingBar();
           }
+          if (window.innerWidth <= 1120) {
+            el('panelInspector')?.classList.remove('mobile-active');
+            document.querySelectorAll('[data-mobile-view]').forEach((b) => {
+              b.classList.toggle('active', b.dataset.mobileView === 'chat');
+            });
+            el('queryInput')?.focus();
+          }
         });
       });
     } catch (err) {
@@ -1415,16 +2105,76 @@
   async function startCameraStream(videoElement, facingMode) {
     if (!videoElement) return null;
     try {
+      // 1. Проверяем политику безопасного контекста браузера (HTTPS vs HTTP)
+      const isLocalHost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+      if (!window.isSecureContext && !isLocalHost) {
+        const errorMsg =
+          'Браузер заблокировал доступ к камере (API navigator.mediaDevices), так как страница открыта по незащищенному HTTP (' +
+          window.location.origin +
+          ').\n\n' +
+          'Политика безопасности Android XR и Chromium требует защищенного контекста (HTTPS или localhost) для веб-камеры на внешних сетевых устройствах.\n\n' +
+          'Способ включить камеру на очках (Android XR) без настройки SSL:\n' +
+          '1. Откройте в браузере очков вкладку chrome://flags/#unsafely-treat-insecure-origin-as-secure\n' +
+          '2. Введите URL: ' + window.location.origin + '\n' +
+          '3. Переключите в Enabled и перезапустите браузер (кнопка Relaunch).';
+        console.warn(errorMsg);
+        if (typeof uiAlert === 'function') {
+          await uiAlert(errorMsg, 'Камера: требуется HTTPS или флаг в браузере очков', 'warning');
+        } else {
+          alert(errorMsg);
+        }
+        return null;
+      }
+
       if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: { ideal: facingMode || 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } },
-          audio: false,
-        });
-        videoElement.srcObject = stream;
-        return stream;
+        let stream = null;
+        // 2. Первая попытка: запрос с предпочтительной ориентацией
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({
+            video: {
+              facingMode: { ideal: facingMode || 'environment' },
+              width: { ideal: 1280 },
+              height: { ideal: 720 },
+            },
+            audio: false,
+          });
+        } catch (specErr) {
+          console.warn('Специфичные ограничения камеры не подошли, пробуем базовый video: true (актуально для VR/XR гарнитур):', specErr);
+          // Fallback для VR / Android XR гарнитур (где нет задней/передней камеры в мобильном понимании)
+          try {
+            stream = await navigator.mediaDevices.getUserMedia({
+              video: true,
+              audio: false,
+            });
+          } catch (genErr) {
+            throw genErr;
+          }
+        }
+
+        if (stream) {
+          videoElement.srcObject = stream;
+          try {
+            await videoElement.play();
+          } catch (playErr) {
+            console.warn('Автовоспроизведение видеопотока камеры:', playErr);
+          }
+          return stream;
+        }
+      } else {
+        const noApiMsg = 'API navigator.mediaDevices.getUserMedia не поддерживается данным браузером или заблокировано настройками безопасности.';
+        console.warn(noApiMsg);
+        if (typeof uiAlert === 'function') {
+          await uiAlert(noApiMsg, 'Камера недоступна', 'warning');
+        }
       }
     } catch (err) {
-      console.warn('Физическая веб-камера недоступна, доступен генератор тестового диагностического кадра:', err);
+      console.warn('Физическая веб-камера недоступна:', err);
+      const userErr = err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError'
+        ? 'Доступ к камере отклонен пользователем или разрешениями операционной системы.'
+        : 'Ошибка инициализации камеры: ' + (err.message || err.name || 'неизвестная ошибка');
+      if (typeof uiAlert === 'function') {
+        await uiAlert(userErr, 'Доступ к камере', 'warning');
+      }
     }
     return null;
   }
@@ -1648,6 +2398,44 @@
     }
   }
 
+  function encodeWavBlob(samples, sampleRate = 16000) {
+    const numChannels = 1;
+    const bitsPerSample = 16;
+    const byteRate = sampleRate * numChannels * (bitsPerSample / 8);
+    const blockAlign = numChannels * (bitsPerSample / 8);
+    const dataSize = samples.length * 2;
+    const buffer = new ArrayBuffer(44 + dataSize);
+    const view = new DataView(buffer);
+
+    const writeStr = (offset, str) => {
+      for (let i = 0; i < str.length; i++) {
+        view.setUint8(offset + i, str.charCodeAt(i));
+      }
+    };
+
+    writeStr(0, 'RIFF');
+    view.setUint32(4, 36 + dataSize, true);
+    writeStr(8, 'WAVE');
+    writeStr(12, 'fmt ');
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true); // PCM
+    view.setUint16(22, numChannels, true);
+    view.setUint32(24, sampleRate, true);
+    view.setUint32(28, byteRate, true);
+    view.setUint16(32, blockAlign, true);
+    view.setUint16(34, bitsPerSample, true);
+    writeStr(36, 'data');
+    view.setUint32(40, dataSize, true);
+
+    let offset = 44;
+    for (let i = 0; i < samples.length; i++, offset += 2) {
+      const s = Math.max(-1, Math.min(1, samples[i]));
+      view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+    }
+
+    return new Blob([buffer], { type: 'audio/wav' });
+  }
+
   async function toggleVoiceRecording() {
     if (state.isRecording) {
       await stopVoiceRecordingAndWait();
@@ -1655,6 +2443,7 @@
     }
 
     state.isRecording = true;
+    state.recordingStartTime = Date.now();
     state.stagedVoiceTranscript = '';
     setMicRecordingVisualState(true);
 
@@ -1692,6 +2481,29 @@
       });
       startMicSpectrogram(stream);
 
+      // Параллельный захват чистого PCM аудиопотока для мгновенного создания стандартного WAV
+      let recAudioCtx = null;
+      let recProcessor = null;
+      let recSource = null;
+      const pcmChunks = [];
+      try {
+        const AudioCtx = window.AudioContext || window.webkitAudioContext;
+        if (AudioCtx) {
+          recAudioCtx = new AudioCtx();
+          recSource = recAudioCtx.createMediaStreamSource(stream);
+          recProcessor = recAudioCtx.createScriptProcessor(4096, 1, 1);
+          recProcessor.onaudioprocess = (ev) => {
+            if (!state.isRecording) return;
+            const ch = ev.inputBuffer.getChannelData(0);
+            pcmChunks.push(new Float32Array(ch));
+          };
+          recSource.connect(recProcessor);
+          recProcessor.connect(recAudioCtx.destination);
+        }
+      } catch (err) {
+        console.warn('PCM stream capture init notice:', err);
+      }
+
       const chunks = [];
       let mimeType = 'audio/webm';
       if (typeof MediaRecorder.isTypeSupported === 'function') {
@@ -1713,10 +2525,89 @@
         mr.onstop = () => {
           stopStream(stream);
           stopMicSpectrogram();
-          if (chunks.length > 0) {
-            const blob = new Blob(chunks, { type: mimeType || 'audio/webm' });
+
+          const sampleRate = (recAudioCtx && recAudioCtx.sampleRate) || 16000;
+          if (recProcessor) {
+            try { recProcessor.disconnect(); } catch (_) {}
+            recProcessor = null;
+          }
+          if (recSource) {
+            try { recSource.disconnect(); } catch (_) {}
+            recSource = null;
+          }
+          if (recAudioCtx) {
+            try { recAudioCtx.close(); } catch (_) {}
+            recAudioCtx = null;
+          }
+
+          let blob = null;
+          let calculatedDur = 0;
+
+          if (pcmChunks.length > 0) {
+            let totalLen = 0;
+            for (let i = 0; i < pcmChunks.length; i++) totalLen += pcmChunks[i].length;
+            const merged = new Float32Array(totalLen);
+            let off = 0;
+            for (let i = 0; i < pcmChunks.length; i++) {
+              merged.set(pcmChunks[i], off);
+              off += pcmChunks[i].length;
+            }
+            blob = encodeWavBlob(merged, sampleRate);
+            calculatedDur = totalLen / sampleRate;
+          } else if (chunks.length > 0) {
+            const rawMime = mr.mimeType || mimeType || 'audio/webm';
+            blob = new Blob(chunks, { type: rawMime.split(';')[0].trim() || 'audio/webm' });
+          }
+
+          if (blob) {
+            const recElapsed = state.recordingStartTime
+              ? Math.max(0.3, (Date.now() - state.recordingStartTime) / 1000)
+              : 0;
+            const finalDur = calculatedDur > 0 ? calculatedDur : recElapsed;
+            blob._duration = finalDur;
             state.stagedVoiceBlob = blob;
+            state.stagedVoiceDuration = finalDur;
+            if (state.stagedVoicePreviewUrl) {
+              try { URL.revokeObjectURL(state.stagedVoicePreviewUrl); } catch (_) {}
+            }
+            state.stagedVoicePreviewUrl = URL.createObjectURL(blob);
             renderStagingBar();
+
+            // Отправляем аудио на сервер в /api/transcode-audio/ для получения гарантированного эталонного WAV
+            const tcData = new FormData();
+            tcData.append('file', blob, blob.type === 'audio/wav' ? 'voice.wav' : 'voice.webm');
+            fetch('/api/transcode-audio/', { method: 'POST', body: tcData })
+              .then((r) => r.json())
+              .then((res) => {
+                if (res && res.ok && res.wav_data_url) {
+                  if (res.duration && res.duration > 0) {
+                    state.stagedVoiceDuration = res.duration;
+                    blob._duration = res.duration;
+                  }
+                  if (res.transcript && !state.stagedVoiceTranscript) {
+                    state.stagedVoiceTranscript = res.transcript;
+                    const qIn = el('queryInput');
+                    if (qIn && !qIn.value.trim()) qIn.value = res.transcript;
+                  }
+                  state.stagedVoicePreviewUrl = res.wav_data_url;
+                  document.querySelectorAll('.staged-card-audio').forEach((c) => {
+                    c.dataset.audioSrc = res.wav_data_url;
+                    if (res.duration) c.dataset.audioDur = String(res.duration);
+                    const aud = c.querySelector('.js-audio-element');
+                    if (aud) {
+                      aud.src = res.wav_data_url;
+                      try { aud.load(); } catch (_) {}
+                    }
+                    const tl = c.querySelector('.js-audio-time');
+                    if (tl && (!aud || aud.paused)) {
+                      tl.textContent = `0:00 / ${formatAudioTime(state.stagedVoiceDuration)}`;
+                    }
+                  });
+                }
+              })
+              .catch((err) => {
+                console.warn('Серверный транскодинг аудио завершился с предупреждением:', err);
+              });
           }
           resolve();
         };
@@ -1796,7 +2687,12 @@
     if (btnPassthrough) btnPassthrough.classList.toggle('active', state.arSubmode === 'passthrough');
 
     const cameraWin = el('arWindowCamera');
+    const btnSwitchBgCam = el('btnArSwitchBgCamera');
     if (state.arSubmode === 'passthrough') {
+      if (btnSwitchBgCam) {
+        btnSwitchBgCam.style.display = 'inline-flex';
+        btnSwitchBgCam.disabled = false;
+      }
       if (overlay) overlay.classList.add('passthrough-mode');
       if (bgVideo) {
         bgVideo.style.display = 'block';
@@ -1807,13 +2703,17 @@
       // Скрываем дублирующее плавающее окно камеры — видеопоток уже является полноэкранным фоном
       if (cameraWin) cameraWin.style.display = 'none';
     } else {
+      if (btnSwitchBgCam) {
+        btnSwitchBgCam.style.display = 'none';
+        btnSwitchBgCam.disabled = true;
+      }
       if (overlay) overlay.classList.remove('passthrough-mode');
       if (bgVideo) {
         bgVideo.style.display = 'none';
         stopStream(state.arBgCameraStream);
         state.arBgCameraStream = null;
       }
-      // В оптическом режиме RayNeo на черном фоне #000000 окно визира камеры отображается
+      // В оптическом режиме портативных AR-очков на прозрачном фоне окно визира камеры отображается
       if (cameraWin) cameraWin.style.display = 'flex';
     }
   }
@@ -2023,7 +2923,7 @@
 
   async function createNewSession(projectId) {
     if (state.isDemo) {
-      const newId = 'demo-sess-' + Date.now();
+      const newId = generateUuidV4();
       const projIdVal = projectId ? (isNaN(Number(projectId)) ? projectId : Number(projectId)) : null;
       const newSess = {
         id: newId,
@@ -2412,7 +3312,29 @@
     const fileInput = el('hiddenFileInput');
     el('btnAttachFile')?.addEventListener('click', () => fileInput?.click());
     fileInput?.addEventListener('change', () => {
-      Array.from(fileInput.files || []).forEach((f) => state.stagedFiles.push(f));
+      Array.from(fileInput.files || []).forEach((f) => {
+        state.stagedFiles.push(f);
+        const isAud = (f.type && f.type.startsWith('audio/')) || /\.(wav|mp3|ogg|m4a|flac|webm|aac)$/i.test(f.name);
+        if (isAud) {
+          try {
+            f._previewUrl = URL.createObjectURL(f);
+            const tcData = new FormData();
+            tcData.append('file', f);
+            fetch('/api/transcode-audio/', { method: 'POST', body: tcData })
+              .then((r) => r.json())
+              .then((res) => {
+                if (res && res.ok && res.wav_data_url) {
+                  f._previewUrl = res.wav_data_url;
+                  f._duration = res.duration || 0;
+                  renderStagingBar();
+                }
+              })
+              .catch(() => {});
+          } catch (_) {}
+        } else {
+          fetchDocPreview(f);
+        }
+      });
       fileInput.value = '';
       renderStagingBar();
     });
@@ -2435,6 +3357,9 @@
       const dtcTabBtn = document.querySelector('[data-inspector-tab="paneDtc"]');
       dtcTabBtn?.click();
       el('panelInspector')?.classList.add('mobile-active');
+      document.querySelectorAll('[data-mobile-view]').forEach((b) => {
+        b.classList.toggle('active', b.dataset.mobileView === 'dtc');
+      });
       el('dtcSearchInput')?.focus();
     });
 
@@ -2463,11 +3388,9 @@
       renderStagingBar();
       el('btnCloseCameraModal')?.click();
     });
-    el('btnGenerateTestShot')?.addEventListener('click', () => {
-      const b64 = generateSyntheticDiagnosticFrame();
-      state.stagedCameraShots.push(b64);
-      renderStagingBar();
+    el('btnOpenObdModalFromCamera')?.addEventListener('click', () => {
       el('btnCloseCameraModal')?.click();
+      el('obdModal')?.style && (el('obdModal').style.display = 'flex');
     });
 
     // Голосовой ввод
@@ -2694,18 +3617,89 @@
       });
     });
 
-    // Закрытие мобильных панелей
+    // Закрытие мобильных панелей с синхронизацией вкладки «Чат»
     document.querySelectorAll('.js-close-mobile-drawer').forEach((btn) => {
       btn.addEventListener('click', () => {
         toggleMobileSidebar(false);
         el('panelInspector')?.classList.remove('mobile-active');
-        document.querySelectorAll('[data-mobile-view]').forEach((b) => b.classList.remove('active'));
+        document.querySelectorAll('[data-mobile-view]').forEach((b) => {
+          b.classList.toggle('active', b.dataset.mobileView === 'chat');
+        });
       });
     });
 
-    // Делегирование удаления отдельного сообщения и чекбоксов в ленте чата
+    // Сохранение профиля автомобиля при изменении поля в шапке чата
+    el('vehicleInfoInput')?.addEventListener('change', async (e) => {
+      const val = (e.target.value || '').trim();
+      if (!state.currentSessionId) return;
+      if (state.isDemo) {
+        const demoSess = state.demoSessions.find((s) => String(s.id) === String(state.currentSessionId));
+        if (demoSess) demoSess.vehicle_info = val;
+        return;
+      }
+      try {
+        await fetch(`/api/sessions/${state.currentSessionId}/`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ vehicle_info: val }),
+        });
+      } catch (_) {}
+    });
+
+    // Делегирование удаления отдельного сообщения, копирования, экспорта и быстрых вопросов в ленте чата
     const chatFeedEl = el('chatFeed');
-    chatFeedEl?.addEventListener('click', (e) => {
+    chatFeedEl?.addEventListener('click', async (e) => {
+      const followBtn = e.target.closest('.btn-followup-chip');
+      if (followBtn) {
+        const qInput = el('queryInput');
+        if (qInput) {
+          qInput.placeholder = followBtn.dataset.followupText || qInput.placeholder;
+          qInput.focus();
+        }
+        return;
+      }
+      const copyBtn = e.target.closest('.btn-copy-reply');
+      if (copyBtn) {
+        const card = copyBtn.closest('.msg-card');
+        const prose = card?.querySelector('.md-prose')?.innerText || '';
+        if (prose && navigator.clipboard) {
+          try {
+            await navigator.clipboard.writeText(prose);
+            const orig = copyBtn.textContent;
+            copyBtn.textContent = 'Скопировано';
+            setTimeout(() => { copyBtn.textContent = orig; }, 1400);
+          } catch (_) {}
+        }
+        return;
+      }
+      const exportBtn = e.target.closest('.btn-export-report');
+      if (exportBtn) {
+        const card = exportBtn.closest('.msg-card');
+        const title = card?.querySelector('.diagnosis-verdict-title span')?.textContent || 'Диагностический отчёт ИИдеал Авто';
+        const veh = (el('vehicleInfoInput')?.value || 'Не указан').trim();
+        const prose = card?.querySelector('.md-prose')?.innerText || '';
+        const faultLines = Array.from(card?.querySelectorAll('.fault-box') || []).map((b) => '- ' + b.innerText.replace(/\s+/g, ' ').trim());
+        const stepLines = Array.from(card?.querySelectorAll('.steps-checklist .check-row') || []).map((r) => {
+          const chk = r.querySelector('input[type="checkbox"]')?.checked ? '[x]' : '[ ]';
+          return `${chk} ${r.innerText.replace(/\s+/g, ' ').trim()}`;
+        });
+        const report = [
+          'ИИДЕАЛ АВТО • ДИАГНОСТИЧЕСКИЙ ОТЧЁТ',
+          `Автомобиль: ${veh}`,
+          `Заключение: ${title}`,
+          '',
+          prose,
+          faultLines.length ? '\nУстановленные неисправности:\n' + faultLines.join('\n') : '',
+          stepLines.length ? '\nПлан ремонта:\n' + stepLines.join('\n') : '',
+        ].filter(Boolean).join('\n');
+        const blob = new Blob([report], { type: 'text/plain;charset=utf-8' });
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = `aideal-report-${Date.now()}.txt`;
+        a.click();
+        setTimeout(() => URL.revokeObjectURL(a.href), 1500);
+        return;
+      }
       const delBtn = e.target.closest('.btn-msg-delete');
       if (delBtn) {
         const msgId = delBtn.dataset.msgId;
@@ -2744,6 +3738,9 @@
     });
 
     initAuthUi();
+    initObdUi();
+    initCookieBanner();
+    initMediaPreviewEvents();
     initDraggableArWindows();
     if (document.body.classList.contains('ar-glasses-mode')) {
       startCameraStream(el('arCameraVideoEl'), state.cameraFacingMode).then((s) => {
@@ -2755,6 +3752,161 @@
     if ('serviceWorker' in navigator) {
       navigator.serviceWorker.register('/sw.js').catch(() => {});
     }
+  }
+
+  // =========================================================================
+  // 9a. Сканер OBD-II / ELM327 и Cookie Banner
+  // =========================================================================
+  function initCookieBanner() {
+    const banner = el('cookieBanner');
+    if (!banner) return;
+    if (!localStorage.getItem('aideal_cookies_accepted')) {
+      banner.style.display = 'flex';
+      el('btnAcceptCookies')?.addEventListener('click', () => {
+        localStorage.setItem('aideal_cookies_accepted', '1');
+        banner.style.display = 'none';
+      });
+    }
+  }
+
+  function initObdUi() {
+    const modal = el('obdModal');
+    const openModal = () => {
+      if (modal) modal.style.display = 'flex';
+    };
+    const closeModal = () => {
+      if (modal) modal.style.display = 'none';
+    };
+
+    el('btnOpenObdModal')?.addEventListener('click', openModal);
+    el('btnCloseObdModal')?.addEventListener('click', closeModal);
+    modal?.addEventListener('click', (e) => {
+      if (e.target === modal) closeModal();
+    });
+
+    const updateLiveView = (pids) => {
+      if (!pids) return;
+      if (pids.rpm !== undefined) {
+        const rpmEl = el('obdValRpm');
+        if (rpmEl) rpmEl.textContent = `${pids.rpm} об/м`;
+      }
+      if (pids.speed !== undefined) {
+        const speedEl = el('obdValSpeed');
+        if (speedEl) speedEl.textContent = `${pids.speed} км/ч`;
+      }
+      if (pids.temp !== undefined) {
+        const tempEl = el('obdValTemp');
+        if (tempEl) tempEl.textContent = `${pids.temp} °C`;
+      }
+      if (pids.throttle !== undefined) {
+        const thrEl = el('obdValThrottle');
+        if (thrEl) thrEl.textContent = `${pids.throttle}%`;
+      }
+    };
+
+    if (window.OBD2Client) {
+      window.OBD2Client.on('connected', (info) => {
+        const dot = el('obdStatusDot');
+        const txt = el('obdStatusText');
+        if (dot) dot.style.background = 'var(--status-ok)';
+        if (txt) txt.textContent = `Подключен (${info.type || 'ELM327'})`;
+        const btnDis = el('btnObdDisconnect');
+        if (btnDis) btnDis.style.display = 'inline-flex';
+        window.OBD2Client.startLivePolling(updateLiveView, 600);
+      });
+
+      window.OBD2Client.on('disconnected', () => {
+        const dot = el('obdStatusDot');
+        const txt = el('obdStatusText');
+        if (dot) dot.style.background = '#64748b';
+        if (txt) txt.textContent = 'Не подключен';
+        const btnDis = el('btnObdDisconnect');
+        if (btnDis) btnDis.style.display = 'none';
+        const rEl = el('obdValRpm'); if (rEl) rEl.textContent = '—';
+        const sEl = el('obdValSpeed'); if (sEl) sEl.textContent = '—';
+        const tEl = el('obdValTemp'); if (tEl) tEl.textContent = '—';
+        const thEl = el('obdValThrottle'); if (thEl) thEl.textContent = '—';
+      });
+
+      window.OBD2Client.on('error', (err) => {
+        uiAlert(err.message || 'Ошибка подключения к адаптеру OBD-II', 'OBD-II Сканер', 'warning');
+      });
+
+      window.OBD2Client.on('dtc_found', (res) => {
+        const codes = res.codes || [];
+        const box = el('obdDtcResultBox');
+        const txt = el('obdDtcListText');
+        if (box && txt) {
+          box.style.display = 'block';
+          txt.textContent = codes.length > 0 ? codes.join(', ') : 'Ошибок в памяти ЭБУ не обнаружено (P0000)';
+        }
+        if (codes.length > 0) {
+          codes.forEach((c) => {
+            if (!state.stagedCodes.includes(c)) state.stagedCodes.push(c);
+          });
+          renderStagedBar();
+          uiAlert(`Считано ${codes.length} кодов неисправностей. Они добавлены в диагностическую сессию.`, 'Сканер OBD-II', 'info');
+        }
+      });
+    }
+
+    el('btnObdConnectSerial')?.addEventListener('click', async () => {
+      try {
+        await window.OBD2Client?.connectSerial({ baudRate: 38400 });
+      } catch (e) {
+        uiAlert(e.message || 'Не удалось подключиться через USB/Serial', 'Ошибка OBD-II', 'warning');
+      }
+    });
+
+    el('btnObdConnectBluetooth')?.addEventListener('click', async () => {
+      try {
+        await window.OBD2Client?.connectBluetooth();
+      } catch (e) {
+        uiAlert(e.message || 'Не удалось подключиться через Bluetooth', 'Ошибка OBD-II', 'warning');
+      }
+    });
+
+    el('btnObdConnectDemo')?.addEventListener('click', async () => {
+      await window.OBD2Client?.connectDemo();
+    });
+
+    el('btnObdDisconnect')?.addEventListener('click', () => {
+      window.OBD2Client?.disconnect();
+    });
+
+    el('btnObdReadDtc')?.addEventListener('click', async () => {
+      if (!window.OBD2Client?.isConnected) {
+        await uiAlert('Сначала подключите сканер ELM327 (USB, Bluetooth или Демо-стенд).', 'OBD-II', 'info');
+        return;
+      }
+      try {
+        await window.OBD2Client.readDtcCodes();
+      } catch (e) {
+        uiAlert(e.message || 'Ошибка считывания кодов', 'OBD-II', 'warning');
+      }
+    });
+
+    el('btnObdReadVin')?.addEventListener('click', async () => {
+      if (!window.OBD2Client?.isConnected) {
+        await uiAlert('Сначала подключите адаптер ELM327.', 'OBD-II', 'info');
+        return;
+      }
+      try {
+        const vin = await window.OBD2Client.readVin();
+        if (vin) {
+          const vInput = el('vehicleInput');
+          if (vInput) {
+            vInput.value = (vInput.value ? `${vInput.value} | VIN: ` : 'VIN: ') + vin;
+            state.vehicleInfo = vInput.value;
+          }
+          uiAlert(`Определен VIN номер автомобиля: ${vin}`, 'VIN распознан', 'info');
+        } else {
+          uiAlert('VIN не получен от блока управления автомобиля.', 'OBD-II', 'info');
+        }
+      } catch (e) {
+        uiAlert(e.message || 'Ошибка считывания VIN', 'OBD-II', 'warning');
+      }
+    });
   }
 
   // =========================================================================
@@ -2781,10 +3933,12 @@
         errBanner.style.display = 'none';
         errBanner.textContent = '';
       }
+      const termsGroup = el('authTermsGroup');
       if (mode === 'login') {
         tabLogin?.classList.add('active');
         tabRegister?.classList.remove('active');
         if (emailGroup) emailGroup.style.display = 'none';
+        if (termsGroup) termsGroup.style.display = 'none';
         if (btnSubmit) {
           const s = btnSubmit.querySelector('span');
           if (s) s.textContent = 'Войти';
@@ -2795,6 +3949,7 @@
         tabRegister?.classList.add('active');
         tabLogin?.classList.remove('active');
         if (emailGroup) emailGroup.style.display = 'flex';
+        if (termsGroup) termsGroup.style.display = 'block';
         if (btnSubmit) {
           const s = btnSubmit.querySelector('span');
           if (s) s.textContent = 'Зарегистрироваться';
@@ -2831,6 +3986,18 @@
 
       if (!username || !password) return;
 
+      if (authMode === 'register') {
+        const termsChk = el('authTermsCheckbox');
+        if (termsChk && !termsChk.checked) {
+          if (errBanner) {
+            errBanner.textContent = 'Для регистрации необходимо подтвердить согласие с Пользовательским соглашением и Политикой конфиденциальности.';
+            errBanner.style.display = 'block';
+          }
+          if (btnSubmit) btnSubmit.disabled = false;
+          return;
+        }
+      }
+
       if (btnSubmit) btnSubmit.disabled = true;
       if (errBanner) {
         errBanner.style.display = 'none';
@@ -2859,7 +4026,7 @@
         window.location.reload();
       } catch (err) {
         if (errBanner) {
-          errBanner.textContent = 'Ошибка сетевого соединения с сервером';
+          errBanner.textContent = 'Нет связи с сервером автодиагностики. Проверьте подключение к сети автосервиса.';
           errBanner.style.display = 'block';
         }
       } finally {
@@ -2899,6 +4066,476 @@
         }
       } catch (err) {
         console.error('Ошибка при удалении аккаунта:', err);
+      }
+    });
+  }
+
+  function getEffectiveAudioDuration(card, audio) {
+    if (audio && audio.duration && isFinite(audio.duration) && audio.duration > 0) {
+      return audio.duration;
+    }
+    const cardDur = card ? Number(card.dataset.audioDur) : 0;
+    if (cardDur && isFinite(cardDur) && cardDur > 0) {
+      return cardDur;
+    }
+    if (state.stagedVoiceDuration && isFinite(state.stagedVoiceDuration) && state.stagedVoiceDuration > 0) {
+      return state.stagedVoiceDuration;
+    }
+    return 0;
+  }
+
+  function handleAudioMetadataLoaded(aud) {
+    if (!aud) return;
+    const card = aud.closest('.attachment-card-audio, .staged-card');
+    if (!card) return;
+    const timeLbl = card.querySelector('.js-audio-time') || card.querySelector('.js-audio-duration-display');
+    const dur = getEffectiveAudioDuration(card, aud);
+    if (dur > 0) {
+      card.dataset.audioDur = String(dur);
+      if (timeLbl && (!aud.currentTime || aud.currentTime === 0)) {
+        timeLbl.textContent = `0:00 / ${formatAudioTime(dur)}`;
+      }
+    }
+  }
+
+  // =========================================================================
+  // Web Audio API движок воспроизведения (безотказный фоллбэк для любых браузеров)
+  // =========================================================================
+  const webAudioPlayer = {
+    ctx: null,
+    sourceNode: null,
+    audioBuffer: null,
+    startTime: 0,
+    pausedAt: 0,
+    isPlaying: false,
+    card: null,
+    rafId: null,
+  };
+
+  function getSharedAudioContext() {
+    if (!webAudioPlayer.ctx || webAudioPlayer.ctx.state === 'closed') {
+      const AudioCtx = window.AudioContext || window.webkitAudioContext;
+      if (AudioCtx) webAudioPlayer.ctx = new AudioCtx();
+    }
+    return webAudioPlayer.ctx;
+  }
+
+  function stopWebAudio(resetToZero = false) {
+    if (webAudioPlayer.rafId) {
+      cancelAnimationFrame(webAudioPlayer.rafId);
+      webAudioPlayer.rafId = null;
+    }
+    if (webAudioPlayer.sourceNode) {
+      try { webAudioPlayer.sourceNode.stop(); } catch (_) {}
+      try { webAudioPlayer.sourceNode.disconnect(); } catch (_) {}
+      webAudioPlayer.sourceNode = null;
+    }
+    if (resetToZero) {
+      webAudioPlayer.pausedAt = 0;
+    } else if (webAudioPlayer.ctx && webAudioPlayer.isPlaying) {
+      webAudioPlayer.pausedAt = Math.max(0, webAudioPlayer.ctx.currentTime - webAudioPlayer.startTime);
+    }
+    webAudioPlayer.isPlaying = false;
+    if (webAudioPlayer.card) {
+      webAudioPlayer.card.classList.remove('playing');
+      delete webAudioPlayer.card.dataset.webAudioPlaying;
+      const playIcon = webAudioPlayer.card.querySelector('.play-icon');
+      const pauseIcon = webAudioPlayer.card.querySelector('.pause-icon');
+      const slider = webAudioPlayer.card.querySelector('.js-audio-seek');
+      const durationDisplay = webAudioPlayer.card.querySelector('.js-audio-time') || webAudioPlayer.card.querySelector('.js-audio-duration-display');
+      if (playIcon) playIcon.style.display = 'block';
+      if (pauseIcon) pauseIcon.style.display = 'none';
+      if (resetToZero && slider) slider.value = 0;
+      const dur = webAudioPlayer.audioBuffer ? webAudioPlayer.audioBuffer.duration : 0;
+      if (resetToZero && durationDisplay && dur > 0) {
+        durationDisplay.textContent = `0:00 / ${formatAudioTime(dur)}`;
+      }
+    }
+  }
+
+  function startWebAudioBuffer(ab, card, slider, durationDisplay, playIcon, pauseIcon) {
+    const actx = getSharedAudioContext();
+    if (!actx || !ab) return;
+    if (actx.state === 'suspended') {
+      actx.resume().catch(() => {});
+    }
+
+    stopWebAudio(false);
+
+    const dur = ab.duration;
+    let offset = webAudioPlayer.pausedAt || 0;
+    if (offset >= dur - 0.05) offset = 0;
+
+    const srcNode = actx.createBufferSource();
+    srcNode.buffer = ab;
+    srcNode.connect(actx.destination);
+    webAudioPlayer.sourceNode = srcNode;
+    webAudioPlayer.audioBuffer = ab;
+    webAudioPlayer.startTime = actx.currentTime - offset;
+    webAudioPlayer.isPlaying = true;
+    webAudioPlayer.card = card;
+
+    card.classList.add('playing');
+    card.dataset.webAudioPlaying = '1';
+    if (playIcon) playIcon.style.display = 'none';
+    if (pauseIcon) pauseIcon.style.display = 'block';
+
+    srcNode.start(0, offset);
+
+    const tick = () => {
+      if (!webAudioPlayer.isPlaying || webAudioPlayer.card !== card) return;
+      const cur = Math.max(0, actx.currentTime - webAudioPlayer.startTime);
+      if (cur >= dur) {
+        stopWebAudio(true);
+        return;
+      }
+      if (slider) slider.value = Math.min(100, Math.max(0, (cur / dur) * 100));
+      if (durationDisplay) durationDisplay.textContent = `${formatAudioTime(cur)} / ${formatAudioTime(dur)}`;
+      webAudioPlayer.rafId = requestAnimationFrame(tick);
+    };
+    webAudioPlayer.rafId = requestAnimationFrame(tick);
+
+    srcNode.onended = () => {
+      if (webAudioPlayer.sourceNode === srcNode && webAudioPlayer.isPlaying) {
+        stopWebAudio(true);
+      }
+    };
+  }
+
+  function playViaWebAudio(card, audio, slider, durationDisplay, playIcon, pauseIcon) {
+    // 1. Попытка взять готовый декодированный AudioBuffer
+    let ab = state.stagedVoiceAudioBuffer || (state.stagedVoiceBlob && state.stagedVoiceBlob._audioBuffer);
+    if (!ab && card) {
+      const rmBtn = card.querySelector('[data-remove-file]');
+      const fileIdx = rmBtn ? Number(rmBtn.dataset.removeFile) : -1;
+      if (fileIdx >= 0 && state.stagedFiles[fileIdx]) {
+        ab = state.stagedFiles[fileIdx]._audioBuffer;
+      }
+    }
+
+    if (ab) {
+      startWebAudioBuffer(ab, card, slider, durationDisplay, playIcon, pauseIcon);
+      return;
+    }
+
+    // 2. Декодируем аудиофайл по URL/blob через fetch
+    const audioUrl = (audio && audio.src) || (card && card.dataset.audioSrc);
+    if (audioUrl) {
+      fetch(audioUrl)
+        .then((r) => r.arrayBuffer())
+        .then((buf) => {
+          const actx = getSharedAudioContext();
+          if (!actx) return;
+          return actx.decodeAudioData(buf);
+        })
+        .then((decodedAb) => {
+          if (decodedAb) {
+            if (state.stagedVoiceBlob) state.stagedVoiceBlob._audioBuffer = decodedAb;
+            state.stagedVoiceAudioBuffer = decodedAb;
+            startWebAudioBuffer(decodedAb, card, slider, durationDisplay, playIcon, pauseIcon);
+          }
+        })
+        .catch((err) => {
+          console.warn('Web Audio API локальное декодирование не удалось, запрашиваем серверный WAV:', err);
+          const tfd = new FormData();
+          tfd.append('audio_b64', audioUrl);
+          fetch('/api/transcode-audio/', { method: 'POST', body: tfd })
+            .then((r) => r.json())
+            .then((data) => {
+              if (data && data.ok && data.wav_data_url) {
+                if (card) {
+                  card.dataset.audioSrc = data.wav_data_url;
+                  if (data.duration) card.dataset.audioDur = String(data.duration);
+                }
+                if (audio) {
+                  audio.src = data.wav_data_url;
+                  try { audio.load(); } catch (_) {}
+                  audio.play().then(() => {
+                    card.classList.add('playing');
+                    if (playIcon) playIcon.style.display = 'none';
+                    if (pauseIcon) pauseIcon.style.display = 'block';
+                  }).catch(() => {
+                    fetch(data.wav_data_url)
+                      .then((r2) => r2.arrayBuffer())
+                      .then((buf2) => getSharedAudioContext()?.decodeAudioData(buf2))
+                      .then((wavAb) => {
+                        if (wavAb) startWebAudioBuffer(wavAb, card, slider, durationDisplay, playIcon, pauseIcon);
+                      }).catch((e2) => console.error('Ошибка воспроизведения транскодированного WAV:', e2));
+                  });
+                }
+              }
+            })
+            .catch((tcErr) => {
+              console.error('Ошибка вызова api_transcode_audio:', tcErr);
+            });
+        });
+    }
+  }
+
+  function initMediaPreviewEvents() {
+    // =========================================================================
+    // Обработчики превью вложений (Лайтбокс, Аудиоплеер, Сворачивание документов)
+    // =========================================================================
+    el('btnCloseImageLightbox')?.addEventListener('click', closeImageLightbox);
+    el('imageLightboxModal')?.addEventListener('click', (e) => {
+      if (e.target === el('imageLightboxModal')) {
+        closeImageLightbox();
+      }
+    });
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        closeImageLightbox();
+      }
+    });
+
+    // Слушатели событий медиа через фазу перехвата (capture), чтобы ловить события на динамически создаваемых <audio>
+    document.addEventListener('loadedmetadata', (e) => {
+      if (e.target && e.target.matches && e.target.matches('audio.js-audio-element')) {
+        handleAudioMetadataLoaded(e.target);
+      }
+    }, true);
+    document.addEventListener('durationchange', (e) => {
+      if (e.target && e.target.matches && e.target.matches('audio.js-audio-element')) {
+        handleAudioMetadataLoaded(e.target);
+      }
+    }, true);
+    document.addEventListener('canplay', (e) => {
+      if (e.target && e.target.matches && e.target.matches('audio.js-audio-element')) {
+        handleAudioMetadataLoaded(e.target);
+      }
+    }, true);
+
+    document.addEventListener('click', (e) => {
+      // 1. Клик по превью фото для открытия лайтбокса
+      const lightboxTrigger = e.target.closest('.js-open-lightbox');
+      if (lightboxTrigger) {
+        e.preventDefault();
+        const src = lightboxTrigger.dataset.lightboxSrc;
+        const title = lightboxTrigger.dataset.lightboxTitle;
+        if (src) openImageLightbox(src, title);
+        return;
+      }
+
+      // 2. Клик по кнопке Play/Pause аудиоплеера
+      const playBtn = e.target.closest('.js-audio-play-toggle');
+      if (playBtn) {
+        e.preventDefault();
+        const card = playBtn.closest('.attachment-card-audio, .staged-card');
+        const audio = card ? card.querySelector('.js-audio-element') : null;
+        if (!audio) return;
+
+        const playIcon = playBtn.querySelector('.play-icon');
+        const pauseIcon = playBtn.querySelector('.pause-icon');
+        const slider = card.querySelector('.js-audio-seek');
+        const durationDisplay = card.querySelector('.js-audio-time') || card.querySelector('.js-audio-duration-display');
+
+        // Если сейчас играет Web Audio API на этой карточке — ставим на паузу
+        if (webAudioPlayer.isPlaying && webAudioPlayer.card === card) {
+          stopWebAudio(false);
+          return;
+        }
+
+        // Если карточка была на паузе в Web Audio режиме — продолжаем воспроизведение
+        if (card.dataset.webAudioPlaying !== undefined) {
+          playViaWebAudio(card, audio, slider, durationDisplay, playIcon, pauseIcon);
+          return;
+        }
+
+        if (audio.paused) {
+          // Останавливаем Web Audio на любой другой карточке
+          stopWebAudio(true);
+
+          // Останавливаем любое другое HTML5 аудио
+          document.querySelectorAll('audio.js-audio-element').forEach((other) => {
+            if (other !== audio && !other.paused) {
+              other.pause();
+              other.currentTime = 0;
+              const otherCard = other.closest('.attachment-card-audio, .staged-card');
+              if (otherCard) {
+                otherCard.classList.remove('playing');
+                const oBtn = otherCard.querySelector('.js-audio-play-toggle');
+                if (oBtn) {
+                  const pI = oBtn.querySelector('.play-icon');
+                  const paI = oBtn.querySelector('.pause-icon');
+                  if (pI) pI.style.display = 'block';
+                  if (paI) paI.style.display = 'none';
+                }
+                const oSlider = otherCard.querySelector('.js-audio-seek');
+                if (oSlider) oSlider.value = 0;
+              }
+            }
+          });
+
+          const dur = getEffectiveAudioDuration(card, audio);
+          if (dur > 0 && (audio.currentTime >= dur - 0.08 || audio.currentTime >= dur)) {
+            audio.currentTime = 0;
+          }
+
+          const desiredSrc = card.dataset.audioSrc || audio.src;
+          if (desiredSrc && (audio.src !== desiredSrc || !audio.src || audio.error)) {
+            audio.src = desiredSrc;
+            try { audio.load(); } catch (_) {}
+          }
+
+          audio.ontimeupdate = () => {
+            const cur = audio.currentTime || 0;
+            const currentDur = getEffectiveAudioDuration(card, audio);
+            if (slider && currentDur > 0) {
+              slider.value = Math.min(100, Math.max(0, (cur / currentDur) * 100));
+            }
+            if (durationDisplay) {
+              if (currentDur > 0) {
+                durationDisplay.textContent = `${formatAudioTime(cur)} / ${formatAudioTime(currentDur)}`;
+              } else {
+                durationDisplay.textContent = formatAudioTime(cur);
+              }
+            }
+            // Автоматическая остановка для WebM с Infinity duration в Chromium
+            if (currentDur > 0 && cur >= currentDur - 0.08) {
+              audio.pause();
+              audio.currentTime = 0;
+              card.classList.remove('playing');
+              if (playIcon) playIcon.style.display = 'block';
+              if (pauseIcon) pauseIcon.style.display = 'none';
+              if (slider) slider.value = 0;
+              if (durationDisplay) {
+                durationDisplay.textContent = `0:00 / ${formatAudioTime(currentDur)}`;
+              }
+            }
+          };
+
+          audio.onended = () => {
+            card.classList.remove('playing');
+            if (playIcon) playIcon.style.display = 'block';
+            if (pauseIcon) pauseIcon.style.display = 'none';
+            if (slider) slider.value = 0;
+            const endDur = getEffectiveAudioDuration(card, audio);
+            if (durationDisplay && endDur > 0) {
+              durationDisplay.textContent = `0:00 / ${formatAudioTime(endDur)}`;
+            }
+          };
+
+          // Попытка воспроизведения через нативный HTML5 audio
+          let playPromise;
+          try {
+            playPromise = audio.play();
+          } catch (syncErr) {
+            playPromise = Promise.reject(syncErr);
+          }
+
+          if (playPromise && typeof playPromise.then === 'function') {
+            playPromise.then(() => {
+              card.classList.add('playing');
+              if (playIcon) playIcon.style.display = 'none';
+              if (pauseIcon) pauseIcon.style.display = 'block';
+            }).catch((err) => {
+              console.warn('HTML5 Audio play failed, starting Web Audio API fallback:', err);
+              playViaWebAudio(card, audio, slider, durationDisplay, playIcon, pauseIcon);
+            });
+          } else {
+            card.classList.add('playing');
+            if (playIcon) playIcon.style.display = 'none';
+            if (pauseIcon) pauseIcon.style.display = 'block';
+          }
+        } else {
+          audio.pause();
+          card.classList.remove('playing');
+          if (playIcon) playIcon.style.display = 'block';
+          if (pauseIcon) pauseIcon.style.display = 'none';
+        }
+        return;
+      }
+
+      // 3. Разворачивание/сворачивание предпросмотра фрагмента документа в чате
+      const toggleDocBtn = e.target.closest('.js-toggle-doc-preview');
+      if (toggleDocBtn) {
+        e.preventDefault();
+        const wrap = toggleDocBtn.closest('.doc-preview-collapse');
+        if (wrap) {
+          const content = wrap.querySelector('.doc-preview-content');
+          if (content) {
+            content.classList.toggle('open');
+            const chevron = toggleDocBtn.querySelector('.chevron-icon');
+            if (chevron) {
+              chevron.style.transform = content.classList.contains('open') ? 'rotate(180deg)' : 'none';
+            }
+          }
+        }
+        return;
+      }
+
+      // 4. Клик по кнопке подробной инспекции документа в чате ("Просмотреть")
+      const chatDocBtn = e.target.closest('.js-chat-inspect-doc');
+      if (chatDocBtn) {
+        e.preventDefault();
+        const jsonStr = chatDocBtn.dataset.docJson;
+        if (jsonStr) {
+          try {
+            const parsed = JSON.parse(jsonStr);
+            openDocumentPreviewModal(parsed);
+          } catch (_) {}
+        }
+        return;
+      }
+    });
+
+    // Перемотка аудио по перетаскиванию ползунка (seek slider)
+    document.addEventListener('input', (e) => {
+      const slider = e.target.closest('.js-audio-seek');
+      if (!slider) return;
+      const card = slider.closest('.attachment-card-audio, .staged-card');
+      const audio = card ? card.querySelector('.js-audio-element') : null;
+      const durationDisplay = card ? (card.querySelector('.js-audio-time') || card.querySelector('.js-audio-duration-display')) : null;
+      if (!audio) return;
+      const dur = getEffectiveAudioDuration(card, audio);
+      if (dur > 0) {
+        const frac = Math.min(100, Math.max(0, Number(slider.value))) / 100;
+        const target = Math.max(0, Math.min(dur, frac * dur));
+        if (isFinite(target)) {
+          if (webAudioPlayer.card === card || card.dataset.webAudioPlaying !== undefined) {
+            webAudioPlayer.pausedAt = target;
+            if (webAudioPlayer.isPlaying) {
+              const playIcon = card.querySelector('.play-icon');
+              const pauseIcon = card.querySelector('.pause-icon');
+              playViaWebAudio(card, audio, slider, durationDisplay, playIcon, pauseIcon);
+            }
+          } else {
+            try {
+              audio.currentTime = target;
+            } catch (err) {
+              console.warn('Audio seek error:', err);
+            }
+          }
+          if (durationDisplay) {
+            durationDisplay.textContent = `${formatAudioTime(target)} / ${formatAudioTime(dur)}`;
+          }
+        }
+      }
+    });
+
+    // Модальное окно предпросмотра данных документа для модели
+    el('btnCloseDocPreviewModal')?.addEventListener('click', closeDocumentPreviewModal);
+    el('documentPreviewModal')?.addEventListener('click', (e) => {
+      if (e.target === el('documentPreviewModal')) closeDocumentPreviewModal();
+    });
+
+    el('btnCopyDocPreviewText')?.addEventListener('click', () => {
+      const text = el('docPreviewCodeBox')?.textContent || '';
+      if (!text) return;
+      navigator.clipboard.writeText(text).then(() => {
+        const lbl = el('btnCopyDocPreviewLabel');
+        if (lbl) {
+          lbl.textContent = 'Скопировано!';
+          setTimeout(() => { lbl.textContent = 'Копировать'; }, 2000);
+        }
+      }).catch(() => {});
+    });
+
+    // Закрытие модалок клавишей Escape
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        closeImageLightbox();
+        closeDocumentPreviewModal();
       }
     });
   }

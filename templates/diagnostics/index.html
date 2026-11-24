@@ -213,24 +213,7 @@
 
     <!-- 2. ЦЕНТРАЛЬНАЯ ПАНЕЛЬ: ДИАЛОГ С ЭКСПЕРТОМ И ДОК ВВОДА -->
     <section class="panel-main" id="panelMain" aria-label="Рабочая область диагностики">
-      <div class="vehicle-bar" id="vehicleBar">
-        <span class="vehicle-bar-label" title="Профиль автомобиля в текущей сессии">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M19 17h2c.6 0 1-.4 1-1v-3c0-.9-.7-1.7-1.5-1.9C18.7 10.6 16 10 16 10s-1.3-1.4-2.2-2.3c-.5-.4-1.1-.7-1.8-.7H5c-.6 0-1.1.4-1.4.9l-1.4 2.9A3.7 3.7 0 0 0 2 12v4c0 .6.4 1 1 1h2"/>
-            <circle cx="7" cy="17" r="2"/><path d="M9 17h6"/><circle cx="17" cy="17" r="2"/>
-          </svg>
-          <span>Авто</span>
-        </span>
-        <input
-          type="text"
-          id="vehicleInfoInput"
-          class="vehicle-input"
-          value="{{ current_session.vehicle_info|default:'' }}"
-          placeholder="Марка, модель, двигатель (напр. Skoda Octavia 1.4 TSI)"
-          aria-label="Автомобиль в текущей сессии диагностики"
-          autocomplete="off"
-        />
-      </div>
+      <input type="hidden" id="vehicleInfoInput" value="{{ current_session.vehicle_info|default:'Универсальный профиль OBD-II' }}" />
 
       <!-- Панель массового управления и удаления сообщений (Чекбоксы / Выделить все) -->
       <div class="chat-selection-toolbar" id="chatSelectionToolbar" style="display:none;" aria-label="Управление сообщениями">
@@ -308,12 +291,6 @@
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1 0-5H20"/>
                 <path d="M9 7h6"/><path d="M9 11h6"/>
-              </svg>
-            </button>
-
-            <button type="button" class="btn-tool" id="btnOpenObdModal" title="Сканер OBD-II / ELM327 (USB / Bluetooth)" aria-label="Сканер OBD-II">
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <rect x="3" y="5" width="18" height="14" rx="2"/><line x1="7" y1="15" x2="7" y2="9"/><line x1="12" y1="15" x2="12" y2="9"/><line x1="17" y1="15" x2="17" y2="9"/>
               </svg>
             </button>
 
@@ -427,7 +404,7 @@
       </div>
       <div style="padding: 12px 16px; display:flex; align-items:center; justify-content:space-between; gap:8px; flex-wrap:wrap;">
         <button type="button" class="chip-scenario" id="btnSwitchCameraFacing">Сменить камеру (Тыл/Фронт)</button>
-        <button type="button" class="chip-scenario" id="btnOpenObdModalFromCamera" title="Подключить сканер OBD-II / ELM327 (USB / Bluetooth)">🔌 Сканер OBD-II / ELM327</button>
+        <button type="button" class="chip-scenario" id="btnGenerateTestShot">Тестовый кадр приборной панели</button>
         <button type="button" class="btn-send" id="btnCapturePhoto">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="4"/>
@@ -447,11 +424,11 @@
 
     <div class="ar-top-status">
       <div class="ar-submode-toggle" aria-label="Подрежим AR / VR">
-        <button type="button" class="btn-attach-code active" id="btnArModeRayneo" title="Прозрачный фон для портативных AR-очков">🕶️ Портативные AR-очки (Прозрачный)</button>
-        <button type="button" class="btn-attach-code" id="btnArModePassthrough" title="Трансляция видео с камеры на весь экран как фон в VR режиме">📹 VR режим (Камера-фон)</button>
+        <button type="button" class="btn-attach-code active" id="btnArModeRayneo" title="Прозрачный чистый черный фон для оптических очков RayNeo">RayNeo Optical (#000000)</button>
+        <button type="button" class="btn-attach-code" id="btnArModePassthrough" title="Трансляция видео с камеры на весь экран как фон в VR режиме">VR режим</button>
       </div>
 
-      <button type="button" class="btn-attach-code" id="btnArSwitchBgCamera" title="Переключить камеру фона в VR режиме (Тыл / Фронт)" style="display:none;" disabled>
+      <button type="button" class="btn-attach-code" id="btnArSwitchBgCamera" title="Переключить камеру фона в VR режиме (Тыл / Фронт)">
         Сменить камеру VR
       </button>
 
@@ -581,7 +558,7 @@
             <p class="settings-desc" style="margin-bottom: 10px;">
               Вы находитесь в <strong>Демо-режиме</strong>. Все функции диагностики доступны, однако история чатов, проекты и файлы <strong>не сохраняются</strong> на сервере и в базе данных.
             </p>
-            <button type="button" class="btn-auth-submit" id="btnOpenAuthModal" style="margin-top:0;">
+            <button type="button" class="btn-send" id="btnOpenAuthModal" style="width:100%; justify-content:center;">
               <span>Войти / Зарегистрироваться</span>
             </button>
           </div>
@@ -746,159 +723,14 @@
           <label class="custom-dialog-label" for="authPasswordInput">Пароль</label>
           <input type="password" id="authPasswordInput" class="custom-dialog-input" placeholder="Не менее 6 символов" required autocomplete="current-password" />
         </div>
-        <div class="custom-dialog-input-group" id="authTermsGroup" style="display:none; margin-top:4px;">
-          <label style="display:flex; align-items:flex-start; gap:8px; font-size:0.78rem; color:var(--text-secondary); cursor:pointer; line-height:1.4;">
-            <input type="checkbox" id="authTermsCheckbox" class="custom-checkbox" style="margin-top:2px; flex-shrink:0;" />
-            <span>Я принимаю <a href="/terms/" target="_blank" style="color:var(--accent-orange); text-decoration:underline;">Пользовательское соглашение</a> и <a href="/privacy/" target="_blank" style="color:var(--accent-orange); text-decoration:underline;">Политику конфиденциальности</a></span>
-          </label>
-        </div>
-        <button type="submit" class="btn-auth-submit" id="btnSubmitAuth">
+        <button type="submit" class="btn-send" id="btnSubmitAuth" style="width:100%; justify-content:center; margin-top:8px;">
           <span>Войти</span>
         </button>
       </form>
     </div>
   </div>
 
-  <!-- ====================================================================
-       МОДАЛЬНОЕ ОКНО: ЛАЙТБОКС ПРОСМОТРА ИЗОБРАЖЕНИЙ (ФОТО И СХЕМ)
-       ==================================================================== -->
-  <div class="modal-backdrop image-lightbox-backdrop" id="imageLightboxModal" role="dialog" aria-modal="true" aria-hidden="true" style="display:none;">
-    <div class="image-lightbox-card">
-      <div class="image-lightbox-header">
-        <div class="image-lightbox-title-box">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <rect width="18" height="18" x="3" y="3" rx="2" ry="2"/>
-            <circle cx="9" cy="9" r="2"/>
-            <path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/>
-          </svg>
-          <span class="image-lightbox-title" id="imageLightboxTitle">Просмотр изображения</span>
-        </div>
-        <button type="button" class="btn-icon-top image-lightbox-close" id="btnCloseImageLightbox" aria-label="Закрыть просмотр">✕</button>
-      </div>
-      <div class="image-lightbox-body">
-        <img src="" alt="Просмотр изображения" class="image-lightbox-img" id="imageLightboxImg" />
-      </div>
-    </div>
-  </div>
-
-  <!-- ====================================================================
-       МОДАЛЬНОЕ ОКНО: ПРЕДПРОСМОТР СОДЕРЖИМОГО ДОКУМЕНТА ДЛЯ МОДЕЛИ (GEMMA 4)
-       ==================================================================== -->
-  <div class="modal-backdrop doc-preview-modal-backdrop" id="documentPreviewModal" role="dialog" aria-modal="true" aria-hidden="true" style="display:none;">
-    <div class="doc-preview-modal-card">
-      <div class="doc-preview-modal-header">
-        <div class="doc-preview-modal-title-box">
-          <div class="doc-badge-pill staged-icon-pdf" id="docPreviewBadge">DOC</div>
-          <div style="min-width:0;">
-            <h3 class="doc-preview-modal-title" id="docPreviewTitle">Документ</h3>
-            <div class="doc-preview-modal-subtitle" id="docPreviewSubtitle">Точные данные, передаваемые в контекст Gemma 4</div>
-          </div>
-        </div>
-        <button type="button" class="btn-icon-top doc-preview-close" id="btnCloseDocPreviewModal" aria-label="Закрыть предпросмотр">✕</button>
-      </div>
-
-      <div class="doc-preview-modal-stats">
-        <div class="doc-status-pill doc-status-full" id="docPreviewModePill">
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
-          <span id="docPreviewModeText">Полный разбор</span>
-        </div>
-        <div class="doc-stat-pill">
-          <span>Символов: <strong id="docPreviewChars">0</strong></span>
-        </div>
-        <div class="doc-stat-pill" id="docPreviewDtcWrap" style="display:none;">
-          <span>Коды DTC: <strong id="docPreviewDtcCount">0</strong></span>
-        </div>
-        <div class="doc-stat-pill" id="docPreviewImagesWrap" style="display:none;">
-          <span>Схем/фото: <strong id="docPreviewImagesCount">0</strong></span>
-        </div>
-      </div>
-
-      <div class="doc-preview-modal-body">
-        <div class="doc-preview-section-header">
-          <span class="doc-preview-section-title">Что отправляется в модель (LLM prompt text):</span>
-          <button type="button" class="btn-copy-preview" id="btnCopyDocPreviewText" title="Скопировать текст для модели">
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
-            <span id="btnCopyDocPreviewLabel">Копировать</span>
-          </button>
-        </div>
-        <pre class="doc-preview-code-box" id="docPreviewCodeBox">Загрузка данных документа...</pre>
-
-        <div class="doc-preview-images-section" id="docPreviewImagesSection" style="display:none;">
-          <div class="doc-preview-section-header" style="margin-top:14px;">
-            <span class="doc-preview-section-title">Извлечённые схемы и иллюстрации (Gemma Vision):</span>
-          </div>
-          <div class="doc-preview-images-grid" id="docPreviewImagesGrid"></div>
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <!-- ====================================================================
-       МОДАЛЬНОЕ ОКНО: СКАНЕР OBD-II / ELM327
-       ==================================================================== -->
-  <div class="modal-backdrop" id="obdModal" role="dialog" aria-modal="true" aria-labelledby="obdModalTitle" style="display:none;">
-    <div class="obd-modal-card">
-      <div class="panel-section-header">
-        <span id="obdModalTitle">Диагностический сканер OBD-II (ELM327)</span>
-        <button type="button" class="btn-icon-top" id="btnCloseObdModal" aria-label="Закрыть окно OBD-II">✕</button>
-      </div>
-      <div style="padding: 18px 20px; display:flex; flex-direction:column; gap:14px;">
-        <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap;">
-          <div style="display:flex; align-items:center; gap:8px;">
-            <span class="status-dot" id="obdStatusDot" style="background:#64748b;"></span>
-            <span id="obdStatusText" style="font-size:0.85rem; font-weight:600; color:var(--text-secondary);">Не подключен</span>
-          </div>
-          <div style="display:flex; gap:6px;">
-            <button type="button" class="chip-scenario" id="btnObdConnectSerial" title="Подключить ELM327 через USB кабель (COM порт)">USB / Кабель</button>
-            <button type="button" class="chip-scenario" id="btnObdConnectBluetooth" title="Беспроводное подключение Bluetooth ELM327">Bluetooth</button>
-            <button type="button" class="chip-scenario" id="btnObdConnectDemo" title="Включить виртуальную эмуляцию автомобиля">Демо-стенд</button>
-          </div>
-        </div>
-
-        <div class="obd-telemetry-grid">
-          <div class="obd-tile">
-            <span class="obd-tile-title">Обороты ДВС</span>
-            <span class="obd-tile-value" id="obdValRpm">—</span>
-          </div>
-          <div class="obd-tile">
-            <span class="obd-tile-title">Скорость</span>
-            <span class="obd-tile-value" id="obdValSpeed">—</span>
-          </div>
-          <div class="obd-tile">
-            <span class="obd-tile-title">Температура ОЖ</span>
-            <span class="obd-tile-value" id="obdValTemp">—</span>
-          </div>
-          <div class="obd-tile">
-            <span class="obd-tile-title">Дроссель</span>
-            <span class="obd-tile-value" id="obdValThrottle">—</span>
-          </div>
-        </div>
-
-        <div id="obdDtcResultBox" style="font-size:0.82rem; color:var(--text-secondary); background:var(--bg-elevated); padding:10px 12px; border-radius:8px; border:1px solid var(--border-subtle); display:none;">
-          <strong>Обнаруженные ошибки:</strong> <span id="obdDtcListText">—</span>
-        </div>
-
-        <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; margin-top:6px; flex-wrap:wrap;">
-          <button type="button" class="btn-action-ghost" id="btnObdReadDtc">Считать ошибки (DTC)</button>
-          <button type="button" class="btn-action-ghost" id="btnObdReadVin">Определить VIN</button>
-          <button type="button" class="btn-action-danger" id="btnObdDisconnect" style="display:none;">Отключить</button>
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <!-- ====================================================================
-       МИНИ-БАННЕР СОГЛАСИЯ НА COOKIES И ХРАНИЛИЩЕ
-       ==================================================================== -->
-  <div id="cookieBanner" class="cookie-banner" style="display:none;">
-    <div class="cookie-banner-content">
-      <span>Мы используем cookie и локальное хранилище для сохранения диагностических сессий и настроек. Продолжая работу, вы соглашаетесь с <a href="/privacy/" target="_blank">Политикой конфиденциальности</a> и <a href="/terms/" target="_blank">Пользовательским соглашением</a>.</span>
-      <button type="button" class="btn-cookie-accept" id="btnAcceptCookies">Принять</button>
-    </div>
-  </div>
-
   <script id="initialHardwareTelemetry" type="application/json">{{ hw_telemetry_json|safe }}</script>
-  <script src="{% static 'js/obd2.js' %}"></script>
   <script src="{% static 'js/app.js' %}"></script>
 </body>
 </html>

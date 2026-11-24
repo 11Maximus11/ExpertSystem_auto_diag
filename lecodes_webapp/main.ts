@@ -1,16 +1,26 @@
 /**
- * Главная точка входа Android-оболочки ИИдеал-Авто на базе библиотеки le.codes.
+ * Главная точка входа Android-приложения и веб-клиента ИИдеал-Авто на базе библиотеки le.codes.
  *
- * Назначение:
- * - Полноценная нативная Android-оболочка для существующего PWA-приложения.
- * - Полный аппаратный проброс OBD-II (Web Bluetooth, Web Serial, BLE).
- * - Скрытое Инженерное Меню (Dev Mode) для динамической смены базового адреса (IP и порт)
- *   тестового стенда (эмулятор Visual Studio .NET Android SDK 10.0.2.2:8000 / Wi-Fi стенд).
- * - Нативный автомобильный HUD-оверлей с датчиками телеметрии (RPM, Speed, Temp, Voltage).
- * - Двунаправленный мост между PWA и оболочкой le.codes через UIWebViewNode bridge.
+ * Архитектура:
+ * - 100% нативные разделы и графика (UIScreen, UITabs, UIColumn, UIRow, MetricCard, DtcChip, UIModal).
+ * - Полная поддержка протокола ELM327 (Web Bluetooth, Web Serial, Demo Simulator).
+ * - Бэкенд подключен к Django REST API (/api/ask/, /api/sessions/, /api/dtc/, /api/settings/).
+ * - Инженерное меню (Dev Mode) для динамической смены домена/IP бэкенда при отладке в эмуляторе
+ *   (10.0.2.2:8000), на локальном ПК (localhost:8000) или в Wi-Fi сети (192.168.x.x:8000).
+ * - Адаптивная мобильная верстка без переполнений и проблем с масштабированием на вертикальных экранах.
  *
  * Лицензия: GPL-3.0
  */
+
+import { apiClient } from "./src/api/BackendApiClient";
+import { cacheManager } from "./src/cache/ResourceCacheManager";
+import { obdProtocol } from "./src/obd/ELM327Protocol";
+import { createDiagnosticsScreen } from "./src/ui/DiagnosticsScreen";
+import { createDtcDictionaryScreen } from "./src/ui/DtcDictionaryScreen";
+import { createObdScannerScreen } from "./src/ui/ObdScannerScreen";
+import { createSessionsHistoryScreen } from "./src/ui/SessionsHistoryScreen";
+import { createSettingsScreen } from "./src/ui/SettingsScreen";
+import { PrimaryButton, SecondaryButton } from "./src/ui/components";
 
 // 1. Конфигурация темы приложения le.codes
 theme({
@@ -24,328 +34,134 @@ theme({
 });
 
 // 2. Реактивное состояние оболочки
-// Адрес сервера по умолчанию для Android-эмулятора (loopback к хосту ПК)
 const DEFAULT_URL = "http://10.0.2.2:8000";
+const serverUrl = signal<string>(apiClient.getBaseUrl() || DEFAULT_URL).stored("pwa_server_url");
 
-// Постоянно хранимый в памяти устройства адрес сервера
-const serverUrl = signal<string>(DEFAULT_URL).stored("pwa_server_url");
-
-// Состояния диалогов и оверлеев
-const isDevMenuOpen = signal<boolean>(false);
-const isHudVisible = signal<boolean>(false);
-const statusText = signal<string>("Оболочка активна");
-const isConnected = signal<boolean>(true);
-const toastText = signal<string>("");
+if (serverUrl.value) {
+  apiClient.setBaseUrl(serverUrl.value);
+}
 
 // Диагностика сети в инженерном меню
 const pingLatency = signal<string>("не проверялась");
 const isPinging = signal<boolean>(false);
 const urlInputValue = signal<string>(serverUrl.value || DEFAULT_URL);
 
-// Состояние телеметрии OBD-II для native HUD
+// Состояние телеметрии OBD-II для быстрого оверлея
 const obdState = signal({
   rpm: 0,
   speed: 0,
-  coolantTemp: 88,
+  coolantTemp: 0,
   batteryVoltage: 12.6,
-  status: "ELM327 BLE готов"
+  status: "ELM327 готов"
 });
 
-let simInterval: any = null;
+const isHudVisible = signal<boolean>(false);
 
-// Счётчик кликов для скрытого инженерного меню (нужно 7 кликов)
-let clickCount = 0;
-let lastClickTime = 0;
+obdProtocol.onSensorsUpdate = (s) => {
+  obdState.value = {
+    rpm: s.rpm,
+    speed: s.speed,
+    coolantTemp: s.coolantTemp,
+    batteryVoltage: s.voltage,
+    status: obdProtocol.getStatusMessage()
+  };
+};
 
-function handleSecretClick() {
-  const now = Date.now();
-  if (now - lastClickTime > 2500) {
-    clickCount = 0;
-  }
-  lastClickTime = now;
-  clickCount++;
-
-  if (clickCount >= 7) {
-    clickCount = 0;
-    urlInputValue.value = serverUrl.value;
-    toastText.value = "Режим разработчика активирован!";
-    devMenuModal.show();
-  } else if (clickCount >= 3) {
-    const left = 7 - clickCount;
-    toastText.value = `Инженерное меню: осталось кликов: ${left}`;
-  }
-}
-
-// 3. Создание узла UIWebViewNode для отображения PWA
-const webNode = UIWebViewNode({
-  url: serverUrl.value || DEFAULT_URL,
-  bridge: true,
-  externalLinks: "open"
-}).style({
-  flex: 1,
-  width: "100%",
-  height: "100%",
-  backgroundColor: "#0a0f1d"
-});
-
-// Обработчики событий WebView
-webNode.onLoad((ev) => {
-  isConnected.value = true;
-  statusText.value = `Стенд подключен (${ev.title || "PWA"})`;
-  toastText.value = "";
-});
-
-webNode.onError((ev) => {
-  isConnected.value = false;
-  statusText.value = `Ошибка стенда: ${ev.message}`;
-  toastText.value = `Не удалось связаться с ${serverUrl.value}. Проверьте инженерное меню (⚙)`;
-});
-
-webNode.onMessage((ev) => {
-  const data = ev.data as any;
-  if (data && typeof data === "object") {
-    if (data.action === "open_engineering_menu") {
-      urlInputValue.value = serverUrl.value;
-      devMenuModal.show();
-    } else if (data.action === "toggle_hud") {
-      isHudVisible.value = !isHudVisible.value;
-    } else if (data.action === "obd_data" && data.payload) {
-      obdState.value = { ...obdState.value, ...data.payload };
-    }
-  }
-});
-
-// Симуляция OBD для тестирования HUD
-function toggleObdSimulation() {
-  if (simInterval) {
-    clearInterval(simInterval);
-    simInterval = null;
-    obdState.value = {
-      rpm: 0,
-      speed: 0,
-      coolantTemp: 88,
-      batteryVoltage: 12.6,
-      status: "ELM327 BLE отключен"
-    };
-    return;
-  }
-  let step = 0;
-  simInterval = setInterval(() => {
-    step++;
-    const simRpm = 800 + Math.floor(Math.sin(step * 0.2) * 1200 + Math.random() * 80);
-    const simSpeed = Math.max(0, Math.floor(Math.sin(step * 0.1) * 60 + 20));
-    obdState.value = {
-      rpm: Math.max(700, simRpm),
-      speed: simSpeed,
-      coolantTemp: 90 + Math.floor(Math.sin(step * 0.05) * 4),
-      batteryVoltage: 14.1,
-      status: "ELM327 BLE • Данные передаются"
-    };
-  }, 300);
-}
-
-// 4. Плавающая панель управления и статуса (Automotive Header Bar)
-const headerBar = UIRow(
-  // Левая колонка: бренд и статус
-  UIColumn(
-    UIRow(
-      UIText("ИИдеал-Авто").style({
-        fontSize: 14,
-        fontWeight: "bold",
-        color: "#f8fafc"
-      }),
-      UIText("• le.codes").style({
-        fontSize: 12,
-        color: "#38bdf8",
-        marginLeft: 4
-      })
-    ).style({ alignItems: "center" }),
-
-    UIText(() => statusText.value).style({
-      fontSize: 10,
-      color: () => (isConnected.value ? "#10b981" : "#ef4444"),
-      marginTop: 2
-    })
-  ).style({ flex: 1 }),
-
-  // Кнопка переключения OBD-II HUD
-  UIButton(
-    UIText(() => (isHudVisible.value ? "✕ HUD" : "⚡ HUD")).style({
-      fontSize: 11,
-      fontWeight: "600",
-      color: () => (isHudVisible.value ? "#38bdf8" : "#94a3b8")
-    })
-  )
-    .style({
-      backgroundColor: "#1e293b",
-      paddingHorizontal: 10,
-      paddingVertical: 6,
-      borderRadius: 6,
-      marginRight: 8
-    })
-    .onClick(() => {
-      isHudVisible.value = !isHudVisible.value;
-    }),
-
-  // Кнопка версии (секретный триггер: 7 кликов открывают Инженерное меню)
-  UIButton(
-    UIText("v1.0.0 ⚙").style({
-      fontSize: 11,
-      color: "#cbd5e1"
-    })
-  )
-    .style({
-      backgroundColor: "#1e293b",
-      paddingHorizontal: 8,
-      paddingVertical: 6,
-      borderRadius: 6,
-      borderColor: "#334155",
-      borderWidth: 1
-    })
-    .onClick(() => {
-      handleSecretClick();
-    })
-).style({
-  height: 48,
-  backgroundColor: "rgba(10, 15, 29, 0.92)",
-  paddingHorizontal: 14,
-  alignItems: "center",
-  borderBottomWidth: 1,
-  borderColor: "#1e293b"
-});
-
-// Всплывающее уведомление-подсказка при кликах
-const toastBar = UIRow(
-  UIText(() => toastText.value).style({
-    fontSize: 11,
-    color: "#f59e0b",
-    textAlign: "center",
-    flex: 1
-  })
-).style({
-  backgroundColor: "rgba(30, 41, 59, 0.95)",
-  paddingVertical: 4,
-  paddingHorizontal: 12,
-  display: () => (toastText.value ? "flex" : "none")
-});
-
-// 5. Автомобильный оверлей OBD-II HUD (выдвигается сверху/снизу)
-const obdHudOverlay = UIBox(
+// 3. Быстрый выдвижной мини-HUD бар (телеметрия над экранами)
+const obdMiniHud = UIColumn(
   UIRow(
-    // Датчик Обороты
     UIColumn(
-      UIText("ОБОРОТЫ").style({ fontSize: 9, color: "#64748b", fontWeight: "bold" }),
-      UIText(() => `${obdState.value.rpm}`).style({ fontSize: 20, fontWeight: "bold", color: "#38bdf8" }),
-      UIText("об/мин").style({ fontSize: 9, color: "#94a3b8" })
+      UIText("RPM").style({ fontSize: 9, color: "#64748b", fontWeight: "bold" }),
+      UIText(() => `${obdState.value.rpm}`).style({ fontSize: 16, fontWeight: "bold", color: "#38bdf8" })
     ).style({ flex: 1, alignItems: "center" }),
 
-    // Датчик Скорость
     UIColumn(
-      UIText("СКОРОСТЬ").style({ fontSize: 9, color: "#64748b", fontWeight: "bold" }),
-      UIText(() => `${obdState.value.speed}`).style({ fontSize: 20, fontWeight: "bold", color: "#10b981" }),
-      UIText("км/ч").style({ fontSize: 9, color: "#94a3b8" })
+      UIText("Скорость").style({ fontSize: 9, color: "#64748b", fontWeight: "bold" }),
+      UIText(() => `${obdState.value.speed}`).style({ fontSize: 16, fontWeight: "bold", color: "#22c55e" })
     ).style({ flex: 1, alignItems: "center" }),
 
-    // Датчик ОЖ
     UIColumn(
-      UIText("ТЕМП. ОЖ").style({ fontSize: 9, color: "#64748b", fontWeight: "bold" }),
-      UIText(() => `${obdState.value.coolantTemp}°`).style({ fontSize: 20, fontWeight: "bold", color: "#f59e0b" }),
-      UIText("Cels").style({ fontSize: 9, color: "#94a3b8" })
+      UIText("ОЖ").style({ fontSize: 9, color: "#64748b", fontWeight: "bold" }),
+      UIText(() => `${obdState.value.coolantTemp}°`).style({ fontSize: 16, fontWeight: "bold", color: "#f59e0b" })
     ).style({ flex: 1, alignItems: "center" }),
 
-    // Датчик АКБ
     UIColumn(
       UIText("АКБ").style({ fontSize: 9, color: "#64748b", fontWeight: "bold" }),
-      UIText(() => `${obdState.value.batteryVoltage}`).style({ fontSize: 20, fontWeight: "bold", color: "#a855f7" }),
-      UIText("Вольт").style({ fontSize: 9, color: "#94a3b8" })
-    ).style({ flex: 1, alignItems: "center" })
-  ).style({
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    backgroundColor: "rgba(18, 26, 45, 0.95)",
-    borderBottomWidth: 1,
-    borderColor: "#2563eb"
-  }),
+      UIText(() => `${obdState.value.batteryVoltage.toFixed(1)}V`).style({ fontSize: 16, fontWeight: "bold", color: "#a855f7" })
+    ).style({ flex: 1, alignItems: "center" }),
 
-  UIRow(
-    UIText(() => `Статус: ${obdState.value.status}`).style({
-      fontSize: 10,
-      color: "#94a3b8",
-      flex: 1
-    }),
     UIButton(
-      UIText(() => (simInterval ? "Остановить тест" : "Тест датчиков")).style({
+      UIText(() => (obdProtocol.getStatus() === "connected" && obdProtocol.getTransportType() === "demo" ? "Стоп тест" : "Демо")).style({
         fontSize: 10,
-        color: "#ffffff"
+        color: "#ffffff",
+        fontWeight: "bold"
       })
     )
       .style({
         backgroundColor: "#2563eb",
         paddingHorizontal: 8,
-        paddingVertical: 4,
-        borderRadius: 4
+        paddingVertical: 5,
+        borderRadius: 6
       })
       .onClick(() => {
-        toggleObdSimulation();
+        if (obdProtocol.getStatus() === "connected" && obdProtocol.getTransportType() === "demo") {
+          obdProtocol.disconnect();
+        } else {
+          obdProtocol.connect("demo");
+        }
       })
   ).style({
     paddingHorizontal: 12,
-    paddingVertical: 4,
-    backgroundColor: "rgba(10, 15, 29, 0.95)",
-    alignItems: "center"
+    paddingVertical: 6,
+    backgroundColor: "rgba(10, 15, 29, 0.96)",
+    borderBottomWidth: 1,
+    borderColor: "#2563eb",
+    alignItems: "center",
+    width: "100%"
   })
 ).style({
+  width: "100%",
   display: () => (isHudVisible.value ? "flex" : "none")
 });
 
-// 6. Скрытое Инженерное Меню (Dev Mode) — реализовано через UIModal библиотеки le.codes
-const devUrlInput = UIInput({
-  placeholder: "http://10.0.2.2:8000",
-  type: "url",
-  enterKey: "done"
-}).style({
-  backgroundColor: "#0a0f1d",
-  borderColor: "#2563eb",
-  borderWidth: 1,
-  borderRadius: 8,
-  paddingHorizontal: 12,
-  paddingVertical: 10,
-  color: "#f8fafc",
-  fontSize: 14,
-  marginTop: 8
-});
+// 4. Модальное Инженерное Меню (Dev Mode)
+let devUrlInput: any = null;
+devUrlInput = UIInput()
+  .style({
+    placeholder: "http://10.0.2.2:8000",
+    backgroundColor: "#0a0f1d",
+    borderColor: "#2563eb",
+    borderWidth: 1,
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    color: "#f8fafc",
+    fontSize: 13,
+    marginTop: 6,
+    width: "100%"
+  })
+  .onChange((val: string) => {
+    urlInputValue.value = val;
+  });
+devUrlInput.value = urlInputValue.value;
 
-// Связываем изменение текста в поле ввода
-devUrlInput.onChange((val) => {
-  urlInputValue.value = val;
-});
-
-// Вспомогательная функция проверки связи со стендом (Ping)
 async function testServerConnection(targetUrl: string) {
   isPinging.value = true;
   pingLatency.value = "Запрос отправлен...";
-  const startTime = Date.now();
   try {
-    const cleanUrl = targetUrl.replace(/\/+$/, "");
-    const res = await fetch(`${cleanUrl}/api/settings/`, {
-      method: "GET",
-      headers: { Accept: "application/json" }
-    });
-    const elapsed = Date.now() - startTime;
+    const res = await apiClient.testConnection(targetUrl);
     if (res.ok) {
-      pingLatency.value = `✓ Связь есть! HTTP ${res.status} (${elapsed} мс)`;
+      pingLatency.value = `✓ ${res.message}`;
     } else {
-      pingLatency.value = `⚠️ Ответ стенда HTTP ${res.status} (${elapsed} мс)`;
+      pingLatency.value = `⚠️ ${res.message}`;
     }
   } catch (err: any) {
-    const elapsed = Date.now() - startTime;
-    pingLatency.value = `✗ Стенд недоступен (${elapsed} мс): ${err?.message || "Ошибка сети"}`;
+    pingLatency.value = `✗ Ошибка: ${err?.message || "Сервер недоступен"}`;
   } finally {
     isPinging.value = false;
   }
 }
 
-// Пресетные кнопки быстрого выбора адреса
 function createPresetButton(title: string, presetUrl: string) {
   return UIButton(
     UIText(title).style({
@@ -360,163 +176,176 @@ function createPresetButton(title: string, presetUrl: string) {
       borderWidth: 1,
       borderRadius: 6,
       paddingHorizontal: 8,
-      paddingVertical: 6,
-      marginRight: 6
+      paddingVertical: 5,
+      marginRight: 4,
+      marginBottom: 4
     })
     .onClick(() => {
       urlInputValue.value = presetUrl;
-      devUrlInput.value = presetUrl;
+      if (devUrlInput) {
+        devUrlInput.value = presetUrl;
+      }
     });
 }
 
 const devMenuModal = UIModal(
   UIColumn(
-    // Заголовок модального окна
     UIRow(
       UIText("🛠️ Инженерное меню (Dev Mode)").style({
-        fontSize: 16,
+        fontSize: 15,
         fontWeight: "bold",
         color: "#f8fafc",
         flex: 1
       }),
       UIButton(
-        UIText("✕").style({
-          fontSize: 16,
-          color: "#94a3b8"
-        })
+        UIText("✕").style({ fontSize: 16, color: "#94a3b8" })
       )
-        .style({
-          padding: 4
-        })
+        .style({ padding: 4 })
         .onClick(() => {
           devMenuModal.hide();
         })
-    ).style({ alignItems: "center", marginBottom: 6 }),
+    ).style({ alignItems: "center", marginBottom: 6, width: "100%" }),
 
-    UIText("Настройка базового адреса PWA для эмулятора и локальной сети:").style({
-      fontSize: 12,
+    UIText("Настройка базового адреса Django API для Android-эмулятора и сети:").style({
+      fontSize: 11,
       color: "#94a3b8",
       marginBottom: 6
     }),
 
-    // Поле ввода адреса
     devUrlInput,
 
-    // Пресеты быстрого переключения
     UIText("Быстрые пресеты стенда:").style({
       fontSize: 11,
       color: "#64748b",
-      marginTop: 10,
-      marginBottom: 6
+      marginTop: 8,
+      marginBottom: 4
     }),
     UIRow(
       createPresetButton("10.0.2.2 (VS Emulator)", "http://10.0.2.2:8000"),
-      createPresetButton("localhost", "http://localhost:8000"),
-      createPresetButton("Wi-Fi стенд", "http://192.168.1.100:8000")
-    ).style({ flexWrap: "wrap", marginBottom: 12 }),
+      createPresetButton("localhost:8000", "http://localhost:8000"),
+      createPresetButton("Wi-Fi (192.168.1.100)", "http://192.168.1.100:8000"),
+      createPresetButton("Относительный (/)", "")
+    ).style({ flexWrap: "wrap", marginBottom: 8, width: "100%" }),
 
-    // Диагностика связи
     UIRow(
-      UIText("Статус сети: ").style({ fontSize: 11, color: "#64748b" }),
+      UIText("Статус связи: ").style({ fontSize: 11, color: "#64748b" }),
       UIText(() => pingLatency.value).style({
         fontSize: 11,
         color: () => (pingLatency.value.startsWith("✓") ? "#10b981" : "#f59e0b"),
         flex: 1
       })
-    ).style({ alignItems: "center", marginBottom: 14 }),
+    ).style({ alignItems: "center", marginBottom: 12, width: "100%" }),
 
-    // Кнопки действий
     UIRow(
-      // Сброс кэша
-      UIButton(
-        UIText("Сброс кэша").style({
-          fontSize: 12,
-          color: "#94a3b8"
-        })
-      )
-        .style({
-          backgroundColor: "#1e293b",
-          paddingHorizontal: 12,
-          paddingVertical: 10,
-          borderRadius: 8,
-          marginRight: 8
-        })
-        .onClick(() => {
-          webNode.clearData();
-          pingLatency.value = "Кэш браузера очищен";
-        }),
-
-      // Проверка связи (Ping)
-      UIButton(
-        UIText(() => (isPinging.value ? "Тест..." : "Ping")).style({
-          fontSize: 12,
-          color: "#ffffff",
-          fontWeight: "600"
-        })
-      )
-        .style({
-          backgroundColor: "#334155",
-          paddingHorizontal: 14,
-          paddingVertical: 10,
-          borderRadius: 8,
-          marginRight: 8
-        })
-        .onClick(() => {
-          testServerConnection(urlInputValue.value || serverUrl.value);
-        }),
-
-      // Сохранить и применить
-      UIButton(
-        UIText("Сохранить и загрузить").style({
-          fontSize: 12,
-          color: "#ffffff",
-          fontWeight: "bold"
-        })
-      )
-        .style({
-          backgroundColor: "#2563eb",
-          paddingHorizontal: 14,
-          paddingVertical: 10,
-          borderRadius: 8,
-          flex: 1
-        })
-        .onClick(() => {
-          const newUrl = (urlInputValue.value || serverUrl.value).trim().replace(/\/+$/, "");
-          if (newUrl) {
-            serverUrl.value = newUrl;
-            webNode.url = newUrl;
-            webNode.load(newUrl);
-            statusText.value = `Загрузка: ${newUrl}`;
-            devMenuModal.hide();
-          }
-        })
-    ).style({ alignItems: "center" })
+      SecondaryButton(
+        () => (isPinging.value ? "Тест..." : "Ping"),
+        () => testServerConnection(urlInputValue.value || serverUrl.value)
+      ),
+      UIRow().style({ width: 6 }),
+      SecondaryButton("Сброс кэша", () => {
+        cacheManager.clearCache();
+        pingLatency.value = "Кэш приложения очищен";
+      }),
+      UISpacer(),
+      PrimaryButton("Сохранить и применить", () => {
+        const newUrl = (urlInputValue.value || serverUrl.value).trim().replace(/\/+$/, "");
+        serverUrl.value = newUrl;
+        apiClient.setBaseUrl(newUrl);
+        pingLatency.value = `Базовый URL установлен: ${newUrl || "Относительный"}`;
+        devMenuModal.hide();
+      })
+    ).style({ alignItems: "center", width: "100%", flexWrap: "wrap", gap: 6 })
   ).style({
     backgroundColor: "#121a2d",
     borderColor: "#1e293b",
     borderWidth: 1,
-    borderRadius: 16,
-    padding: 18,
+    borderRadius: 14,
+    padding: 16,
     width: "92%",
-    maxWidth: 480
+    maxWidth: 440
   })
 );
 
-// 7. Сборка главного экрана приложения le.codes
-const mainScreen = UIScreen(
-  headerBar,
-  toastBar,
-  obdHudOverlay,
-  webNode
-).style({
-  flex: 1,
-  backgroundColor: "#0a0f1d"
+export function openDevMenu() {
+  urlInputValue.value = serverUrl.value || DEFAULT_URL;
+  if (devUrlInput) {
+    devUrlInput.value = urlInputValue.value;
+  }
+  devMenuModal.show();
+}
+
+// 5. Инициализация экранов и вкладок
+let tabsInstance: any = null;
+
+const diagnosticsScreen = createDiagnosticsScreen({
+  onNavigateToDtc: (code) => {
+    tabsInstance?.select("dtc");
+  },
+  onOpenEngineeringMenu: () => {
+    openDevMenu();
+  }
 });
 
-// Регистрируем виджет модального окна в экране
-mainScreen.widgets(devMenuModal);
+const obdScreen = createObdScannerScreen({
+  onSendDtcToAi: (codes) => {
+    tabsInstance?.select("diagnostics");
+  },
+  onOpenEngineeringMenu: () => {
+    openDevMenu();
+  }
+});
 
-// 8. Инициализация роутера приложения
-Router.init(mainScreen);
+const dtcScreen = createDtcDictionaryScreen((code) => {
+  tabsInstance?.select("diagnostics");
+});
 
-console.log("Оболочка le.codes успешно инициализирована. Базовый адрес:", serverUrl.value);
+const historyScreen = createSessionsHistoryScreen((session) => {
+  tabsInstance?.select("diagnostics");
+});
+
+const settingsScreen = createSettingsScreen();
+
+// 6. Сборка UITabs
+tabsInstance = UITabs({
+  diagnostics: {
+    label: "Диагностика",
+    icon: assetIcon("lucide:bot"),
+    screen: diagnosticsScreen
+  },
+  obd: {
+    label: "Приборы OBD",
+    icon: assetIcon("lucide:gauge"),
+    screen: obdScreen
+  },
+  dtc: {
+    label: "Коды DTC",
+    icon: assetIcon("lucide:triangle-alert"),
+    screen: dtcScreen
+  },
+  history: {
+    label: "Сессии",
+    icon: assetIcon("lucide:folder-clock"),
+    screen: historyScreen
+  },
+  settings: {
+    label: "Настройки",
+    icon: assetIcon("lucide:settings"),
+    screen: settingsScreen
+  }
+});
+
+// Настройка стилей таб-бара для удобства на смартфонах
+tabsInstance.bar.style({
+  backgroundColor: "rgba(10, 15, 29, 0.98)",
+  borderTopWidth: 1,
+  borderColor: "#1e293b",
+  height: 56
+});
+
+// Добавляем модальное инженерное меню в экран
+tabsInstance.widgets(devMenuModal);
+
+// 7. Монтирование в глобальный роутер le.codes
+Router.init(tabsInstance);
+
+console.log("ИИдеал-Авто (le.codes Native Client) успешно запущен. API:", serverUrl.value);

@@ -13,8 +13,8 @@
     "window": {
       "width": 1280,
       "height": 840,
-      "minWidth": 800,
-      "minHeight": 540
+      "minWidth": 400,
+      "minHeight": 640
     }
   },
   "version": "1.0.0",

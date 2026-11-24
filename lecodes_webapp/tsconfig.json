@@ -16,7 +16,7 @@
     "skipLibCheck": true
   },
   "include": [
-    ".lecodes/types/**/*.d.ts",
+    "node_modules/lecodes-sdk/dist/**/*.d.ts",
     "**/*.ts",
     "**/*.js"
   ],

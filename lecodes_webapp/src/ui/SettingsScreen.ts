@@ -1,10 +1,13 @@
 /**
- * Экран «Настройки & Кэш».
+ * Экран «Настройки & Инженерное меню стенда».
  * Включает:
- * 1. Стандартные настройки кэширования ресурсов (Cache API + LocalStorage).
- * 2. Диагностику аппаратных Web APIs (Web Bluetooth, Web Serial).
- * 3. СКРЫТОЕ ИНЖЕНЕРНОЕ МЕНЮ (активируется 7 кликами по версии приложения) для смены
- *    непостоянного IP/порта тестового стенда при отладке в Android Emulator / Visual Studio .NET SDK.
+ * 1. ИНЖЕНЕРНОЕ МЕНЮ (Dev Mode) для динамической смены базового адреса (IP и порт)
+ *    тестового стенда (Android Emulator 10.0.2.2:8000, localhost:8000, Wi-Fi 192.168.x.x:8000).
+ * 2. Ping-тест связи со стендом с замером задержки.
+ * 3. Настройки интеллектуального кэширования ресурсов (Cache API + LocalStorage).
+ * 4. Диагностику аппаратных интерфейсов (Web Bluetooth, Web Serial, BLE).
+ * Адаптирован для вертикальных экранов смартфонов.
+ * Лицензия: GPL-3.0
  */
 
 import { apiClient } from "../api/BackendApiClient";
@@ -18,8 +21,8 @@ export function createSettingsScreen(): any {
   const cacheStatsSignal = signal<CacheStats>(cacheManager.getStats());
   const syncMsgSignal = signal("");
 
-  // Реактивное состояние для скрытого инженерного меню
-  const isDevUnlockedSignal = signal<boolean>(cacheManager.getSetting("dev_menu_unlocked", false));
+  // Реактивное состояние для инженерного меню (по умолчанию открыто или разблокировано)
+  const isDevUnlockedSignal = signal<boolean>(cacheManager.getSetting("dev_menu_unlocked", true));
   const tapCountSignal = signal(0);
   const tapNoticeSignal = signal("");
   const devTestResultSignal = signal("");
@@ -30,38 +33,37 @@ export function createSettingsScreen(): any {
   const hasCache = cacheManager.isCacheApiSupported();
 
   const handleVersionTap = () => {
-    if (isDevUnlockedSignal.value) {
-      tapNoticeSignal.value = "Инженерное меню уже активно (прокрутите вниз)";
-      return;
-    }
-
     tapCountSignal.value++;
     const remaining = 7 - tapCountSignal.value;
 
-    if (remaining > 0) {
-      tapNoticeSignal.value = `Нажмите ещё ${remaining} раз(а) для открытия Инженерного меню стенда...`;
-    } else {
-      isDevUnlockedSignal.value = true;
-      cacheManager.saveSetting("dev_menu_unlocked", true);
-      tapNoticeSignal.value = "Инженерное меню разработчика разблокировано!";
+    if (remaining > 0 && remaining < 5) {
+      tapNoticeSignal.value = `Нажмите ещё ${remaining} раз для переключения режима разработчика...`;
+    } else if (remaining <= 0) {
+      tapCountSignal.value = 0;
+      isDevUnlockedSignal.value = !isDevUnlockedSignal.value;
+      cacheManager.saveSetting("dev_menu_unlocked", isDevUnlockedSignal.value);
+      tapNoticeSignal.value = isDevUnlockedSignal.value
+        ? "Инженерное меню разработчика разблокировано!"
+        : "Инженерное меню скрыто";
     }
   };
 
   const handleSaveDevUrl = (urlToSave: string) => {
-    apiClient.setBaseUrl(urlToSave);
+    const clean = urlToSave.trim().replace(/\/+$/, "");
+    apiClient.setBaseUrl(clean);
     apiUrlSignal.value = apiClient.getBaseUrl();
-    devTestResultSignal.value = `Адрес стенда сохранен: ${apiUrlSignal.value || "Относительный путь (/)"}`;
+    devTestResultSignal.value = `✓ Адрес стенда сохранен: ${apiUrlSignal.value || "Относительный путь (/)"}`;
   };
 
   const handleTestPing = async (targetUrl: string) => {
     if (isTestingSignal.value) return;
     isTestingSignal.value = true;
-    devTestResultSignal.value = `Проверка связи с ${targetUrl || "текущим хостом"}...`;
+    devTestResultSignal.value = `Проверка связи с ${targetUrl || "хостом"}...`;
 
     try {
       const res = await apiClient.testConnection(targetUrl);
       if (res.ok) {
-        devTestResultSignal.value = `[OK] ${res.message} (Сервер стенда отвечает)`;
+        devTestResultSignal.value = `[OK] ${res.message}`;
       } else {
         devTestResultSignal.value = `[ВНИМАНИЕ] ${res.message}`;
       }
@@ -77,7 +79,7 @@ export function createSettingsScreen(): any {
     try {
       const count = await apiClient.syncDtcDictionary();
       cacheStatsSignal.value = cacheManager.getStats();
-      syncMsgSignal.value = `Успешно синхронизировано кодов: ${count}`;
+      syncMsgSignal.value = `Успешно загружено кодов: ${count}`;
     } catch (e: any) {
       syncMsgSignal.value = `Ошибка синхронизации: ${e.message}`;
     }
@@ -86,117 +88,35 @@ export function createSettingsScreen(): any {
   const handleClearCache = async () => {
     await cacheManager.clearCache();
     cacheStatsSignal.value = cacheManager.getStats();
-    syncMsgSignal.value = "Кэш полностью очищен";
+    syncMsgSignal.value = "Кэш приложения очищен";
   };
 
   const header = HeaderBar(
-    "Настройки & Оборудование",
-    "Конфигурация API, локального хранилища и внешних датчиков"
+    "Настройки & Инженерное меню",
+    "Конфигурация сервера, кэша и аппаратных датчиков"
   );
 
-  // --- Блок кэширования ---
-  const cacheSection = UIColumn(
-    UIText("Интеллектуальное кэширование ресурсов").style({ color: "#f8fafc", fontSize: 16, fontWeight: "bold" }),
-    UIText("Позволяет приложению мгновенно отвечать на запросы и искать коды ошибок даже без интернета.")
-      .style({ color: "#94a3b8", fontSize: 13, marginTop: 4, marginBottom: 12 }),
-    UIRow(
-      UIColumn(
-        UIText("Кэшировано кодов DTC:").style({ color: "#94a3b8", fontSize: 12 }),
-        UIText(() => `${cacheStatsSignal.value.dtcCount} кодов`).style({ color: "#38bdf8", fontSize: 18, fontWeight: "bold", marginTop: 2 })
-      ).style({ flex: 1 }),
-      UIColumn(
-        UIText("Сохраненных сессий:").style({ color: "#94a3b8", fontSize: 12 }),
-        UIText(() => `${cacheStatsSignal.value.sessionsCount} шт`).style({ color: "#34d399", fontSize: 18, fontWeight: "bold", marginTop: 2 })
-      ).style({ flex: 1 }),
-      UIColumn(
-        UIText("Последняя синхронизация:").style({ color: "#94a3b8", fontSize: 12 }),
-        UIText(() => cacheStatsSignal.value.lastDtcSync).style({ color: "#cbd5e1", fontSize: 13, marginTop: 4 })
-      ).style({ flex: 1 })
-    ).style({ marginBottom: 16 }),
-    UIRow(
-      PrimaryButton("Синхронизировать словарь с сервером", handleSyncDtc),
-      UIRow().style({ width: 10 }),
-      SecondaryButton("Очистить кэш", handleClearCache),
-      UISpacer(),
-      UIText(() => syncMsgSignal.value).style({ color: "#f59e0b", fontSize: 13, alignSelf: "center" })
-    ).style({ alignItems: "center", flexWrap: "wrap", gap: 8 })
-  ).style({
-    backgroundColor: "#131b2e",
-    borderRadius: 14,
-    padding: 16,
-    borderWidth: 1,
-    borderColor: "#1e293b",
-    marginBottom: 16
-  });
-
-  // --- Блок аппаратных возможностей браузера ---
-  const renderCapRow = (name: string, supported: boolean, desc: string) => {
-    return UIRow(
-      UIRow().style({
-        width: 10,
-        height: 10,
-        borderRadius: 5,
-        backgroundColor: supported ? "#10b981" : "#ef4444",
-        marginRight: 10,
-        alignSelf: "center"
-      }),
-      UIColumn(
-        UIText(name).style({ color: "#ffffff", fontSize: 14, fontWeight: "bold" }),
-        UIText(desc).style({ color: "#94a3b8", fontSize: 12, marginTop: 2 })
-      ),
-      UISpacer(),
-      UIText(supported ? "Поддерживается" : "Не поддерживается")
-        .style({ color: supported ? "#10b981" : "#ef4444", fontSize: 12, fontWeight: "bold", alignSelf: "center" })
-    ).style({
-      paddingVertical: 10,
-      borderBottomWidth: 1,
-      borderColor: "#1e293b"
-    });
-  };
-
-  const hardwareSection = UIColumn(
-    UIText("Аппаратные интерфейсы (Проброс устройств)").style({ color: "#f8fafc", fontSize: 16, fontWeight: "bold" }),
-    UIText("Для прямого проброса OBD2 датчиков через браузер или Android PWA/APK:")
-      .style({ color: "#94a3b8", fontSize: 13, marginTop: 4, marginBottom: 12 }),
-    renderCapRow("Web Bluetooth API", hasBt, "Прямое подключение к ELM327 BLE и беспроводным адаптерам"),
-    renderCapRow("Web Serial API", hasSerial, "Прямое подключение к USB/COM сканерам (FTDI, CH340, CP2102)"),
-    renderCapRow("Cache Storage API", hasCache, "Офлайн-хранилище статических ресурсов и словарей"),
-    UIColumn(
-      UIText("Подсказка для Android:").style({ color: "#f59e0b", fontSize: 13, fontWeight: "bold", marginTop: 12 }),
-      UIText("• В Android Chrome / WebAPK интерфейс Web Bluetooth работает нативно из коробки с системным диалогом выбора устройств.")
-        .style({ color: "#94a3b8", fontSize: 12, marginTop: 4 }),
-      UIText("• В нативном APK разрешения BLUETOOTH_SCAN и BLUETOOTH_CONNECT уже прописаны в AndroidManifest.xml.")
-        .style({ color: "#94a3b8", fontSize: 12, marginTop: 2 })
-    )
-  ).style({
-    backgroundColor: "#131b2e",
-    borderRadius: 14,
-    padding: 16,
-    borderWidth: 1,
-    borderColor: "#1e293b",
-    marginBottom: 16
-  });
-
-  // --- СКРЫТОЕ ИНЖЕНЕРНОЕ МЕНЮ СТЕНДА ---
+  // --- БЛОК ИНЖЕНЕРНОГО МЕНЮ СТЕНДА ---
   let devUrlInputField: any = null;
   const devUrlInputText = signal(apiUrlSignal.value);
 
-  devUrlInputField = UIInput(devUrlInputText.value)
+  devUrlInputField = UIInput()
     .style({
+      placeholder: "http://10.0.2.2:8000",
       backgroundColor: "#090d16",
       color: "#f8fafc",
-      borderRadius: 10,
-      paddingHorizontal: 14,
-      paddingVertical: 10,
-      fontSize: 14,
+      borderRadius: 8,
+      paddingHorizontal: 12,
+      paddingVertical: 9,
+      fontSize: 13,
       borderWidth: 1,
       borderColor: "#f59e0b",
       flex: 1
     })
-    .placeholder("http://10.0.2.2:8000 или http://192.168.1.X:8000")
     .onChange((val: string) => {
       devUrlInputText.value = val;
     });
+  devUrlInputField.value = devUrlInputText.value;
 
   const setPreset = (presetUrl: string) => {
     devUrlInputText.value = presetUrl;
@@ -208,96 +128,190 @@ export function createSettingsScreen(): any {
   const engineeringSection = UIColumn(
     UIRow(
       UIRow().style({
-        backgroundColor: "#f59e0b",
+        width: 8,
+        height: 8,
         borderRadius: 4,
-        paddingHorizontal: 8,
-        paddingVertical: 2,
-        marginRight: 8,
+        backgroundColor: "#f59e0b",
+        marginRight: 6,
         alignSelf: "center"
       }),
-      UIText("ИНЖЕНЕРНОЕ МЕНЮ СТЕНДА (DEV MODE)").style({ color: "#f59e0b", fontSize: 15, fontWeight: "bold" }),
-      UISpacer(),
+      UIText("ИНЖЕНЕРНОЕ МЕНЮ СТЕНДА (DEV MODE)").style({ color: "#f59e0b", fontSize: 13, fontWeight: "bold", flex: 1 }),
       UIButton(
-        UIText("Скрыть меню").style({ color: "#94a3b8", fontSize: 12 })
+        UIText(() => (isDevUnlockedSignal.value ? "Свернуть" : "Развернуть")).style({ color: "#94a3b8", fontSize: 11 })
       )
-        .style({ padding: 4, $pressed: { opacity: 0.7 } })
+        .style({ padding: 4 })
         .onClick(() => {
-          isDevUnlockedSignal.value = false;
-          cacheManager.saveSetting("dev_menu_unlocked", false);
-          tapNoticeSignal.value = "Инженерное меню скрыто";
+          isDevUnlockedSignal.value = !isDevUnlockedSignal.value;
+          cacheManager.saveSetting("dev_menu_unlocked", isDevUnlockedSignal.value);
         })
-    ).style({ alignItems: "center", marginBottom: 8 }),
+    ).style({ alignItems: "center", marginBottom: 6, width: "100%" }),
 
-    UIText("Прямая смена IP и порта бэкенда для отладки в эмуляторах (Visual Studio .NET Android SDK, AVD) и на тестовых стендах с динамическим IP.")
-      .style({ color: "#cbd5e1", fontSize: 13, lineHeight: 18, marginBottom: 14 }),
+    UIText("Настройка IP и порта бэкенда для отладки в эмуляторах и на тестовых стендах:")
+      .style({ color: "#cbd5e1", fontSize: 11, lineHeight: 16, marginBottom: 10 }),
 
-    UIText("Базовый URL API сервера:").style({ color: "#94a3b8", fontSize: 12, marginBottom: 4 }),
+    UIText("Базовый URL API сервера:").style({ color: "#94a3b8", fontSize: 11, marginBottom: 4 }),
     UIRow(
       devUrlInputField,
-      UIRow().style({ width: 8 }),
+      UIRow().style({ width: 6 }),
       PrimaryButton("Сохранить", () => handleSaveDevUrl(devUrlInputText.value)),
-      UIRow().style({ width: 8 }),
-      SecondaryButton("Ping", () => handleTestPing(devUrlInputText.value))
-    ).style({ alignItems: "center", marginBottom: 12, flexWrap: "wrap", gap: 6 }),
+      UIRow().style({ width: 6 }),
+      SecondaryButton(
+        () => (isTestingSignal.value ? "..." : "Ping"),
+        () => handleTestPing(devUrlInputText.value)
+      )
+    ).style({ alignItems: "center", marginBottom: 8, width: "100%", flexWrap: "wrap", gap: 6 }),
 
-    UIText("Быстрые пресеты для отладки:").style({ color: "#94a3b8", fontSize: 12, marginBottom: 6 }),
+    UIText("Быстрые пресеты стенда:").style({ color: "#94a3b8", fontSize: 11, marginBottom: 4 }),
     UIRow(
-      UIButton(UIText("Эмулятор VS (10.0.2.2:8000)").style({ color: "#38bdf8", fontSize: 12, fontWeight: "bold" }))
-        .style({ backgroundColor: "#1e293b", paddingHorizontal: 10, paddingVertical: 6, borderRadius: 6, marginRight: 6, marginBottom: 6 })
+      UIButton(UIText("10.0.2.2 (VS Emulator)").style({ color: "#38bdf8", fontSize: 11, fontWeight: "600" }))
+        .style({ backgroundColor: "#1e293b", paddingHorizontal: 8, paddingVertical: 5, borderRadius: 6, marginRight: 4, marginBottom: 4 })
         .onClick(() => setPreset("http://10.0.2.2:8000")),
 
-      UIButton(UIText("Локальный ПК (localhost:8000)").style({ color: "#34d399", fontSize: 12, fontWeight: "bold" }))
-        .style({ backgroundColor: "#1e293b", paddingHorizontal: 10, paddingVertical: 6, borderRadius: 6, marginRight: 6, marginBottom: 6 })
+      UIButton(UIText("localhost:8000").style({ color: "#34d399", fontSize: 11, fontWeight: "600" }))
+        .style({ backgroundColor: "#1e293b", paddingHorizontal: 8, paddingVertical: 5, borderRadius: 6, marginRight: 4, marginBottom: 4 })
         .onClick(() => setPreset("http://localhost:8000")),
 
-      UIButton(UIText("Wi-Fi стенд (192.168.1.100:8000)").style({ color: "#fbbf24", fontSize: 12, fontWeight: "bold" }))
-        .style({ backgroundColor: "#1e293b", paddingHorizontal: 10, paddingVertical: 6, borderRadius: 6, marginRight: 6, marginBottom: 6 })
+      UIButton(UIText("Wi-Fi (192.168.1.100)").style({ color: "#fbbf24", fontSize: 11, fontWeight: "600" }))
+        .style({ backgroundColor: "#1e293b", paddingHorizontal: 8, paddingVertical: 5, borderRadius: 6, marginRight: 4, marginBottom: 4 })
         .onClick(() => setPreset("http://192.168.1.100:8000")),
 
-      UIButton(UIText("Относительный (/)").style({ color: "#94a3b8", fontSize: 12 }))
-        .style({ backgroundColor: "#1e293b", paddingHorizontal: 10, paddingVertical: 6, borderRadius: 6, marginBottom: 6 })
+      UIButton(UIText("Относительный (/)").style({ color: "#94a3b8", fontSize: 11 }))
+        .style({ backgroundColor: "#1e293b", paddingHorizontal: 8, paddingVertical: 5, borderRadius: 6, marginBottom: 4 })
         .onClick(() => setPreset(""))
-    ).style({ flexWrap: "wrap" }),
+    ).style({ flexWrap: "wrap", width: "100%" }),
 
     UIText(() => devTestResultSignal.value).style({
-      color: () => (devTestResultSignal.value.includes("[OK]") ? "#10b981" : devTestResultSignal.value.includes("[ОШИБКА]") ? "#ef4444" : "#f59e0b"),
-      fontSize: 13,
-      marginTop: 8,
+      color: () =>
+        devTestResultSignal.value.includes("[OK]")
+          ? "#10b981"
+          : devTestResultSignal.value.includes("[ОШИБКА]")
+          ? "#ef4444"
+          : "#f59e0b",
+      fontSize: 12,
+      marginTop: 6,
       fontFamily: "monospace"
     })
   ).style({
-    backgroundColor: "rgba(245, 158, 11, 0.07)",
-    borderRadius: 14,
-    padding: 16,
-    borderWidth: 2,
+    backgroundColor: "rgba(245, 158, 11, 0.08)",
+    borderRadius: 12,
+    padding: 12,
+    borderWidth: 1,
     borderColor: "#f59e0b",
-    marginBottom: 20
+    marginBottom: 12,
+    width: "100%"
+  });
+
+  // --- Блок кэширования ---
+  const cacheSection = UIColumn(
+    UIText("Интеллектуальное кэширование (Офлайн-база)").style({ color: "#f8fafc", fontSize: 14, fontWeight: "bold" }),
+    UIText("Обеспечивает мгновенный доступ к словарям кодов и истории без интернета:")
+      .style({ color: "#94a3b8", fontSize: 11, marginTop: 2, marginBottom: 10 }),
+
+    UIRow(
+      UIColumn(
+        UIText("Кодов DTC:").style({ color: "#94a3b8", fontSize: 11 }),
+        UIText(() => `${cacheStatsSignal.value.dtcCount} кодов`).style({ color: "#38bdf8", fontSize: 16, fontWeight: "bold", marginTop: 2 })
+      ).style({ flex: 1, minWidth: 90 }),
+      UIColumn(
+        UIText("Сессий:").style({ color: "#94a3b8", fontSize: 11 }),
+        UIText(() => `${cacheStatsSignal.value.sessionsCount} шт`).style({ color: "#34d399", fontSize: 16, fontWeight: "bold", marginTop: 2 })
+      ).style({ flex: 1, minWidth: 90 }),
+      UIColumn(
+        UIText("Синхронизация:").style({ color: "#94a3b8", fontSize: 11 }),
+        UIText(() => cacheStatsSignal.value.lastDtcSync || "Не выполнялась").style({ color: "#cbd5e1", fontSize: 11, marginTop: 2 })
+      ).style({ flex: 1, minWidth: 100 })
+    ).style({ marginBottom: 12, flexWrap: "wrap", gap: 8, width: "100%" }),
+
+    UIRow(
+      PrimaryButton("Синхронизировать словарь с бэкендом", handleSyncDtc),
+      SecondaryButton("Очистить кэш", handleClearCache)
+    ).style({ alignItems: "center", flexWrap: "wrap", gap: 6, width: "100%" }),
+
+    UIText(() => syncMsgSignal.value).style({ color: "#f59e0b", fontSize: 12, marginTop: 6 })
+  ).style({
+    backgroundColor: "#131b2e",
+    borderRadius: 12,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: "#1e293b",
+    marginBottom: 12,
+    width: "100%"
+  });
+
+  // --- Блок аппаратных возможностей ---
+  const renderCapRow = (name: string, supported: boolean, desc: string) => {
+    return UIRow(
+      UIRow().style({
+        width: 8,
+        height: 8,
+        borderRadius: 4,
+        backgroundColor: supported ? "#10b981" : "#ef4444",
+        marginRight: 8,
+        alignSelf: "center",
+        flexShrink: 0
+      }),
+      UIColumn(
+        UIText(name).style({ color: "#ffffff", fontSize: 12, fontWeight: "bold" }),
+        UIText(desc).style({ color: "#94a3b8", fontSize: 11, marginTop: 1 })
+      ).style({ flex: 1 }),
+      UIText(supported ? "✓ Есть" : "✗ Нет")
+        .style({ color: supported ? "#10b981" : "#ef4444", fontSize: 11, fontWeight: "bold", alignSelf: "center", flexShrink: 0, marginLeft: 6 })
+    ).style({
+      paddingVertical: 8,
+      borderBottomWidth: 1,
+      borderColor: "#1e293b",
+      width: "100%"
+    });
+  };
+
+  const hardwareSection = UIColumn(
+    UIText("Аппаратные интерфейсы (OBD-II проброс)").style({ color: "#f8fafc", fontSize: 14, fontWeight: "bold" }),
+    UIText("Поддержка прямого проброса датчиков через Web APIs и Android:")
+      .style({ color: "#94a3b8", fontSize: 11, marginTop: 2, marginBottom: 8 }),
+    renderCapRow("Web Bluetooth API", hasBt, "ELM327 BLE и беспроводные OBD-сканеры"),
+    renderCapRow("Web Serial API", hasSerial, "USB/COM сканеры (FTDI, CH340, CP2102)"),
+    renderCapRow("Cache Storage API", hasCache, "Офлайн-хранилище базы знаний DTC"),
+    UIColumn(
+      UIText("Подсказка для Android / VS Emulator:").style({ color: "#f59e0b", fontSize: 11, fontWeight: "bold", marginTop: 8 }),
+      UIText("• В Android приложении разрешения BLUETOOTH_SCAN, CONNECT, CAMERA и RECORD_AUDIO уже включены в манифест.")
+        .style({ color: "#94a3b8", fontSize: 11, marginTop: 2 }),
+      UIText("• Для подключения к эмулятору используйте адрес http://10.0.2.2:8000.")
+        .style({ color: "#94a3b8", fontSize: 11, marginTop: 2 })
+    )
+  ).style({
+    backgroundColor: "#131b2e",
+    borderRadius: 12,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: "#1e293b",
+    marginBottom: 12,
+    width: "100%"
   });
 
   // --- Нижняя плашка с версией (Easter Egg) ---
   const versionEasterEggButton = UIButton(
     UIColumn(
-      UIText("ИИдеал-Авто • Версия 1.0.0 (Build 2026.11-lecodes)").style({
+      UIText("ИИдеал-Авто • Версия 1.0.0 (le.codes Native Client)").style({
         color: "#64748b",
-        fontSize: 13,
+        fontSize: 12,
         textAlign: "center"
       }),
-      UIText("Движок: le.codes SDK • Лицензия: GPL-3.0").style({
+      UIText("Движок: le.codes SDK 2.12+ • Лицензия: GPL-3.0").style({
         color: "#475569",
-        fontSize: 11,
+        fontSize: 10,
         textAlign: "center",
         marginTop: 2
       }),
       UIText(() => tapNoticeSignal.value).style({
         color: "#f59e0b",
-        fontSize: 12,
+        fontSize: 11,
         textAlign: "center",
         marginTop: 4
       })
     ).style({ alignItems: "center" })
   )
     .style({
-      paddingVertical: 14,
+      paddingVertical: 10,
       alignItems: "center",
       justifyContent: "center",
       $pressed: { opacity: 0.6 }
@@ -306,12 +320,12 @@ export function createSettingsScreen(): any {
 
   const scrollBody = UIScrollable(
     UIColumn(
-      () => (isDevUnlockedSignal.value ? engineeringSection : null),
+      engineeringSection,
       cacheSection,
       hardwareSection,
       versionEasterEggButton
-    ).style({ padding: 20, maxWidth: 960, alignSelf: "center", width: "100%" })
-  ).style({ flexGrow: 1 });
+    ).style({ padding: 14, maxWidth: 860, alignSelf: "center", width: "100%", paddingBottom: 24 })
+  ).style({ flex: 1, width: "100%" });
 
-  return UIScreen(header, scrollBody).style({ backgroundColor: "#0a0f1d", flex: 1 });
+  return UIScreen(header, scrollBody).style({ backgroundColor: "#0a0f1d", flex: 1, width: "100%", height: "100%" });
 }

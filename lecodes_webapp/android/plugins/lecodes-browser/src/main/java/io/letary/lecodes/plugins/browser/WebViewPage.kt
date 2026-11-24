@@ -34,16 +34,12 @@ import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
 import android.net.Uri
-import android.util.Log
-import android.webkit.ConsoleMessage
 import android.webkit.CookieManager
 import android.webkit.JavascriptInterface
-import android.webkit.PermissionRequest
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
-import android.webkit.WebSettings
 import android.webkit.WebStorage
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -123,34 +119,14 @@ internal class WebViewPage<C : PluginCode>(
         }
     }
 
-    private inner class AndroidOBDInterface {
-        @JavascriptInterface
-        fun isNativeBridgeAvailable(): Boolean = true
-
-        @JavascriptInterface
-        fun openEngineeringMenu() {
-            web.post {
-                val json = JSONObject()
-                json.put("action", "open_engineering_menu")
-                events.message(json)
-            }
-        }
-    }
-
     init {
         @SuppressLint("SetJavaScriptEnabled")
         web.settings.javaScriptEnabled = true
         web.settings.domStorageEnabled = true
-        web.settings.databaseEnabled = true
-        web.settings.allowFileAccess = true
-        web.settings.allowContentAccess = true
         web.settings.mediaPlaybackRequiresUserGesture = false
-        web.settings.mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
-        web.settings.cacheMode = WebSettings.LOAD_DEFAULT
         web.settings.setSupportMultipleWindows(false)
         web.settings.javaScriptCanOpenWindowsAutomatically = false
         params.userAgent?.let { web.settings.userAgentString = it }
-        web.addJavascriptInterface(AndroidOBDInterface(), "AndroidOBD")
         if (bridge) {
             web.addJavascriptInterface(Bridge(), "__lecodesBridge")
             if (documentStart) WebViewCompat.addDocumentStartJavaScript(web, BRIDGE_SCRIPT, setOf("*"))
@@ -199,18 +175,6 @@ internal class WebViewPage<C : PluginCode>(
         }
         web.webChromeClient = object : WebChromeClient() {
             override fun onCloseWindow(window: WebView) { events.exit() }
-            override fun onPermissionRequest(request: PermissionRequest?) {
-                request?.let {
-                    web.post {
-                        it.grant(it.resources)
-                        Log.d("WebViewPage", "Auto-granted web hardware permissions: ${it.resources.joinToString()}")
-                    }
-                }
-            }
-            override fun onConsoleMessage(consoleMessage: ConsoleMessage?): Boolean {
-                Log.d("WebViewPWA", "${consoleMessage?.sourceId()}:${consoleMessage?.lineNumber()} [${consoleMessage?.messageLevel()}] ${consoleMessage?.message()}")
-                return true
-            }
         }
 
         params.url?.let { open(it) }

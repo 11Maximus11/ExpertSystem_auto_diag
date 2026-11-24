@@ -821,9 +821,11 @@
           </div>
         `;
       } else if (att.type === 'audio') {
-        const modeLabel = att.mode && !att.mode.toLowerCase().includes('ggml') ? att.mode : 'Gemma 4 Native Audio';
         const attDur = att.duration || att.duration_seconds || 0;
         const durTxt = attDur > 0 ? `0:00 / ${formatAudioTime(attDur)}` : '0:00';
+        const cleanTranscript = att.transcript && !att.transcript.toLowerCase().includes('gemma') && !att.transcript.toLowerCase().includes('аудиовход')
+          ? att.transcript.trim()
+          : '';
         html += `
           <div class="attachment-card-audio" data-audio-src="${escapeHtml(att.url || '')}" data-audio-dur="${attDur}">
             <div class="attachment-card-audio-header">
@@ -835,7 +837,6 @@
                 </svg>
                 <span style="font-weight:600; font-size:0.78rem;">${escapeHtml(att.name || 'Голосовая запись')}</span>
               </div>
-              <span class="attachment-audio-badge">${escapeHtml(modeLabel)}</span>
             </div>
             <div class="attachment-card-audio-ctrls">
               ${att.url ? `
@@ -859,7 +860,7 @@
               </div>
               <span class="audio-duration-txt js-audio-duration-display js-audio-time">${durTxt}</span>
             </div>
-            ${att.transcript ? `<div class="audio-transcript-note">«${escapeHtml(att.transcript)}»</div>` : ''}
+            ${cleanTranscript ? `<div class="audio-transcript-note">«${escapeHtml(cleanTranscript)}»</div>` : ''}
           </div>
         `;
       } else {
@@ -1330,7 +1331,7 @@
           <span>Интеллектуальный стенд автодиагностики и пошагового ремонта</span>
         </div>
         <p style="font-size:0.88rem; color:var(--text-secondary); margin-bottom: 8px;">
-          Здравствуйте! Я экспертная система автодиагностики «ИИдеал Авто» на базе мультимодальной нейросети Gemma 4. Готов помочь локализовать поломку, расшифровать ошибки ЭБУ и составить пошаговый план ремонта.
+          Здравствуйте! Я экспертная система автодиагностики «ИИдеал Авто». Готов помочь локализовать поломку, расшифровать ошибки ЭБУ и составить пошаговый план ремонта.
         </p>
         <p style="font-size:0.82rem; color:var(--text-muted); margin-bottom: 12px;">
           Опишите симптом своими словами, выберите код ошибки OBD-II из словаря, прикрепите лог сканера или фото неисправного узла, либо запишите голосовой вопрос.
@@ -1817,7 +1818,7 @@
           name: f.name,
           size_bytes: f.size,
           duration: f._duration || 0,
-          mode: 'Gemma 4 Native Audio',
+          mode: 'audio',
         });
       } else {
         optimisticAttachments.push({ type: 'document', name: f.name, size_bytes: f.size, is_fully_processed: true });
@@ -1832,8 +1833,8 @@
         name: 'Голосовой запрос',
         size_bytes: voiceBlobSnapshot.size,
         duration: voiceBlobSnapshot._duration || state.stagedVoiceDuration || 0,
-        mode: 'Gemma 4 Native Audio',
-        transcript: voiceTranscriptSnapshot || 'Голосовой запрос мастера',
+        mode: 'audio',
+        transcript: voiceTranscriptSnapshot || '',
       });
     }
 
@@ -2725,6 +2726,11 @@
         await document.documentElement.requestFullscreen();
       }
     } catch (_) {}
+    if (screen.orientation && typeof screen.orientation.lock === 'function') {
+      try {
+        await screen.orientation.lock('landscape');
+      } catch (_) {}
+    }
     const arVideo = el('arCameraVideoEl');
     state.arCameraStream = await startCameraStream(arVideo, state.cameraFacingMode);
     await setArSubmode(submode || state.arSubmode || 'rayneo');
@@ -2732,6 +2738,11 @@
 
   function exitArMode() {
     document.body.classList.remove('ar-glasses-mode');
+    if (screen.orientation && typeof screen.orientation.unlock === 'function') {
+      try {
+        screen.orientation.unlock();
+      } catch (_) {}
+    }
     stopStream(state.arCameraStream);
     stopStream(state.arBgCameraStream);
     state.arCameraStream = null;
@@ -2884,9 +2895,15 @@
                     <span class="project-count-pill">${pSessions.length}</span>
                   </span>
                   <div class="project-actions">
-                    <button type="button" class="action-btn action-add-chat" data-project-id="${p.id}" title="Новый диалог в проекте">+</button>
-                    <button type="button" class="action-btn action-edit-project" data-project-id="${p.id}" data-project-name="${escapeHtml(p.name)}" title="Переименовать проект">✎</button>
-                    <button type="button" class="action-btn action-delete-project" data-project-id="${p.id}" data-project-name="${escapeHtml(p.name)}" title="Удалить проект">✕</button>
+                    <button type="button" class="action-btn action-add-chat" data-project-id="${p.id}" title="Новый диалог в проекте">
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                    </button>
+                    <button type="button" class="action-btn action-edit-project" data-project-id="${p.id}" data-project-name="${escapeHtml(p.name)}" title="Переименовать проект">
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
+                    </button>
+                    <button type="button" class="action-btn action-delete-project" data-project-id="${p.id}" data-project-name="${escapeHtml(p.name)}" title="Удалить проект">
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                    </button>
                   </div>
                 </div>
                 <div class="project-chats">
@@ -3396,9 +3413,10 @@
     // Голосовой ввод
     el('btnVoiceRecord')?.addEventListener('click', () => toggleVoiceRecording());
 
-    // Режим AR-очков (RayNeo Optical / VR режим)
+    // Режим AR-очков (Оптический / VR режим)
     el('btnEnterArMode')?.addEventListener('click', () => enterArMode('rayneo'));
     el('btnExitArMode')?.addEventListener('click', () => exitArMode());
+    el('btnExitArFromBarrier')?.addEventListener('click', () => exitArMode());
     el('btnArModeRayneo')?.addEventListener('click', () => setArSubmode('rayneo'));
     el('btnArModePassthrough')?.addEventListener('click', () => setArSubmode('passthrough'));
     el('btnArSwitchWinCamera')?.addEventListener('click', () => switchArCamera('window'));

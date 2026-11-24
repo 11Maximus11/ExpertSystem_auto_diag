@@ -165,7 +165,7 @@ def process_voice_input(
     if not audio_bytes:
         return {
             "mode_used": "direct_audio",
-            "mode_label": "Прямой аудиовход Gemma 4 12B (embed_audio)",
+            "mode_label": "Голосовая запись",
             "transcript": hint_text,
             "audio_attached_to_model": False,
             "audio_waveform_16k": None,
@@ -191,7 +191,7 @@ def process_voice_input(
 
     return {
         "mode_used": "direct_audio",
-        "mode_label": f"Нативное аудио Gemma 4 12B ({duration_sec} с)",
+        "mode_label": f"Голосовая запись ({duration_sec} с)",
         "transcript": hint_text,
         "audio_attached_to_model": attached,
         "audio_waveform_16k": waveform,

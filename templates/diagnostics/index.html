@@ -18,7 +18,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600&family=Inter:wght@400;500;600;700&family=Share+Tech+Mono&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="{% static 'css/app.css' %}" />
+  <link rel="stylesheet" href="{% static 'css/app.css' %}?v=5.0" />
 </head>
 <body class="{% if ar_mode_initial %}ar-glasses-mode{% endif %}" data-initial-session="{{ current_session.id }}" data-is-authenticated="{% if current_user %}true{% else %}false{% endif %}" data-username="{{ current_user.username|default:'' }}">
 
@@ -79,7 +79,9 @@
               <line x1="12" y1="11" x2="12" y2="17"/><line x1="9" y1="14" x2="15" y2="14"/>
             </svg>
           </button>
-          <button type="button" class="btn-drawer-close js-close-mobile-drawer" aria-label="Закрыть меню" title="Закрыть">✕</button>
+          <button type="button" class="btn-drawer-close js-close-mobile-drawer" aria-label="Закрыть меню" title="Закрыть">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
         </div>
       </div>
 
@@ -112,9 +114,15 @@
                 <span class="project-title-text">{{ p.name }}</span>
               </span>
               <div class="project-actions">
-                <button type="button" class="action-btn action-add-chat" data-project-id="{{ p.id }}" title="Новый диалог в проекте">+</button>
-                <button type="button" class="action-btn action-edit-project" data-project-id="{{ p.id }}" data-project-name="{{ p.name }}" title="Переименовать проект">✎</button>
-                <button type="button" class="action-btn action-delete-project" data-project-id="{{ p.id }}" data-project-name="{{ p.name }}" title="Удалить проект">✕</button>
+                <button type="button" class="action-btn action-add-chat" data-project-id="{{ p.id }}" title="Новый диалог в проекте">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                </button>
+                <button type="button" class="action-btn action-edit-project" data-project-id="{{ p.id }}" data-project-name="{{ p.name }}" title="Переименовать проект">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
+                </button>
+                <button type="button" class="action-btn action-delete-project" data-project-id="{{ p.id }}" data-project-name="{{ p.name }}" title="Удалить проект">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                </button>
               </div>
             </div>
             <div class="project-chats">
@@ -267,7 +275,7 @@
             <span>Интеллектуальный стенд автодиагностики и пошагового ремонта</span>
           </div>
           <p style="font-size:0.88rem; color:var(--text-secondary); margin-bottom: 8px;">
-            Здравствуйте! Я экспертная система автодиагностики «ИИдеал Авто» на базе мультимодальной нейросети Gemma 4. Готов помочь локализовать поломку, расшифровать ошибки ЭБУ и составить пошаговый план ремонта.
+            Здравствуйте! Я экспертная система автодиагностики «ИИдеал Авто». Готов помочь локализовать поломку, расшифровать ошибки ЭБУ и составить пошаговый план ремонта.
           </p>
           <p style="font-size:0.82rem; color:var(--text-muted); margin-bottom: 12px;">
             Опишите симптом своими словами, выберите код ошибки OBD-II из словаря, прикрепите лог сканера или фото неисправного узла, либо запишите голосовой вопрос.
@@ -320,7 +328,7 @@
             <div class="mic-button-wrap" id="micButtonWrap">
               <span class="mic-pulse-aura" aria-hidden="true"></span>
               <canvas class="mic-spectrogram-ring" id="micSpectrogramCanvas" width="88" height="88" aria-hidden="true"></canvas>
-              <button type="button" class="btn-tool btn-mic" id="btnVoiceRecord" title="Нативный голосовой ввод в модель Gemma 4 (embed_audio)" aria-label="Голосовой ввод">
+              <button type="button" class="btn-tool btn-mic" id="btnVoiceRecord" title="Голосовой ввод запроса (запись речи)" aria-label="Голосовой ввод">
                 <svg class="mic-svg-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                   <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/>
                   <path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="22"/>
@@ -350,7 +358,9 @@
         <button type="button" class="inspector-tab-btn" data-inspector-tab="paneDtc" role="tab" aria-selected="false">
           Словарь DTC ({{ hw_telemetry.rag.total_dtc_codes }})
         </button>
-        <button type="button" class="btn-drawer-close js-close-mobile-drawer" aria-label="Закрыть панель" title="Закрыть">✕</button>
+        <button type="button" class="btn-drawer-close js-close-mobile-drawer" aria-label="Закрыть панель" title="Закрыть">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
       </div>
 
       <!-- Вкладка 1: Сводный чеклист -->
@@ -427,7 +437,10 @@
       </div>
       <div style="padding: 12px 16px; display:flex; align-items:center; justify-content:space-between; gap:8px; flex-wrap:wrap;">
         <button type="button" class="chip-scenario" id="btnSwitchCameraFacing">Сменить камеру (Тыл/Фронт)</button>
-        <button type="button" class="chip-scenario" id="btnOpenObdModalFromCamera" title="Подключить сканер OBD-II / ELM327 (USB / Bluetooth)">🔌 Сканер OBD-II / ELM327</button>
+        <button type="button" class="chip-scenario" id="btnOpenObdModalFromCamera" title="Подключить сканер OBD-II / ELM327 (USB / Bluetooth)" style="display:inline-flex; align-items:center; gap:6px;">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v6"/><path d="M7 8h10"/><path d="M5 8h14a2 2 0 0 1 2 2v2a8 8 0 0 1-8 8v2h-2v-2a8 8 0 0 1-8-8v-2a2 2 0 0 1 2-2z"/></svg>
+          <span>Сканер OBD-II / ELM327</span>
+        </button>
         <button type="button" class="btn-send" id="btnCapturePhoto">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="4"/>
@@ -439,16 +452,43 @@
   </div>
 
   <!-- ====================================================================
-       РЕЖИМ ДЛЯ AR / VR ОЧКОВ (1. RAYNEO OPTICAL #000000, 2. VR РЕЖИМ)
+       РЕЖИМ ДЛЯ AR / VR ОЧКОВ (1. ОПТИЧЕСКИЙ ПРОЗРАЧНЫЙ, 2. VR РЕЖИМ)
        ==================================================================== -->
   <div class="ar-hud-overlay" id="arHudOverlay" aria-label="Интерфейс дополненной реальности для AR и VR">
     <!-- Полноэкранный фон видеопотока для подрежима "VR режим" -->
     <video id="arBgVideoEl" class="ar-bg-video-stream" autoplay playsinline muted style="display:none;"></video>
 
+    <!-- Барьер для вертикальной ориентации мобильного устройства -->
+    <div class="ar-portrait-barrier" id="arPortraitBarrier">
+      <div class="ar-barrier-card">
+        <div class="ar-barrier-rotate-anim">
+          <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+            <rect x="5" y="2" width="14" height="20" rx="3"></rect>
+            <path d="M12 18h.01"></path>
+            <path d="M17 8l3-3m0 0l-3-3m3 3H12" stroke-linecap="round" stroke-linejoin="round"></path>
+          </svg>
+        </div>
+        <h3 class="ar-barrier-title">Поверните экран горизонтально</h3>
+        <p class="ar-barrier-desc">
+          Интерфейс AR / VR очков доступен исключительно в <strong>альбомной (горизонтальной)</strong> ориентации.
+        </p>
+        <button type="button" class="btn-action-ghost" id="btnExitArFromBarrier" style="margin-top:8px; display:inline-flex; align-items:center; gap:6px;">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          <span>Выйти из AR</span>
+        </button>
+      </div>
+    </div>
+
     <div class="ar-top-status">
       <div class="ar-submode-toggle" aria-label="Подрежим AR / VR">
-        <button type="button" class="btn-attach-code active" id="btnArModeRayneo" title="Прозрачный фон для портативных AR-очков">🕶️ Портативные AR-очки (Прозрачный)</button>
-        <button type="button" class="btn-attach-code" id="btnArModePassthrough" title="Трансляция видео с камеры на весь экран как фон в VR режиме">📹 VR режим (Камера-фон)</button>
+        <button type="button" class="btn-attach-code active" id="btnArModeRayneo" title="Прозрачный фон для портативных AR-очков" style="display:inline-flex; align-items:center; gap:6px;">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="6" cy="14" r="4"/><circle cx="18" cy="14" r="4"/><line x1="10" y1="14" x2="14" y2="14"/><path d="M2 14l2-6h2"/><path d="M22 14l-2-6h-2"/></svg>
+          <span>Портативные AR-очки (Прозрачный)</span>
+        </button>
+        <button type="button" class="btn-attach-code" id="btnArModePassthrough" title="Трансляция видео с камеры на весь экран как фон в VR режиме" style="display:inline-flex; align-items:center; gap:6px;">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>
+          <span>VR режим (Камера-фон)</span>
+        </button>
       </div>
 
       <button type="button" class="btn-attach-code" id="btnArSwitchBgCamera" title="Переключить камеру фона в VR режиме (Тыл / Фронт)" style="display:none;" disabled>
@@ -472,8 +512,11 @@
     <!-- Плавающее окно #1: Камера и визир узла -->
     <div class="ar-floating-window" id="arWindowCamera">
       <div class="ar-window-dragbar" data-drag-window="arWindowCamera">
-        <span>[AR ОКНО 1] КАМЕРА И ВИЗИР УЗЛА</span>
-        <span style="font-size:0.7rem; opacity:0.8;">Перетащите за заголовок</span>
+        <span class="ar-window-dragbar-title" style="display:inline-flex; align-items:center; gap:6px;">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>
+          <span>Камера и визир узла</span>
+        </span>
+        <span class="ar-window-dragbar-hint">⋮⋮ Перетащить</span>
       </div>
       <div class="ar-window-content">
         <div class="camera-Viewport" style="border-radius:10px; border:1px solid rgba(249,115,22,0.45); margin-bottom:10px;">
@@ -503,8 +546,11 @@
     <!-- Плавающее окно #2: Ответы ИИ и Чеклист -->
     <div class="ar-floating-window" id="arWindowAssistant">
       <div class="ar-window-dragbar" data-drag-window="arWindowAssistant">
-        <span>[AR ОКНО 2] ДИАЛОГ С ИИ И ЧЕКЛИСТ РЕМОНТА</span>
-        <span style="font-size:0.7rem; opacity:0.8;">Перетащите за заголовок</span>
+        <span class="ar-window-dragbar-title" style="display:inline-flex; align-items:center; gap:6px;">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+          <span>Ассистент и чеклист ремонта</span>
+        </span>
+        <span class="ar-window-dragbar-hint">⋮⋮ Перетащить</span>
       </div>
       <div class="ar-window-content">
         <div id="arAssistantFeed" style="margin-bottom: 12px; max-height: calc(65vh - 120px); overflow-y:auto;">
@@ -550,7 +596,9 @@
     <div class="settings-modal-card">
       <div class="panel-section-header">
         <span id="settingsModalTitle">Аккаунт и Настройки</span>
-        <button type="button" class="btn-icon-top" id="btnCloseSettingsModal" aria-label="Закрыть окно аккаунта и настроек">✕</button>
+        <button type="button" class="btn-icon-top" id="btnCloseSettingsModal" aria-label="Закрыть окно аккаунта и настроек">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
       </div>
       <div class="settings-modal-body">
         <!-- Блок управления аккаунтом -->
@@ -632,7 +680,9 @@
     <div class="project-modal-card">
       <div class="panel-section-header">
         <span id="newProjectModalTitle">Новый проект диагностики</span>
-        <button type="button" class="btn-icon-top" id="btnCloseProjectModal" aria-label="Закрыть">✕</button>
+        <button type="button" class="btn-icon-top" id="btnCloseProjectModal" aria-label="Закрыть">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
       </div>
       <div class="settings-modal-body">
         <div>
@@ -658,7 +708,9 @@
     <div class="project-modal-card" style="max-width:440px;">
       <div class="panel-section-header">
         <span id="tagModalTitle">Тег диалога</span>
-        <button type="button" class="btn-icon-top" id="btnCloseTagModal" aria-label="Закрыть">✕</button>
+        <button type="button" class="btn-icon-top" id="btnCloseTagModal" aria-label="Закрыть">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
       </div>
       <div class="settings-modal-body">
         <input type="hidden" id="tagModalSessionId" value="" />
@@ -700,7 +752,9 @@
           <h3 class="custom-dialog-title" id="customDialogTitle">Подтверждение</h3>
           <span class="custom-dialog-subtitle" id="customDialogSubtitle">ИИдеал Авто</span>
         </div>
-        <button type="button" class="btn-icon-top custom-dialog-close" id="btnCustomDialogClose" aria-label="Закрыть">✕</button>
+        <button type="button" class="btn-icon-top custom-dialog-close" id="btnCustomDialogClose" aria-label="Закрыть">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
       </div>
 
       <div class="custom-dialog-content">
@@ -726,7 +780,9 @@
     <div class="auth-modal-card">
       <div class="panel-section-header">
         <span id="authModalTitle">Авторизация в ИИдеал Авто</span>
-        <button type="button" class="btn-icon-top" id="btnCloseAuthModal" aria-label="Закрыть окно авторизации">✕</button>
+        <button type="button" class="btn-icon-top" id="btnCloseAuthModal" aria-label="Закрыть окно авторизации">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
       </div>
       <div class="auth-tabs">
         <button type="button" class="auth-tab-btn active" id="tabAuthLogin">Вход</button>
@@ -773,7 +829,9 @@
           </svg>
           <span class="image-lightbox-title" id="imageLightboxTitle">Просмотр изображения</span>
         </div>
-        <button type="button" class="btn-icon-top image-lightbox-close" id="btnCloseImageLightbox" aria-label="Закрыть просмотр">✕</button>
+        <button type="button" class="btn-icon-top image-lightbox-close" id="btnCloseImageLightbox" aria-label="Закрыть просмотр">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
       </div>
       <div class="image-lightbox-body">
         <img src="" alt="Просмотр изображения" class="image-lightbox-img" id="imageLightboxImg" />
@@ -782,7 +840,7 @@
   </div>
 
   <!-- ====================================================================
-       МОДАЛЬНОЕ ОКНО: ПРЕДПРОСМОТР СОДЕРЖИМОГО ДОКУМЕНТА ДЛЯ МОДЕЛИ (GEMMA 4)
+       МОДАЛЬНОЕ ОКНО: ПРЕДПРОСМОТР СОДЕРЖИМОГО ДОКУМЕНТА ДЛЯ МОДЕЛИ
        ==================================================================== -->
   <div class="modal-backdrop doc-preview-modal-backdrop" id="documentPreviewModal" role="dialog" aria-modal="true" aria-hidden="true" style="display:none;">
     <div class="doc-preview-modal-card">
@@ -791,10 +849,12 @@
           <div class="doc-badge-pill staged-icon-pdf" id="docPreviewBadge">DOC</div>
           <div style="min-width:0;">
             <h3 class="doc-preview-modal-title" id="docPreviewTitle">Документ</h3>
-            <div class="doc-preview-modal-subtitle" id="docPreviewSubtitle">Точные данные, передаваемые в контекст Gemma 4</div>
+            <div class="doc-preview-modal-subtitle" id="docPreviewSubtitle">Точные данные, передаваемые экспертной системе</div>
           </div>
         </div>
-        <button type="button" class="btn-icon-top doc-preview-close" id="btnCloseDocPreviewModal" aria-label="Закрыть предпросмотр">✕</button>
+        <button type="button" class="btn-icon-top doc-preview-close" id="btnCloseDocPreviewModal" aria-label="Закрыть предпросмотр">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
       </div>
 
       <div class="doc-preview-modal-stats">
@@ -825,7 +885,7 @@
 
         <div class="doc-preview-images-section" id="docPreviewImagesSection" style="display:none;">
           <div class="doc-preview-section-header" style="margin-top:14px;">
-            <span class="doc-preview-section-title">Извлечённые схемы и иллюстрации (Gemma Vision):</span>
+            <span class="doc-preview-section-title">Извлечённые схемы и иллюстрации:</span>
           </div>
           <div class="doc-preview-images-grid" id="docPreviewImagesGrid"></div>
         </div>
@@ -840,7 +900,9 @@
     <div class="obd-modal-card">
       <div class="panel-section-header">
         <span id="obdModalTitle">Диагностический сканер OBD-II (ELM327)</span>
-        <button type="button" class="btn-icon-top" id="btnCloseObdModal" aria-label="Закрыть окно OBD-II">✕</button>
+        <button type="button" class="btn-icon-top" id="btnCloseObdModal" aria-label="Закрыть окно OBD-II">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
       </div>
       <div style="padding: 18px 20px; display:flex; flex-direction:column; gap:14px;">
         <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap;">
@@ -898,7 +960,7 @@
   </div>
 
   <script id="initialHardwareTelemetry" type="application/json">{{ hw_telemetry_json|safe }}</script>
-  <script src="{% static 'js/obd2.js' %}"></script>
-  <script src="{% static 'js/app.js' %}"></script>
+  <script src="{% static 'js/obd2.js' %}?v=5.0"></script>
+  <script src="{% static 'js/app.js' %}?v=5.0"></script>
 </body>
 </html>

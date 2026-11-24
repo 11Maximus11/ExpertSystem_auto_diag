@@ -3,6 +3,35 @@
  * Работает непосредственно в современных браузерах (Chrome, Edge, Opera, мобильный Chrome на Android).
  */
 
+function decodeAscii(buf?: ArrayBuffer | ArrayBufferView | null): string {
+  if (!buf) return "";
+  if (typeof TextDecoder !== "undefined") {
+    try {
+      return new TextDecoder("ascii").decode(buf);
+    } catch (_) {}
+  }
+  const u8 =
+    buf instanceof Uint8Array
+      ? buf
+      : ArrayBuffer.isView(buf)
+      ? new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength)
+      : new Uint8Array(buf as ArrayBuffer);
+  let s = "";
+  for (let i = 0; i < u8.length; i++) s += String.fromCharCode(u8[i]);
+  return s;
+}
+
+function encodeAscii(str: string = ""): Uint8Array {
+  if (typeof TextEncoder !== "undefined") {
+    try {
+      return new TextEncoder().encode(str);
+    } catch (_) {}
+  }
+  const u8 = new Uint8Array(str.length);
+  for (let i = 0; i < str.length; i++) u8[i] = str.charCodeAt(i) & 0xff;
+  return u8;
+}
+
 export interface OBDTransportCallbacks {
   onLine: (line: string) => void;
   onPrompt?: () => void;
@@ -28,8 +57,6 @@ export class WebBluetoothOBD {
   private rxCharacteristic: any = null;
   private callbacks: OBDTransportCallbacks;
   private buffer: string = "";
-  private decoder = new TextDecoder("ascii");
-  private encoder = new TextEncoder();
 
   constructor(callbacks: OBDTransportCallbacks) {
     this.callbacks = callbacks;
@@ -129,7 +156,7 @@ export class WebBluetoothOBD {
       await this.rxCharacteristic.startNotifications();
       this.rxCharacteristic.addEventListener("characteristicvaluechanged", (event: any) => {
         const value = event.target.value;
-        const text = this.decoder.decode(value);
+        const text = decodeAscii(value);
         this.handleIncomingChunk(text);
       });
 
@@ -148,7 +175,7 @@ export class WebBluetoothOBD {
       throw new Error("Bluetooth соединение не установлено");
     }
     const cleanCmd = cmd.trim() + "\r";
-    const data = this.encoder.encode(cleanCmd);
+    const data = encodeAscii(cleanCmd);
     try {
       if (this.txCharacteristic.properties.writeWithoutResponse) {
         await this.txCharacteristic.writeValueWithoutResponse(data);

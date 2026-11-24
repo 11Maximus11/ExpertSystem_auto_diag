@@ -7,11 +7,15 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
 
-    <!-- Camera & Audio for AR Mode and Voice Diagnostics -->
+    <!-- Camera (Internal & External USB Boroscopes/Endoscopes/FLIR) & Audio -->
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+
+    <!-- High-rate Sensors for 3DoF AR HUD Head-Tracking -->
+    <uses-permission android:name="android.permission.HIGH_SAMPLING_RATE_SENSORS" />
 
     <!-- Bluetooth & BLE OBD-II Scanner Permissions -->
     <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
@@ -21,10 +25,24 @@
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
 
-    <!-- USB Host for Wired OBD-II (FTDI / CH340 / ELM327 USB) -->
-    <uses-feature android:name="android.hardware.bluetooth_le" android:required="false" />
+    <!-- USB Host & Accessory for Wired OBD-II & Smart Glasses -->
     <uses-feature android:name="android.hardware.usb.host" android:required="false" />
+    <uses-feature android:name="android.hardware.usb.accessory" android:required="false" />
+    <uses-feature android:name="android.hardware.bluetooth_le" android:required="false" />
+
+    <!-- Cameras (Front, Back, External USB Endoscopes) -->
     <uses-feature android:name="android.hardware.camera" android:required="false" />
+    <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />
+    <uses-feature android:name="android.hardware.camera.front" android:required="false" />
+    <uses-feature android:name="android.hardware.camera.any" android:required="false" />
+    <uses-feature android:name="android.hardware.camera.external" android:required="false" />
+
+    <!-- Sensors (Orientation, Gyroscope, Accelerometer, Compass) -->
+    <uses-feature android:name="android.hardware.sensor.accelerometer" android:required="false" />
+    <uses-feature android:name="android.hardware.sensor.gyroscope" android:required="false" />
+    <uses-feature android:name="android.hardware.sensor.compass" android:required="false" />
+    <uses-feature android:name="android.hardware.sensor.stepcounter" android:required="false" />
+    <uses-feature android:name="android.hardware.microphone" android:required="false" />
 
     <application
         android:allowBackup="true"
@@ -32,18 +50,75 @@
         android:label="@string/app_name"
         android:supportsRtl="true"
         android:usesCleartextTraffic="true"
+        android:resizeableActivity="true"
         android:theme="@style/Theme.LeCodesApp">
-        <!-- singleTask: a warm deep link re-enters the SAME instance via onNewIntent (the "url"
-             app event) instead of stacking a second activity with its own engine. -->
+
+        <!-- Samsung DeX & Multi-Display Support -->
+        <meta-data android:name="com.samsung.android.keepalive.density" android:value="true" />
+        <meta-data android:name="com.samsung.android.multidisplay.keep_process_alive" android:value="true" />
+        <meta-data android:name="com.sec.android.app.multiwindow" android:value="true" />
+        <meta-data android:name="com.sec.android.support.multiwindow" android:value="true" />
+        <meta-data android:name="com.sec.android.multiwindow.activity.STYLE" android:value="fullscreenOnly" />
+
+        <!-- Smart Glasses & AR Ecosystem (RayNeo, TCL, XREAL, Rokid, Viture) -->
+        <meta-data android:name="rayneo.ar.supported" android:value="true" />
+        <meta-data android:name="rayneo.display.mode" android:value="3dof|presentation|hud" />
+        <meta-data android:name="com.rayneo.ar.category" android:value="automotive" />
+        <meta-data android:name="com.tcl.xr.mode" android:value="ar_hud" />
+        <meta-data android:name="xreal.ar.support" android:value="true" />
+        <meta-data android:name="xreal.display.mode" android:value="presentation" />
+        <meta-data android:name="rokid.ar.support" android:value="true" />
+        <meta-data android:name="viture.xr.support" android:value="true" />
+        <meta-data android:name="android.supports_size_changes" android:value="true" />
+
         <activity
             android:name=".MainActivity"
             android:exported="true"
             android:launchMode="singleTask"
+            android:resizeableActivity="true"
+            android:supportsPictureInPicture="true"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboard|keyboardHidden|navigation|density|uiMode"
             android:windowSoftInputMode="adjustResize">
+
+            <!-- Standard Launchers -->
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
+                <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
+
+            <!-- Desktop & Dock Launchers (Samsung DeX, Car Docks, Secondary Home) -->
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.DESK_DOCK" />
+                <category android:name="android.intent.category.CAR_DOCK" />
+                <category android:name="android.intent.category.SECONDARY_HOME" />
+                <category android:name="android.intent.category.MULTIWINDOW_LAUNCHER" />
+            </intent-filter>
+
+            <!-- Smart Glasses Ecosystems: RayNeo, TCL, XREAL, Rokid, Viture, OpenXR -->
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <action android:name="com.rayneo.action.LAUNCH_AR" />
+                <action android:name="com.rayneo.action.LAUNCH_HUD" />
+                <category android:name="com.rayneo.intent.category.AR_APP" />
+                <category android:name="com.rayneo.intent.category.XR_APP" />
+                <category android:name="com.tcl.intent.category.XR_APP" />
+                <category android:name="com.nreal.intent.category.NR_APP" />
+                <category android:name="com.xreal.intent.category.AR_APP" />
+                <category android:name="com.rokid.intent.category.AR_APP" />
+                <category android:name="com.viture.intent.category.XR_APP" />
+                <category android:name="org.khronos.openxr.intent.category.IMMERSIVE_HMD" />
+            </intent-filter>
+
+            <!-- USB Attachment for AR Glasses & OBD Adapters -->
+            <intent-filter>
+                <action android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED" />
+                <action android:name="android.hardware.usb.action.USB_ACCESSORY_ATTACHED" />
+            </intent-filter>
+            <meta-data
+                android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED"
+                android:resource="@xml/device_filter" />
         </activity>
     </application>
 

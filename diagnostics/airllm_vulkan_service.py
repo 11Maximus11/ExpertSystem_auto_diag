@@ -1479,15 +1479,15 @@ class AirLLMVulkanOrchestrator:
                 if env_max_new > 0:
                     target_max_new = min(env_max_new, available_ctx)
                 elif is_greeting_or_casual:
-                    target_max_new = min(280, available_ctx)
+                    target_max_new = min(80, available_ctx)
                 elif is_followup:
-                    target_max_new = min(650, available_ctx)
+                    target_max_new = min(220, available_ctx)
                 else:
-                    target_max_new = min(1050, available_ctx)
+                    target_max_new = min(360, available_ctx)
 
                 tok = getattr(processor, "tokenizer", processor)
-                # Токен 106 у Gemma 4 = <turn|>, 1 = <eos>. НЕ добавлять 107 (это перенос строки \n)!
-                eos_ids = [1, 106]
+                # Токены закрытия Gemma 4: 106=<turn|>, 105=<|turn>, 101=<channel|>, 1=<eos>, 50=<|tool_response>
+                eos_ids = [1, 106, 105, 101, 50]
                 tok_eos = getattr(tok, "eos_token_id", None)
                 if tok_eos is not None:
                     if isinstance(tok_eos, list):
@@ -1499,18 +1499,53 @@ class AirLLMVulkanOrchestrator:
 
                 gen_temp = 0.55 if is_greeting_or_casual else 0.38
 
-                stopping_criteria = None
-                if cancel_event is not None:
-                    from transformers import StoppingCriteria, StoppingCriteriaList
+                from transformers import StoppingCriteria, StoppingCriteriaList
 
-                    class EventStoppingCriteria(StoppingCriteria):
-                        def __init__(self, ev: threading.Event):
-                            self.ev = ev
+                max_time_sec = 45.0 if is_greeting_or_casual else (90.0 if is_followup else 120.0)
 
-                        def __call__(self, input_ids: torch.LongTensor, scores: torch.FloatTensor, **kwargs) -> bool:
-                            return self.ev.is_set()
+                class SmartDiagnosticStoppingCriteria(StoppingCriteria):
+                    def __init__(self, ev, tokenizer, in_len: int, is_greet: bool, max_time: float):
+                        self.ev = ev
+                        self.tokenizer = tokenizer
+                        self.input_len = in_len
+                        self.is_greeting = is_greet
+                        self.max_time = max_time
+                        self.start_t = time.perf_counter()
+                        self.stop_ids = {1, 106, 105, 101, 50}
 
-                    stopping_criteria = StoppingCriteriaList([EventStoppingCriteria(cancel_event)])
+                    def __call__(self, input_ids: torch.LongTensor, scores: torch.FloatTensor, **kwargs) -> torch.BoolTensor:
+                        bsz = input_ids.shape[0]
+                        dev = input_ids.device
+                        if self.ev is not None and self.ev.is_set():
+                            return torch.full((bsz,), True, device=dev, dtype=torch.bool)
+                        if (time.perf_counter() - self.start_t) >= self.max_time:
+                            return torch.full((bsz,), True, device=dev, dtype=torch.bool)
+                        cur_len = input_ids.shape[-1]
+                        if cur_len > self.input_len:
+                            last_id = int(input_ids[0, -1].item())
+                            if last_id in self.stop_ids:
+                                return torch.full((bsz,), True, device=dev, dtype=torch.bool)
+                            new_cnt = cur_len - self.input_len
+                            if self.is_greeting and new_cnt >= 20:
+                                if last_id == 107:
+                                    tail = self.tokenizer.decode(input_ids[0, -5:].tolist(), skip_special_tokens=True)
+                                    if any(tail.endswith(p) for p in [".\n", "!\n", "?\n", "\n\n"]):
+                                        return torch.full((bsz,), True, device=dev, dtype=torch.bool)
+                            elif not self.is_greeting and new_cnt >= 50:
+                                tail = self.tokenizer.decode(input_ids[0, -6:].tolist(), skip_special_tokens=False)
+                                if "```" in tail and ("}" in tail or "\n" in tail):
+                                    return torch.full((bsz,), True, device=dev, dtype=torch.bool)
+                        return torch.full((bsz,), False, device=dev, dtype=torch.bool)
+
+                stopping_criteria = StoppingCriteriaList([
+                    SmartDiagnosticStoppingCriteria(
+                        ev=cancel_event,
+                        tokenizer=tok,
+                        in_len=input_len,
+                        is_greet=is_greeting_or_casual,
+                        max_time=max_time_sec,
+                    )
+                ])
 
                 with torch.inference_mode():
                     gen_ids = model.generate(
@@ -1604,9 +1639,16 @@ class AirLLMVulkanOrchestrator:
                 if card:
                     dtc_cards[active_c] = card
 
+        if settings_obj is None:
+            try:
+                from .models import SystemSettings
+                settings_obj = SystemSettings.get_active()
+            except Exception:
+                settings_obj = None
+
         global_summary = (
             settings_obj.global_memory_summary
-            if settings_obj.cross_dialog_memory_enabled
+            if settings_obj and settings_obj.cross_dialog_memory_enabled
             else ""
         )
 

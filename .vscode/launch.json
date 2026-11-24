@@ -2,6 +2,15 @@
   "version": "0.2.0",
   "configurations": [
     {
+      "name": "Android JVM: Прикрепить отладчик Device Tools (Kotlin/Java)",
+      "type": "android-jvm",
+      "request": "attach",
+      "target": "select",
+      "packageName": "com.example.aidealautodiaglecodes",
+      "projectRoot": "${workspaceFolder}/lecodes_webapp/android",
+      "preLaunchTask": "Android: Собрать и запустить APK (le.codes)"
+    },
+    {
       "name": "Django: AIdeal Auto (AirLLM Gemma 4 12B + Adaptive GPU VRAM)",
       "type": "debugpy",
       "request": "launch",
@@ -74,6 +83,16 @@
         "LLM_CTX_SIZE": "32768",
         "AIRLLM_MODEL_ID": "google/gemma-4-12B-it-qat-w4a16-ct"
       }
+    }
+  ],
+  "compounds": [
+    {
+      "name": "🚀 Full-Stack: Django Server + Android App (Pixel)",
+      "configurations": [
+        "Django: AIdeal Auto (AirLLM Gemma 4 12B + Adaptive GPU VRAM)",
+        "Android JVM: Прикрепить отладчик Device Tools (Kotlin/Java)"
+      ],
+      "stopAll": true
     }
   ]
 }

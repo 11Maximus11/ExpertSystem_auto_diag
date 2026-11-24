@@ -1,9 +1,10 @@
-const CACHE_NAME = 'aideal-auto-v3';
+const CACHE_NAME = 'aideal-auto-v5';
 const PRECACHE_URLS = [
   '/',
   '/manifest.json',
-  '/static/css/app.css',
-  '/static/js/app.js',
+  '/static/css/app.css?v=5.0',
+  '/static/js/app.js?v=5.0',
+  '/static/js/obd2.js?v=5.0',
   '/static/icons/icon-192.svg',
   '/static/icons/icon-512.svg'
 ];

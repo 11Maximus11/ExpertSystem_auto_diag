@@ -9,7 +9,10 @@
     "LLAMA_VULKAN": "1",
     "MAX_VRAM_MB": "8192",
     "LLM_CTX_SIZE": "2048",
-    "AIRLLM_COMPRESSION": "4bit"
+    "AIRLLM_COMPRESSION": "4bit",
+    "ANDROID_HOME": "C:\\Program Files (x86)\\Android\\android-sdk",
+    "ANDROID_SDK_ROOT": "C:\\Program Files (x86)\\Android\\android-sdk",
+    "ANDROID_AVD_HOME": "C:\\Users\\maxxf\\.android\\avd"
   },
   "terminal.integrated.env.linux": {
     "PYTHONUTF8": "1",
@@ -19,5 +22,8 @@
     "LLM_CTX_SIZE": "2048",
     "AIRLLM_COMPRESSION": "4bit"
   },
-  "java.configuration.updateBuildConfiguration": "interactive"
+  "java.configuration.updateBuildConfiguration": "automatic",
+  "android-ide.fixSoftwareRendering": true,
+  "android-ide.embeddedEmulator": false,
+  "android-ide.deviceViewMode": "mirror"
 }

@@ -42,11 +42,55 @@ export function createObdScannerScreen(callbacks?: ObdScannerCallbacks): any {
     "[SYS] Готов к подключению сканера ELM327 по Web Bluetooth или Web Serial"
   ]);
 
+  const dtcContainer = UIColumn().style({ width: "100%" });
+  const terminalLogsContainer = UIColumn().style({
+    backgroundColor: "#050914",
+    borderRadius: 8,
+    padding: 10,
+    maxHeight: 140,
+    borderWidth: 1,
+    borderColor: "#1e293b",
+    width: "100%"
+  });
+
+  const updateDtcUi = () => {
+    const list = dtcListSignal.value;
+    const nodes: any[] = [];
+    if (list.length === 0) {
+      nodes.push(
+        UIText("Активных кодов неисправностей не обнаружено в памяти ЭБУ.")
+          .style({ color: "#10b981", fontSize: 12, paddingVertical: 4 })
+      );
+    } else {
+      nodes.push(
+        UIRow(...list.map(c => DtcChip(c))).style({ flexWrap: "wrap", marginBottom: 8 })
+      );
+      if (callbacks?.onSendDtcToAi) {
+        nodes.push(
+          PrimaryButton("Отправить ошибки в ИИ-диагност →", () => callbacks.onSendDtcToAi?.(list))
+        );
+      }
+    }
+    dtcContainer.setContent(nodes);
+  };
+
   const addLog = (dir: string, text: string) => {
     const time = new Date().toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
     const line = `[${time}] ${dir === "in" ? "RX <" : dir === "out" ? "TX >" : "•"} ${text}`;
     terminalLogsSignal.value = [...terminalLogsSignal.value.slice(-25), line];
+
+    terminalLogsContainer.append(
+      UIText(line).style({
+        color: line.includes("TX") ? "#38bdf8" : line.includes("RX") ? "#34d399" : "#94a3b8",
+        fontSize: 11,
+        fontFamily: "monospace",
+        lineHeight: 16
+      })
+    );
   };
+
+  // Первоначальный рендер
+  updateDtcUi();
 
   // Подписка на события протокола ELM327
   obdProtocol.onStatusChange = (st, msg) => {
@@ -62,7 +106,10 @@ export function createObdScannerScreen(callbacks?: ObdScannerCallbacks): any {
     voltageSignal.value = s.voltage;
     loadSignal.value = s.engineLoad;
     throttleSignal.value = s.throttle;
-    dtcListSignal.value = s.dtcList;
+    if (s.dtcList && s.dtcList.length !== dtcListSignal.value.length) {
+      dtcListSignal.value = s.dtcList;
+      updateDtcUi();
+    }
   };
 
   obdProtocol.onLog = (dir, text) => {
@@ -94,6 +141,7 @@ export function createObdScannerScreen(callbacks?: ObdScannerCallbacks): any {
     try {
       const codes = await obdProtocol.readDTC();
       dtcListSignal.value = codes;
+      updateDtcUi();
     } finally {
       isReadingDtcSignal.value = false;
     }
@@ -103,11 +151,13 @@ export function createObdScannerScreen(callbacks?: ObdScannerCallbacks): any {
     const ok = await obdProtocol.clearDTC();
     if (ok) {
       dtcListSignal.value = [];
+      updateDtcUi();
     }
   };
 
   const hasBt = WebBluetoothOBD.isSupported();
   const hasSerial = WebSerialOBD.isSupported();
+  const isArHudSignal = signal<boolean>(false);
 
   const header = HeaderBar(
     "OBD-II Приборы & Датчики",
@@ -130,7 +180,7 @@ export function createObdScannerScreen(callbacks?: ObdScannerCallbacks): any {
       hasSerial
         ? PrimaryButton("USB COM", () => handleConnectSerial(38400))
         : null,
-      SecondaryButton(
+        SecondaryButton(
         () => (connStatusSignal.value === "connected" && obdProtocol.getTransportType() === "demo" ? "Демо (Стоп)" : "Демо-тест"),
         () => {
           if (connStatusSignal.value === "connected" && obdProtocol.getTransportType() === "demo") {
@@ -138,6 +188,12 @@ export function createObdScannerScreen(callbacks?: ObdScannerCallbacks): any {
           } else {
             handleConnectDemo();
           }
+        }
+      ),
+      SecondaryButton(
+        () => (isArHudSignal.value ? "AR HUD: Вкл" : "AR HUD (Очки / DeX)"),
+        () => {
+          isArHudSignal.value = !isArHudSignal.value;
         }
       ),
       UISpacer(),
@@ -220,22 +276,7 @@ export function createObdScannerScreen(callbacks?: ObdScannerCallbacks): any {
       SecondaryButton("Сброс (04)", handleClearDTC)
     ).style({ alignItems: "center", marginBottom: 10, width: "100%", flexWrap: "wrap", gap: 6 }),
 
-    () => {
-      const list = dtcListSignal.value;
-      if (list.length === 0) {
-        return UIText("Активных кодов неисправностей не обнаружено в памяти ЭБУ.")
-          .style({ color: "#10b981", fontSize: 12, paddingVertical: 4 });
-      }
-
-      return UIColumn(
-        UIRow(
-          ...list.map(c => DtcChip(c))
-        ).style({ flexWrap: "wrap", marginBottom: 8 }),
-        callbacks?.onSendDtcToAi
-          ? PrimaryButton("Отправить ошибки в ИИ-диагност →", () => callbacks.onSendDtcToAi?.(list))
-          : null
-      );
-    }
+    dtcContainer
   ).style({
     backgroundColor: "#131b2e",
     borderRadius: 12,
@@ -249,25 +290,7 @@ export function createObdScannerScreen(callbacks?: ObdScannerCallbacks): any {
   // Терминал AT команд
   const terminalSection = UIColumn(
     UIText("Журнал команд ELM327 / OBD-II").style({ color: "#94a3b8", fontSize: 12, fontWeight: "bold", marginBottom: 6 }),
-    UIColumn(
-      () =>
-        terminalLogsSignal.value.map(line =>
-          UIText(line).style({
-            color: line.includes("TX") ? "#38bdf8" : line.includes("RX") ? "#34d399" : "#94a3b8",
-            fontSize: 11,
-            fontFamily: "monospace",
-            lineHeight: 16
-          })
-        )
-    ).style({
-      backgroundColor: "#050914",
-      borderRadius: 8,
-      padding: 10,
-      maxHeight: 140,
-      borderWidth: 1,
-      borderColor: "#1e293b",
-      width: "100%"
-    })
+    terminalLogsContainer
   ).style({
     backgroundColor: "#0d1322",
     borderRadius: 12,
@@ -277,9 +300,49 @@ export function createObdScannerScreen(callbacks?: ObdScannerCallbacks): any {
     width: "100%"
   });
 
+  // Высококонтрастный AR HUD блок для смарт-очков и внешних дисплеев (AR-очки, внешние экраны, DeX)
+  const arHudCard = UIColumn(
+    UIRow(
+      UIText("AR HUD ПРОЕКЦИЯ • ОЧКИ & ВНЕШНИЙ ЭКРАН")
+        .style({ color: "#38bdf8", fontSize: 12, fontWeight: "bold" }),
+      UISpacer(),
+      UIText("3DoF Tracking активен")
+        .style({ color: "#10b981", fontSize: 11, fontWeight: "bold" })
+    ).style({ marginBottom: 6 }),
+    UIRow(
+      UIColumn(
+        UIText("СКОРОСТЬ").style({ color: "#6ee7b7", fontSize: 11, fontWeight: "bold" }),
+        UIRow(
+          UIText(() => `${speedSignal.value}`).style({ color: "#10b981", fontSize: 48, fontWeight: "bold" }),
+          UIText(" км/ч").style({ color: "#6ee7b7", fontSize: 14, alignSelf: "flex-end", marginBottom: 8, marginLeft: 4 })
+        )
+      ).style({ flex: 1, alignItems: "center" }),
+      UIColumn(
+        UIText("ОБОРОТЫ ДВС").style({ color: "#fcd34d", fontSize: 11, fontWeight: "bold" }),
+        UIRow(
+          UIText(() => `${rpmSignal.value}`).style({ color: "#f59e0b", fontSize: 48, fontWeight: "bold" }),
+          UIText(" RPM").style({ color: "#fcd34d", fontSize: 14, alignSelf: "flex-end", marginBottom: 8, marginLeft: 4 })
+        )
+      ).style({ flex: 1, alignItems: "center" })
+    ).style({ width: "100%", justifyContent: "space-around", paddingVertical: 8 }),
+    UIRow(
+      UIText(() => `ОЖ: ${coolantSignal.value}°C  |  Нагрузка: ${loadSignal.value}%  |  Дроссель: ${throttleSignal.value}%  |  АКБ: 14.1 В`)
+        .style({ color: "#93c5fd", fontSize: 12, textAlign: "center", width: "100%" })
+    ).style({ paddingBottom: 4 })
+  ).style({
+    backgroundColor: "#000000",
+    borderRadius: 14,
+    padding: 12,
+    borderWidth: 2,
+    borderColor: "#10b981",
+    marginBottom: 12,
+    width: "100%"
+  });
+
   const scrollBody = UIScrollable(
     UIColumn(
       connectionBar,
+      arHudCard,
       gaugesGrid,
       dtcSection,
       terminalSection

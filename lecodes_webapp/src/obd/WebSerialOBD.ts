@@ -3,6 +3,35 @@
  * Поддерживает микросхемы FTDI, CH340, CP2102, Prolific, OpenPort на скоростях 38400, 115200, 9600 бод.
  */
 
+function decodeAscii(buf?: ArrayBuffer | ArrayBufferView | null): string {
+  if (!buf) return "";
+  if (typeof TextDecoder !== "undefined") {
+    try {
+      return new TextDecoder("ascii").decode(buf);
+    } catch (_) {}
+  }
+  const u8 =
+    buf instanceof Uint8Array
+      ? buf
+      : ArrayBuffer.isView(buf)
+      ? new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength)
+      : new Uint8Array(buf as ArrayBuffer);
+  let s = "";
+  for (let i = 0; i < u8.length; i++) s += String.fromCharCode(u8[i]);
+  return s;
+}
+
+function encodeAscii(str: string = ""): Uint8Array {
+  if (typeof TextEncoder !== "undefined") {
+    try {
+      return new TextEncoder().encode(str);
+    } catch (_) {}
+  }
+  const u8 = new Uint8Array(str.length);
+  for (let i = 0; i < str.length; i++) u8[i] = str.charCodeAt(i) & 0xff;
+  return u8;
+}
+
 import { OBDTransportCallbacks } from "./WebBluetoothOBD";
 
 export class WebSerialOBD {
@@ -14,8 +43,6 @@ export class WebSerialOBD {
   private keepReading: boolean = false;
   private callbacks: OBDTransportCallbacks;
   private buffer: string = "";
-  private decoder = new TextDecoder("ascii");
-  private encoder = new TextEncoder();
 
   constructor(callbacks: OBDTransportCallbacks) {
     this.callbacks = callbacks;
@@ -72,7 +99,7 @@ export class WebSerialOBD {
       throw new Error("Serial соединение не открыто");
     }
     const cleanCmd = cmd.trim() + "\r";
-    const data = this.encoder.encode(cleanCmd);
+    const data = encodeAscii(cleanCmd);
     await this.writer.write(data);
   }
 
@@ -110,7 +137,7 @@ export class WebSerialOBD {
             break;
           }
           if (value) {
-            const text = this.decoder.decode(value);
+            const text = decodeAscii(value);
             this.handleIncomingChunk(text);
           }
         }

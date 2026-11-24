@@ -1744,18 +1744,34 @@ body.ar-glasses-mode .ar-hud-overlay {
   transform: translateX(-50%);
   display: flex;
   align-items: center;
-  flex-wrap: wrap;
-  justify-content: center;
-  gap: 10px;
-  padding: 6px 14px;
-  border-radius: 999px;
-  background: rgba(10, 15, 25, 0.9);
-  border: 1px solid rgba(56, 189, 248, 0.5);
-  font-family: var(--font-mono);
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
+  gap: 8px;
+  padding: 6px 12px;
+  border-radius: 14px;
+  background: rgba(10, 15, 25, 0.94);
+  border: 1px solid rgba(56, 189, 248, 0.45);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.65);
+  font-family: var(--font-sans);
   font-size: 0.76rem;
   color: #38bdf8;
   z-index: 140;
   max-width: 96vw;
+}
+
+.ar-top-status::-webkit-scrollbar {
+  display: none;
+}
+
+.ar-top-status .btn-attach-code {
+  padding: 5px 10px;
+  font-size: 0.76rem;
+  height: 32px;
+  border-radius: 8px;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .ar-session-nav {
@@ -1810,6 +1826,15 @@ body.ar-glasses-mode .ar-hud-overlay {
   font-weight: 700;
 }
 
+/* Кнопка смены камеры VR ВСЕГДА скрыта в AR и видна только в passthrough-mode */
+#btnArSwitchBgCamera {
+  display: none !important;
+}
+
+.ar-hud-overlay.passthrough-mode #btnArSwitchBgCamera {
+  display: inline-flex !important;
+}
+
 .ar-hud-overlay.passthrough-mode {
   background: transparent !important;
 }
@@ -1819,6 +1844,165 @@ body.ar-glasses-mode .ar-hud-overlay {
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
   box-shadow: 0 0 28px rgba(0, 0, 0, 0.6);
+}
+
+/* Барьер для вертикальной (портретной) ориентации мобильного устройства */
+.ar-portrait-barrier {
+  display: none;
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  background: #000000;
+  color: #f8fafc;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  text-align: center;
+}
+
+.ar-barrier-card {
+  max-width: 360px;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  background: rgba(15, 23, 42, 0.95);
+  border: 1.5px solid rgba(249, 115, 22, 0.5);
+  border-radius: 18px;
+  padding: 32px 24px;
+  box-shadow: 0 0 35px rgba(249, 115, 22, 0.2);
+}
+
+.ar-barrier-rotate-anim {
+  color: var(--accent-orange);
+  animation: arRotatePrompt 2s ease-in-out infinite;
+}
+
+@keyframes arRotatePrompt {
+  0%, 15% { transform: rotate(0deg); }
+  50%, 70% { transform: rotate(-90deg); }
+  85%, 100% { transform: rotate(0deg); }
+}
+
+.ar-barrier-title {
+  font-size: 1.15rem;
+  font-weight: 700;
+  color: #ffffff;
+  margin: 0;
+}
+
+.ar-barrier-desc {
+  font-size: 0.85rem;
+  line-height: 1.5;
+  color: var(--text-secondary);
+  margin: 0;
+}
+
+/* В портретной (вертикальной) ориентации AR/VR HUD отключается и выводится экран поворота */
+@media (orientation: portrait) {
+  body.ar-glasses-mode .ar-portrait-barrier {
+    display: flex !important;
+  }
+  body.ar-glasses-mode .ar-top-status,
+  body.ar-glasses-mode .ar-floating-window,
+  body.ar-glasses-mode .ar-bg-video-stream {
+    display: none !important;
+  }
+}
+
+/* AR HUD: Стилизация ленты сообщений и чеклиста (без лишнего визуального шума) */
+#arAssistantFeed .msg-select-cb,
+#arAssistantFeed .btn-msg-delete,
+#arAssistantFeed .btn-delete-msg,
+#arAssistantFeed .msg-select-label,
+#arAssistantFeed .msg-card-actions label,
+#arAssistantFeed .msg-card-actions button {
+  display: none !important;
+}
+
+#arAssistantFeed .msg-card {
+  margin-bottom: 8px;
+  border-radius: 12px;
+  background: rgba(10, 15, 26, 0.82);
+  border: 1px solid rgba(56, 189, 248, 0.3);
+  padding: 10px 12px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.5);
+}
+
+#arAssistantFeed .msg-user {
+  background: rgba(15, 23, 42, 0.8);
+  border-color: rgba(249, 115, 22, 0.35);
+  margin-left: 20px;
+}
+
+#arAssistantFeed .msg-assistant {
+  background: rgba(8, 14, 25, 0.9);
+  border-color: rgba(56, 189, 248, 0.5);
+  margin-right: 10px;
+}
+
+#arAssistantFeed .msg-header {
+  margin-bottom: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+#arAssistantFeed .msg-role-badge {
+  font-size: 0.68rem;
+  letter-spacing: 0.04em;
+  font-weight: 700;
+  padding: 2px 7px;
+  border-radius: 6px;
+}
+
+#arAssistantFeed .msg-time {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+}
+
+#arAssistantFeed .msg-content-prose {
+  font-size: 0.82rem;
+  line-height: 1.45;
+  color: #f1f5f9;
+}
+
+#arAssistantFeed audio {
+  max-width: 100%;
+  height: 32px;
+  border-radius: 6px;
+  margin-top: 6px;
+  filter: invert(0.9) hue-rotate(180deg);
+}
+
+#arAssistantFeed .repair-step-item {
+  padding: 6px 8px;
+  margin-bottom: 5px;
+  background: rgba(2, 6, 23, 0.6);
+  border: 1px solid rgba(56, 189, 248, 0.2);
+  border-radius: 8px;
+  font-size: 0.78rem;
+}
+
+#arAssistantFeed .repair-step-item.completed {
+  border-color: rgba(34, 197, 94, 0.45);
+  background: rgba(34, 197, 94, 0.1);
+}
+
+.ar-window-dragbar-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.85rem;
+  font-weight: 700;
+}
+
+.ar-window-dragbar-hint {
+  font-size: 0.68rem;
+  opacity: 0.7;
+  font-weight: 500;
 }
 
 .ar-floating-window {
@@ -1919,11 +2103,14 @@ body.ar-glasses-mode .ar-hud-overlay {
   flex-direction: column;
   align-items: stretch;
   gap: 12px;
-  padding: 14px 16px;
-  border-radius: 12px;
+  padding: 16px;
+  border-radius: 14px;
   background: var(--bg-elevated);
   border: 1px solid var(--border-subtle);
   margin-bottom: 14px;
+  box-sizing: border-box;
+  width: 100%;
+  overflow: hidden;
 }
 
 .account-profile-info {
@@ -1932,6 +2119,22 @@ body.ar-glasses-mode .ar-hud-overlay {
   gap: 10px;
   min-width: 0;
   width: 100%;
+  flex-wrap: wrap;
+}
+
+.account-profile-label {
+  font-size: 0.82rem;
+  color: var(--text-muted);
+}
+
+.account-profile-username {
+  background: rgba(249, 115, 22, 0.14);
+  color: var(--accent-orange);
+  padding: 3px 10px;
+  border-radius: 6px;
+  font-size: 0.88rem;
+  border: 1px solid rgba(249, 115, 22, 0.3);
+  font-family: var(--font-mono);
 }
 
 .account-avatar {
@@ -1952,9 +2155,43 @@ body.ar-glasses-mode .ar-hud-overlay {
 .account-profile-actions {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
   width: 100%;
   flex-wrap: wrap;
+  margin-top: 4px;
+}
+
+.account-profile-actions button {
+  height: 36px;
+  border-radius: 8px;
+  font-size: 0.82rem;
+  font-weight: 600;
+  padding: 0 14px;
+  flex: 1 1 auto;
+  justify-content: center;
+}
+
+.demo-mode-box {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.demo-mode-box .settings-desc {
+  width: 100%;
+  margin: 0;
+  line-height: 1.5;
+  font-size: 0.82rem;
+  color: var(--text-secondary);
+}
+
+.demo-mode-box .btn-auth-submit {
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  margin: 0;
+  height: 42px;
+  border-radius: 10px;
 }
 
 .btn-danger-outline {
@@ -2083,12 +2320,12 @@ body.ar-glasses-mode .ar-hud-overlay {
     flex-shrink: 0;
   }
 
-  /* Затемнение фона при открытом боковом меню сайдбара (без навязчивого блюра) */
+  /* Подложка при открытом боковом меню сайдбара (без блюра и без затемнения) */
   .sidebar-backdrop {
     display: block;
     position: fixed;
     inset: 0;
-    background: rgba(0, 0, 0, 0.65);
+    background: transparent;
     z-index: 340;
     opacity: 0;
     pointer-events: none;
@@ -2309,11 +2546,16 @@ body.ar-glasses-mode .ar-hud-overlay {
   .settings-modal-card,
   .project-modal-card,
   .auth-modal-card,
-  .camera-modal-card {
+  .camera-modal-card,
+  .obd-modal-card,
+  .doc-preview-modal-card,
+  .image-lightbox-card {
     width: 100% !important;
     max-width: min(440px, calc(100vw - 24px)) !important;
     box-sizing: border-box !important;
     margin: auto !important;
+    border-radius: 20px !important;
+    overflow-x: hidden !important;
   }
   .custom-dialog-actions {
     display: flex;
@@ -2691,9 +2933,10 @@ body.ar-glasses-mode .ar-hud-overlay {
   max-height: 85vh;
   background: var(--bg-surface);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-card);
+  border-radius: 20px;
   overflow-y: auto;
-  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.65);
+  overflow-x: hidden;
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.7);
   display: flex;
   flex-direction: column;
 }
@@ -3151,25 +3394,29 @@ body.ar-glasses-mode .ar-hud-overlay {
   max-width: 420px;
   background: var(--bg-surface);
   border: 1px solid var(--border-strong);
-  border-radius: var(--radius-surface);
-  box-shadow: var(--shadow-modal);
+  border-radius: 20px !important;
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.75), 0 0 0 1px rgba(255, 255, 255, 0.08);
   overflow: hidden;
   animation: modalPopIn 0.22s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 .auth-tabs {
   display: flex;
-  background: var(--bg-elevated);
-  border-bottom: 1px solid var(--border-subtle);
+  background: rgba(15, 23, 42, 0.75);
+  padding: 4px;
+  border-radius: 12px;
+  margin: 16px 20px 0 20px;
+  border: 1px solid var(--border-subtle);
+  gap: 4px;
 }
 
 .auth-tab-btn {
   flex: 1;
-  padding: 12px;
+  padding: 9px 12px;
+  border-radius: 8px;
   background: transparent;
   border: none;
-  border-bottom: 2px solid transparent;
-  color: var(--text-secondary);
+  color: var(--text-muted);
   font-weight: 600;
   font-size: 0.85rem;
   text-align: center;
@@ -3179,15 +3426,23 @@ body.ar-glasses-mode .ar-hud-overlay {
 
 .auth-tab-btn.active {
   color: var(--accent-orange);
-  border-bottom-color: var(--accent-orange);
-  background: rgba(249, 115, 22, 0.08);
+  background: rgba(249, 115, 22, 0.16);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
 }
 
 .auth-modal-body {
-  padding: 20px;
+  padding: 16px 20px 20px 20px;
   display: flex;
   flex-direction: column;
   gap: 14px;
+}
+
+.auth-modal-body .custom-dialog-input {
+  height: 42px;
+  border-radius: 10px;
+  padding: 0 14px;
+  font-size: 0.88rem;
+  box-sizing: border-box;
 }
 
 .auth-error-banner {

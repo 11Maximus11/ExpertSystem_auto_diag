@@ -134,8 +134,8 @@ def _sanitize_attachment(att: Dict[str, Any]) -> Dict[str, Any]:
     att = dict(att)
     if "mode" in att:
         mode_val = str(att["mode"])
-        if "ggml" in mode_val.lower():
-            att["mode"] = "Gemma 4 Native Audio"
+        if "ggml" in mode_val.lower() or "gemma" in mode_val.lower():
+            att["mode"] = "audio"
     return att
 
 
@@ -943,7 +943,7 @@ def api_ask_expert(request: HttpRequest) -> JsonResponse:
                     "size_bytes": len(wav_bytes),
                     "duration": voice_info.get("duration_sec", 0.0),
                     "mode": voice_info["mode_label"],
-                    "transcript": voice_info["transcript"] or f"Прямой аудиовход Gemma 4 ({voice_info.get('duration_sec', 0.0):.1f} с)",
+                    "transcript": voice_info["transcript"] or "",
                 }
             )
         else:
@@ -1002,7 +1002,7 @@ def api_ask_expert(request: HttpRequest) -> JsonResponse:
                     "size_bytes": len(wav_bytes),
                     "duration": voice_info.get("duration_sec", 0.0),
                     "mode": voice_info["mode_label"],
-                    "transcript": voice_info["transcript"] or f"Прямой аудиовход Gemma 4 ({voice_info.get('duration_sec', 0.0):.1f} с)",
+                    "transcript": voice_info["transcript"] or "",
                 }
             )
         except Exception:

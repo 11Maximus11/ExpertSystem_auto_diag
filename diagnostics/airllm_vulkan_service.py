@@ -407,8 +407,8 @@ def _create_adaptive_airllm_model(
                 gc.collect()
                 torch.cuda.empty_cache()
 
-                # Безопасный запас VRAM под динамический KV-кэш и рабочую область активного слоя (по умолчанию 384 МБ)
-                min_safety_headroom_mb = int(os.environ.get("VRAM_HEADROOM_MB", "384"))
+                # Безопасный запас VRAM под динамический KV-кэш, DMA-стриминг и WDDM (по умолчанию 1152 МБ)
+                min_safety_headroom_mb = int(os.environ.get("VRAM_HEADROOM_MB", "1152"))
                 target_gpu_layers_env = os.environ.get("VULKAN_GPU_LAYERS") or os.environ.get("AIRLLM_GPU_LAYERS")
                 max_target_layers = int(target_gpu_layers_env) if target_gpu_layers_env else 48
 
@@ -473,14 +473,76 @@ def _create_adaptive_airllm_model(
             self._streamed_indices = streamed_indices
             self.streamed_layers_count = len(streamed_indices)
 
-            # 3. Закрепляем стриминговые слои в page-locked RAM (pin_memory) для мгновенного PCIe DMA
+            # 3. Закрепляем стриминговые слои в page-locked RAM (pin_memory) с предконвертацией W4A16 -> int4pack для мгновенного PCIe DMA без пиков VRAM
+            self._fast_buffer_bindings: Dict[int, List[Tuple[Any, str, torch.Tensor]]] = {}
             use_pin = torch.cuda.is_available() and str(self.running_device).startswith("cuda")
+            can_int4pack = (
+                use_pin
+                and hasattr(torch, "_convert_weight_to_int4pack")
+                and hasattr(torch.ops.aten, "_weight_int4pack_mm")
+            )
+            streamed_int4_count = 0
             for idx in self._streamed_indices:
                 sd = self._pinned_cpu_cache.get(idx)
                 if sd is None:
                     sd = self.load_layer_to_cpu(self.layer_names[idx])
                 bindings = []
+                buf_bindings = []
+
+                # Предварительно группируем W4A16Linear-пары (weight_packed + weight_scale) для int4pack DMA
+                w4_groups: Dict[str, Dict[str, Tuple[str, torch.Tensor]]] = {}
+                if can_int4pack:
+                    for param_name, val in sd.items():
+                        mod_path, _, attr = param_name.rpartition(".")
+                        if attr in ("weight_packed", "weight_scale") and mod_path:
+                            w4_groups.setdefault(mod_path, {})[attr] = (param_name, val)
+
+                packed_param_names = set()
+                if can_int4pack and w4_groups:
+                    for mod_path, pair in w4_groups.items():
+                        if "weight_packed" not in pair or "weight_scale" not in pair:
+                            continue
+                        submod = self.model.get_submodule(mod_path)
+                        if (
+                            isinstance(submod, W4A16Linear)
+                            and submod.out_features % 8 == 0
+                            and submod.in_features % 64 == 0
+                            and submod.group_size in (32, 64, 128, 256)
+                        ):
+                            wp_name, wp_val = pair["weight_packed"]
+                            ws_name, ws_val = pair["weight_scale"]
+                            try:
+                                with torch.no_grad():
+                                    wp_gpu = wp_val.to(device=self.running_device, non_blocking=False).contiguous()
+                                    wp_u8 = wp_gpu.view(torch.uint8)
+                                    swapped = ((wp_u8 & 0x0F) << 4) | (wp_u8 >> 4)
+                                    p4_gpu = torch._convert_weight_to_int4pack(swapped, 2)
+                                    p4_cpu = p4_gpu.to("cpu").contiguous().pin_memory()
+                                    del wp_gpu, wp_u8, swapped, p4_gpu
+
+                                    sz_cpu = torch.zeros(
+                                        (submod.in_features // submod.group_size, submod.out_features, 2),
+                                        dtype=torch.bfloat16,
+                                        device="cpu",
+                                    )
+                                    sz_cpu[:, :, 0] = ws_val.detach().to(dtype=torch.bfloat16, device="cpu").T
+                                    sz_cpu = sz_cpu.contiguous().pin_memory()
+
+                                submod.weight_packed = None
+                                submod.weight_scale = None
+                                submod._int4_weight = None
+                                submod._int4_scales_zeros = None
+                                buf_bindings.append((submod, "_int4_weight", p4_cpu))
+                                buf_bindings.append((submod, "_int4_scales_zeros", sz_cpu))
+                                packed_param_names.add(wp_name)
+                                packed_param_names.add(ws_name)
+                                streamed_int4_count += 1
+                            except Exception:
+                                pass
+
                 for param_name, val in sd.items():
+                    if param_name in packed_param_names:
+                        continue
                     mod_path, _, attr = param_name.rpartition(".")
                     submod = self.model.get_submodule(mod_path) if mod_path else self.model
                     # Небольшие буферы (например, layer_scalar) сразу закрепляем на GPU
@@ -508,6 +570,7 @@ def _create_adaptive_airllm_model(
                     submod._parameters[attr] = meta_p
                     bindings.append((submod, attr, cpu_t, meta_p))
                 self._fast_layer_bindings[idx] = bindings
+                self._fast_buffer_bindings[idx] = buf_bindings
                 self._pinned_cpu_cache.pop(idx, None)
 
             for idx in self._streamed_indices:
@@ -520,31 +583,42 @@ def _create_adaptive_airllm_model(
                 torch.cuda.empty_cache()
 
             logger.info(
-                "[AirLLM Gemma 4 12B] В VRAM GPU закреплено: %d/48 слоёв (int4pack ускорено: %d модулей) | PCIe DMA стриминг: %d слоёв.",
+                "[AirLLM Gemma 4 12B] В VRAM GPU закреплено: %d/48 слоёв (int4pack: %d резид. + %d DMA-стриминг) | PCIe DMA стриминг: %d слоёв.",
                 self.resident_gpu_layers_count,
                 packed_linears_count,
+                streamed_int4_count,
                 self.streamed_layers_count,
             )
 
         def _pre_hook(self, module, args):
             idx = module._airllm_idx
             bindings = self._fast_layer_bindings.get(idx)
-            if bindings is not None:
+            buf_bindings = self._fast_buffer_bindings.get(idx)
+            if bindings is not None or buf_bindings is not None:
                 dev = self.running_device
-                for submod, attr, cpu_t, _ in bindings:
-                    submod._parameters[attr] = torch.nn.Parameter(
-                        cpu_t.to(dev, non_blocking=True),
-                        requires_grad=False,
-                    )
+                if buf_bindings:
+                    for submod, attr, cpu_t in buf_bindings:
+                        submod._buffers[attr] = cpu_t.to(dev, non_blocking=True)
+                if bindings:
+                    for submod, attr, cpu_t, _ in bindings:
+                        submod._parameters[attr] = torch.nn.Parameter(
+                            cpu_t.to(dev, non_blocking=True),
+                            requires_grad=False,
+                        )
                 return
             return super()._pre_hook(module, args)
 
         def _post_hook(self, module, args, output):
             idx = module._airllm_idx
             bindings = self._fast_layer_bindings.get(idx)
-            if bindings is not None:
-                for submod, attr, _, meta_p in bindings:
-                    submod._parameters[attr] = meta_p
+            buf_bindings = self._fast_buffer_bindings.get(idx)
+            if bindings is not None or buf_bindings is not None:
+                if buf_bindings:
+                    for submod, attr, _ in buf_bindings:
+                        submod._buffers[attr] = None
+                if bindings:
+                    for submod, attr, _, meta_p in bindings:
+                        submod._parameters[attr] = meta_p
                 return output
             return super()._post_hook(module, args, output)
 

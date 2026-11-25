@@ -283,20 +283,24 @@ export function createAuthModal(callbacks?: AuthModalCallbacks): any {
             UIText("Пользовательское соглашение").style({
               color: () => THEME.accentCyan,
               fontSize: 10,
-              textDecorationLine: "underline"
+              textDecoration: "underline"
             })
           ).onClick(() => {
-            openURL(`${apiClient.getBaseUrl()}/terms/`).catch(() => {});
+            try {
+              openURL(`${apiClient.getBaseUrl()}/terms/`);
+            } catch (_) {}
           }),
           UIText("•").style({ color: () => THEME.textMuted, fontSize: 10 }),
           UIButton(
             UIText("Политика конфиденциальности").style({
               color: () => THEME.accentCyan,
               fontSize: 10,
-              textDecorationLine: "underline"
+              textDecoration: "underline"
             })
           ).onClick(() => {
-            openURL(`${apiClient.getBaseUrl()}/privacy/`).catch(() => {});
+            try {
+              openURL(`${apiClient.getBaseUrl()}/privacy/`);
+            } catch (_) {}
           })
         ).style({ alignItems: "center", gap: 6, paddingLeft: 26 })
       ).style({

@@ -851,20 +851,24 @@ export function openFirstLaunchConsentModal(onAccepted?: () => void): void {
           UIText("Пользовательское соглашение").style({
             color: () => THEME.accentCyan,
             fontSize: 11,
-            textDecorationLine: "underline"
+            textDecoration: "underline"
           })
         ).onClick(() => {
-          openURL(`${apiClient.getBaseUrl()}/terms/`).catch(() => {});
+          try {
+            openURL(`${apiClient.getBaseUrl()}/terms/`);
+          } catch (_) {}
         }),
         UIText("•").style({ color: () => THEME.textMuted, fontSize: 11 }),
         UIButton(
           UIText("Политика (152-ФЗ)").style({
             color: () => THEME.accentCyan,
             fontSize: 11,
-            textDecorationLine: "underline"
+            textDecoration: "underline"
           })
         ).onClick(() => {
-          openURL(`${apiClient.getBaseUrl()}/privacy/`).catch(() => {});
+          try {
+            openURL(`${apiClient.getBaseUrl()}/privacy/`);
+          } catch (_) {}
         })
       ).style({ alignItems: "center", gap: 6, paddingLeft: 30, marginBottom: 10 }),
 
@@ -904,9 +908,10 @@ export function openFirstLaunchConsentModal(onAccepted?: () => void): void {
       padding: 18,
       borderWidth: 1,
       borderColor: () => THEME.borderStrong,
-      width: "92%"
+      width: "100%"
     })
   )
+    .style({ left: 16, right: 16 })
     .dismissible(false)
     .transition({
       opacity: 0,
@@ -915,6 +920,113 @@ export function openFirstLaunchConsentModal(onAccepted?: () => void): void {
     });
 
   modal.show();
+}
+
+type GradientBarVariant = "crit" | "warn" | "ok" | "pending";
+const gradientBarSourceCache: Partial<Record<GradientBarVariant, any>> = {};
+
+function getGradientBarSource(variant: GradientBarVariant): any {
+  if (gradientBarSourceCache[variant]) {
+    return gradientBarSourceCache[variant];
+  }
+  const stops: [number, string][] =
+    variant === "crit"
+      ? [
+          [0, "#dc2626"],
+          [0.55, "#ef4444"],
+          [1, "#f97316"]
+        ]
+      : variant === "warn"
+        ? [
+            [0, "#ef4444"],
+            [0.45, "#f97316"],
+            [1, "#fbbf24"]
+          ]
+        : variant === "pending"
+          ? [
+              [0, "#f97316"],
+              [0.55, "#f59e0b"],
+              [1, "#38bdf8"]
+            ]
+          : [
+              [0, "#f97316"],
+              [0.45, "#eab308"],
+              [1, "#10b981"]
+            ];
+
+  try {
+    if (typeof Canvas !== "undefined") {
+      const w = 240;
+      const h = 6;
+      const cvs = new Canvas(w, h, { pixelRatio: 2 });
+      const grad = cvs.createLinearGradient(0, 0, w, 0);
+      for (const [offset, color] of stops) {
+        grad.addColorStop(offset, color);
+      }
+      cvs.fillStyle = grad;
+      cvs.fillRect(0, 0, w, h);
+      gradientBarSourceCache[variant] = cvs;
+      return cvs;
+    }
+  } catch (err) {
+    console.warn("[GradientBar] Canvas fallback to SVG:", err);
+  }
+
+  try {
+    if (typeof SvgSource !== "undefined") {
+      const stopXml = stops
+        .map(([offset, color]) => `<stop offset="${Math.round(offset * 100)}%" stop-color="${color}"/>`)
+        .join("");
+      const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="240" height="6" viewBox="0 0 240 6" preserveAspectRatio="none"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="0">${stopXml}</linearGradient></defs><rect width="240" height="6" rx="3" fill="url(#g)"/></svg>`;
+      const src = SvgSource(svg);
+      gradientBarSourceCache[variant] = src;
+      return src;
+    }
+  } catch (err) {
+    console.warn("[GradientBar] SvgSource fallback to solid:", err);
+  }
+
+  return null;
+}
+
+function GradientBarFill(
+  variant: GradientBarVariant,
+  widthValue: `${number}%` | (() => `${number}%`),
+  heightPx: number = 6
+): any {
+  const src = getGradientBarSource(variant);
+  const fallbackColor =
+    variant === "ok"
+      ? "#10b981"
+      : variant === "warn"
+        ? "#f59e0b"
+        : variant === "pending"
+          ? "#f97316"
+          : "#ef4444";
+
+  if (src) {
+    return UIBox(
+      UIImage(src).style({
+        width: "100%",
+        height: heightPx,
+        objectFit: "fill"
+      })
+    ).style({
+      width: widthValue,
+      height: heightPx,
+      borderRadius: Math.ceil(heightPx / 2),
+      overflow: "hidden",
+      alignItems: "flex-start",
+      justifyContent: "center"
+    });
+  }
+
+  return UIBox().style({
+    width: widthValue,
+    height: heightPx,
+    borderRadius: Math.ceil(heightPx / 2),
+    backgroundColor: fallbackColor
+  });
 }
 
 // =========================================================================
@@ -1759,40 +1871,6 @@ export function MessageCard(msg: ChatMessageItem, callbacks?: MessageCardCallbac
     );
   }
 
-type GradientBarVariant = "crit" | "warn" | "ok" | "pending";
-const gradientBarCanvasCache: Partial<Record<GradientBarVariant, any>> = {};
-
-function getGradientBarCanvas(variant: GradientBarVariant): any {
-  if (gradientBarCanvasCache[variant]) {
-    return gradientBarCanvasCache[variant];
-  }
-  const w = 240;
-  const h = 6;
-  const cvs = new Canvas(w, h, { pixelRatio: 2 });
-  const grad = cvs.createLinearGradient(0, 0, w, 0);
-  if (variant === "crit") {
-    grad.addColorStop(0, "#dc2626");
-    grad.addColorStop(0.55, "#ef4444");
-    grad.addColorStop(1, "#f97316");
-  } else if (variant === "warn") {
-    grad.addColorStop(0, "#ef4444");
-    grad.addColorStop(0.45, "#f97316");
-    grad.addColorStop(1, "#fbbf24");
-  } else if (variant === "pending") {
-    grad.addColorStop(0, "#f97316");
-    grad.addColorStop(0.55, "#f59e0b");
-    grad.addColorStop(1, "#38bdf8");
-  } else {
-    grad.addColorStop(0, "#f97316");
-    grad.addColorStop(0.45, "#eab308");
-    grad.addColorStop(1, "#10b981");
-  }
-  cvs.fillStyle = grad;
-  cvs.fillRect(0, 0, w, h);
-  gradientBarCanvasCache[variant] = cvs;
-  return cvs;
-}
-
   // 5. Выявленные неисправности и DTC + Health Index прогресс-бар
   if (msg.faults && msg.faults.length > 0) {
     const faultCards = msg.faults.map(fault => {
@@ -1816,24 +1894,7 @@ function getGradientBarCanvas(variant: GradientBarVariant): any {
           })
         ).style({ alignItems: "center", gap: 6, width: "100%", marginBottom: 4 }),
         UIBox(
-          ...(h > 0
-            ? [
-                UIBox(
-                  UIImage(getGradientBarCanvas(barVariant)).style({
-                    width: "100%",
-                    height: 6,
-                    objectFit: "fill"
-                  })
-                ).style({
-                  width: `${h}%`,
-                  height: 6,
-                  borderRadius: 3,
-                  overflow: "hidden",
-                  alignItems: "flex-start",
-                  justifyContent: "center"
-                })
-              ]
-            : [])
+          ...(h > 0 ? [GradientBarFill(barVariant, `${h}%`, 6)] : [])
         ).style({
           width: "100%",
           height: 6,
@@ -2308,20 +2369,11 @@ export function PendingGenerationCard(onCancel?: () => void): PendingCardHandle 
 
     // Анимированная градиентная полоса прогресса (строго от левого края)
     UIBox(
-      UIBox(
-        UIImage(getGradientBarCanvas("pending")).style({
-          width: "100%",
-          height: 5,
-          objectFit: "fill"
-        })
-      ).style({
-        width: () => `${28 + ((pulseTickSignal.value + 1) * 23)}%`,
-        height: 5,
-        borderRadius: 3,
-        overflow: "hidden",
-        alignItems: "flex-start",
-        justifyContent: "center"
-      })
+      GradientBarFill(
+        "pending",
+        () => `${28 + (pulseTickSignal.value + 1) * 23}%`,
+        5
+      )
     ).style({
       width: "100%",
       height: 5,

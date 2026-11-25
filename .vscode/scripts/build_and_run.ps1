@@ -1,4 +1,4 @@
-$ErrorActionPreference = "Stop"
+﻿$ErrorActionPreference = "Stop"
 $adb = "C:\Program Files (x86)\Android\android-sdk\platform-tools\adb.exe"
 $projectRoot = Resolve-Path "$PSScriptRoot\..\.."
 $apkPath = "C:\Users\maxxf\.android_build\aideal-autodiag-lecodes\app\outputs\apk\debug\app-debug.apk"

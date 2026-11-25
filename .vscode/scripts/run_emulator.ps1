@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$Avd = "pixel_5_-_api_34",
     [switch]$ForceGui
 )

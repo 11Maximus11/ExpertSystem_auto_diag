@@ -837,27 +837,28 @@ export function createDiagnosticsScreen(callbacks?: DiagnosticsScreenCallbacks):
     appState.messagesSignal.value = [...appState.messagesSignal.value, userMsg];
 
     currentAskAbortFlag = { cancelled: false };
-    activePendingCard = PendingGenerationCard(async () => {
-      currentAskAbortFlag.cancelled = true;
-      appState.isAskingSignal.value = false;
-      appState.statusNoteSignal.value = "Генерация отменена";
-      activePendingCard?.stop();
-      activePendingCard = null;
-      await apiClient.cancelGeneration(appState.currentSessionIdSignal.value).catch(() => {});
-      rebuildFeed();
-      toast("Генерация отменена");
-    });
-
-    appState.isAskingSignal.value = true;
-    appState.statusNoteSignal.value = "Запрос обрабатывается экспертной моделью...";
-    rebuildFeed();
-    scrollFeedToBottom();
-
-    // Подготовка структурированных параметров запроса
-    const dtcCodes = staged.filter(s => s.type === "dtc").map(s => String(s.data));
-    const audioItem = staged.find(s => s.type === "audio");
 
     try {
+      activePendingCard = PendingGenerationCard(async () => {
+        currentAskAbortFlag.cancelled = true;
+        appState.isAskingSignal.value = false;
+        appState.statusNoteSignal.value = "Генерация отменена";
+        activePendingCard?.stop();
+        activePendingCard = null;
+        await apiClient.cancelGeneration(appState.currentSessionIdSignal.value).catch(() => {});
+        rebuildFeed();
+        toast("Генерация отменена");
+      });
+
+      appState.isAskingSignal.value = true;
+      appState.statusNoteSignal.value = "Запрос обрабатывается экспертной моделью...";
+      rebuildFeed();
+      scrollFeedToBottom();
+
+      // Подготовка структурированных параметров запроса
+      const dtcCodes = staged.filter(s => s.type === "dtc").map(s => String(s.data));
+      const audioItem = staged.find(s => s.type === "audio");
+
       const resp = await apiClient.askExpert({
         query: effectiveQuery,
         sessionId: appState.currentSessionIdSignal.value,

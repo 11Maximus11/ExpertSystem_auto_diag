@@ -242,7 +242,7 @@ def _strip_reasoning_tokens(text: str) -> str:
 def extract_prose_and_json_block(raw_output: str) -> tuple[str, Optional[str]]:
     """
     Разделяет гибридный ответ модели на текстовый комментарий диагноста (`prose`)
-    и сырой JSON-блок метаданных (если модель выдала fenced ```json ... ``` или объект JSON).
+    и сырой JSON-блок метаданных (включая незакрытый ```json при обрыве по SLA).
     """
     cleaned = _strip_reasoning_tokens(raw_output)
     if not cleaned:
@@ -255,13 +255,94 @@ def extract_prose_and_json_block(raw_output: str) -> tuple[str, Optional[str]]:
         prose = (f"{prose_before}\n\n{prose_after}".strip() if prose_before and prose_after else (prose_before or prose_after))
         return prose, fence_match.group(1)
 
+    # Незакрытый fenced-блок ```json\n{... (если сработал лимит токенов/SLA в самом конце)
+    open_fence = re.search(r"```(?:json)?\s*(\{[\s\S]*)$", cleaned)
+    if open_fence:
+        prose_before = cleaned[: open_fence.start()].strip()
+        return prose_before, open_fence.group(1).strip()
+
     brace_start = cleaned.find("{")
-    brace_end = cleaned.rfind("}")
-    if brace_start != -1 and brace_end != -1 and brace_end > brace_start:
+    if brace_start != -1:
         prose_before = cleaned[:brace_start].strip()
-        return prose_before, cleaned[brace_start : brace_end + 1]
+        brace_end = cleaned.rfind("}")
+        if brace_end > brace_start:
+            candidate = cleaned[brace_start : brace_end + 1]
+            try:
+                json.loads(re.sub(r",\s*([}\]])", r"\1", candidate))
+                return prose_before, candidate
+            except Exception:
+                pass
+        return prose_before, cleaned[brace_start:].strip()
 
     return cleaned, None
+
+
+def _repair_truncated_json(raw_json: str) -> Optional[Dict[str, Any]]:
+    """
+    Восстанавливает усечённый JSON-объект LLM (например, при срабатывании 60-секундного SLA):
+    откатывается до последней завершённой пары/элемента вне строк и корректно закрывает
+    открытые `[` и `{`, сохраняя все успевшие сгенерироваться поля модели.
+    """
+    s = (raw_json or "").strip()
+    if not s.startswith("{"):
+        return None
+
+    # 1. Прямая попытка с удалением висячих запятых
+    cleaned_full = re.sub(r",\s*([}\]])", r"\1", s)
+    try:
+        parsed = json.loads(cleaned_full)
+        return parsed if isinstance(parsed, dict) else None
+    except Exception:
+        pass
+
+    # 2. Лексический проход для сбора безопасных точек отсечения вне строковых литералов
+    in_str = False
+    esc = False
+    stack: List[str] = []
+    # (cut_index, open_stack_snapshot)
+    cutpoints: List[tuple[int, List[str]]] = []
+
+    for i, ch in enumerate(s):
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            continue
+
+        if ch == '"':
+            in_str = True
+        elif ch in ("{", "["):
+            stack.append(ch)
+        elif ch in ("}", "]"):
+            if stack and ((ch == "}" and stack[-1] == "{") or (ch == "]" and stack[-1] == "[")):
+                stack.pop()
+            cutpoints.append((i + 1, list(stack)))
+        elif ch == ",":
+            # Отрезая ДО запятой, мы отбрасываем незаконченный хвост и сохраняем валидный префикс
+            cutpoints.append((i, list(stack)))
+
+    if not in_str:
+        cutpoints.append((len(s), list(stack)))
+
+    close_map = {"{": "}", "[": "]"}
+    # Перебираем точки от конца к началу (максимум 24 попытки — микросекунды)
+    for cut_idx, st_snap in reversed(cutpoints[-24:]):
+        prefix = s[:cut_idx].rstrip()
+        if not prefix or prefix[-1] in (",", ":"):
+            continue
+        suffix = "".join(close_map[c] for c in reversed(st_snap))
+        candidate = re.sub(r",\s*([}\]])", r"\1", prefix + suffix)
+        try:
+            obj = json.loads(candidate)
+            if isinstance(obj, dict) and len(obj) >= 1:
+                return obj
+        except Exception:
+            continue
+
+    return None
 
 
 def _normalize_llm_payload(parsed: Dict[str, Any]) -> Dict[str, Any]:
@@ -278,11 +359,28 @@ def _normalize_llm_payload(parsed: Dict[str, Any]) -> Dict[str, Any]:
     if isinstance(parsed.get("recommendations"), list):
         parsed["recommendations"] = [str(r).strip() for r in parsed["recommendations"] if str(r).strip()]
 
+    system_ru_map = {
+        "engine": "Двигатель",
+        "cooling": "Охлаждение",
+        "transmission": "Трансмиссия",
+        "brakes": "Тормозная система",
+        "electrical": "Электрика",
+        "suspension": "Подвеска",
+        "chassis": "Рулевое и шасси",
+        "hybrid": "Гибридная установка",
+        "battery": "АКБ и зарядка",
+    }
     norm_faults: List[Dict[str, Any]] = []
     for f in parsed.get("faults") or []:
         if not isinstance(f, dict):
             continue
-        title = str(f.get("title") or f.get("description") or "Выявленная неисправность").strip()
+        raw_title = str(f.get("title") or f.get("description") or "").strip()
+        raw_cause = str(f.get("root_cause") or f.get("cause") or "").strip()
+        # Пропускаем недописанные заглушки после восстановления усечённого JSON (например {"code":"P0171","system":"engine"})
+        if not raw_title and not raw_cause:
+            continue
+        title = raw_title or raw_cause
+        sys_key = str(f.get("system") or "engine").strip().lower()
         sev = str(f.get("severity") or "warning").strip().lower()
         if sev not in ("critical", "warning", "normal"):
             sev = "warning"
@@ -297,13 +395,13 @@ def _normalize_llm_payload(parsed: Dict[str, Any]) -> Dict[str, Any]:
         norm_faults.append(
             {
                 "code": str(f.get("code") or "OBD-DIAG").strip().upper(),
-                "system": str(f.get("system") or "engine").strip().lower(),
-                "system_ru": str(f.get("system_ru") or "Система автомобиля").strip(),
+                "system": sys_key,
+                "system_ru": str(f.get("system_ru") or system_ru_map.get(sys_key, "Система автомобиля")).strip(),
                 "title": title[:160],
                 "severity": sev,
                 "confidence": conf,
                 "health_index": hi,
-                "root_cause": str(f.get("root_cause") or f.get("cause") or title).strip(),
+                "root_cause": raw_cause or title,
             }
         )
     if "faults" in parsed:
@@ -385,8 +483,7 @@ def validate_and_coerce_structured_json(
     try:
         if not json_str:
             raise ValueError("JSON block not found")
-        json_str = re.sub(r",\s*([}\]])", r"\1", json_str)
-        parsed = json.loads(json_str)
+        parsed = _repair_truncated_json(json_str)
         if not isinstance(parsed, dict):
             raise ValueError("Parsed JSON root is not an object")
 

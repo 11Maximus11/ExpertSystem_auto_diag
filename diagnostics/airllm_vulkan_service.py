@@ -38,6 +38,10 @@ from vulkan_backend import (
     init_vulkan_environment,
 )
 
+from .autotune import (
+    AirLLMAutotuneProfile,
+    run_startup_calibration,
+)
 from .context_worker import RECENT_EXCHANGES_TO_KEEP, format_assistant_core_memory
 from .schemas import (
     DIAGNOSTIC_JSON_SCHEMA,
@@ -399,6 +403,7 @@ def _create_adaptive_airllm_model(
 
             # 2. Адаптивный динамический расчет резидентных слоев в VRAM
             decoder_indices = list(range(1, 49))
+            resident_indices: List[int] = []
             streamed_indices: List[int] = []
             packed_linears_count = 0
 
@@ -406,6 +411,11 @@ def _create_adaptive_airllm_model(
                 import gc
                 gc.collect()
                 torch.cuda.empty_cache()
+                try:
+                    torch.backends.cuda.matmul.allow_tf32 = True
+                    torch.backends.cudnn.allow_tf32 = True
+                except Exception:
+                    pass
 
                 # Безопасный запас VRAM под динамический KV-кэш, DMA-стриминг и WDDM (по умолчанию 1152 МБ)
                 min_safety_headroom_mb = int(os.environ.get("VRAM_HEADROOM_MB", "1152"))
@@ -443,6 +453,7 @@ def _create_adaptive_airllm_model(
                                 for sub in layer_mod.modules():
                                     if isinstance(sub, W4A16Linear) and sub.prepare_int4pack():
                                         packed_linears_count += 1
+                            resident_indices.append(idx)
                             self.resident_gpu_layers_count += 1
                             continue
                         except RuntimeError as oom_exc:
@@ -470,6 +481,7 @@ def _create_adaptive_airllm_model(
                     )
                 streamed_indices = decoder_indices
 
+            self._resident_indices = resident_indices
             self._streamed_indices = streamed_indices
             self.streamed_layers_count = len(streamed_indices)
 
@@ -573,22 +585,167 @@ def _create_adaptive_airllm_model(
                 self._fast_buffer_bindings[idx] = buf_bindings
                 self._pinned_cpu_cache.pop(idx, None)
 
+            self._hook_handles: Dict[int, Tuple[Any, Any]] = {}
+            self._prefetch_stream = (
+                torch.cuda.Stream(device=self.running_device)
+                if use_pin and os.environ.get("AIRLLM_DISABLE_PREFETCH") != "1"
+                else None
+            )
+            self._prefetched_gpu: Dict[int, Tuple[Any, List[Tuple[Any, str, torch.Tensor]], List[Tuple[Any, str, torch.nn.Parameter]]]] = {}
+            self._next_streamed_map: Dict[int, int] = {}
+
             for idx in self._streamed_indices:
                 module = self.layers[idx]
                 module._airllm_idx = idx
-                module.register_forward_pre_hook(self._pre_hook)
-                module.register_forward_hook(self._post_hook)
+                h_pre = module.register_forward_pre_hook(self._pre_hook)
+                h_post = module.register_forward_hook(self._post_hook)
+                self._hook_handles[idx] = (h_pre, h_post)
+
+            self._rebuild_stream_order()
 
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
             logger.info(
-                "[AirLLM Gemma 4 12B] В VRAM GPU закреплено: %d/48 слоёв (int4pack: %d резид. + %d DMA-стриминг) | PCIe DMA стриминг: %d слоёв.",
+                "[AirLLM Gemma 4 12B] В VRAM GPU закреплено: %d/48 слоёв (int4pack: %d резид. + %d DMA-стриминг, CUDA-prefetch=%s) | PCIe DMA стриминг: %d слоёв.",
                 self.resident_gpu_layers_count,
                 packed_linears_count,
                 streamed_int4_count,
+                "ON" if self._prefetch_stream is not None else "OFF",
                 self.streamed_layers_count,
             )
+
+        def _rebuild_stream_order(self) -> None:
+            self._resident_indices.sort()
+            self._streamed_indices.sort()
+            self._next_streamed_map = {
+                self._streamed_indices[i]: self._streamed_indices[i + 1]
+                for i in range(len(self._streamed_indices) - 1)
+            }
+            # Замыкаем prefetch с последнего стримингового слоя на первый для перекрытия lm_head + резидентных слоёв следующего токена
+            if len(self._streamed_indices) >= 2:
+                self._next_streamed_map[self._streamed_indices[-1]] = self._streamed_indices[0]
+            self.resident_gpu_layers_count = len(self._resident_indices)
+            self.streamed_layers_count = len(self._streamed_indices)
+
+        def clear_prefetch_cache(self) -> None:
+            if getattr(self, "_prefetch_stream", None) is not None:
+                try:
+                    self._prefetch_stream.synchronize()
+                except Exception:
+                    pass
+            if hasattr(self, "_prefetched_gpu"):
+                self._prefetched_gpu.clear()
+
+        def _schedule_prefetch(self, target_idx: int) -> None:
+            stream = self._prefetch_stream
+            if stream is None or target_idx in self._prefetched_gpu:
+                return
+            bindings = self._fast_layer_bindings.get(target_idx)
+            buf_bindings = self._fast_buffer_bindings.get(target_idx)
+            if bindings is None and buf_bindings is None:
+                return
+            dev = self.running_device
+            gpu_bufs: List[Tuple[Any, str, torch.Tensor]] = []
+            gpu_params: List[Tuple[Any, str, torch.nn.Parameter]] = []
+            with torch.cuda.stream(stream):
+                if buf_bindings:
+                    for submod, attr, cpu_t in buf_bindings:
+                        gpu_bufs.append((submod, attr, cpu_t.to(dev, non_blocking=True)))
+                if bindings:
+                    for submod, attr, cpu_t, _ in bindings:
+                        gpu_params.append(
+                            (submod, attr, torch.nn.Parameter(cpu_t.to(dev, non_blocking=True), requires_grad=False))
+                        )
+                ev = torch.cuda.Event()
+                ev.record(stream)
+            self._prefetched_gpu[target_idx] = (ev, gpu_bufs, gpu_params)
+
+        def set_resident_layer_count(self, target_count: int) -> int:
+            """
+            Живая миграция числа резидентных слоёв GPU (0..48) прямо в памяти без перечитывания шардов с диска.
+            Используется авто-калибратором при старте сервера для поиска оптимальной точки tok/s без WDDM-свопа.
+            """
+            if not (torch.cuda.is_available() and str(self.running_device).startswith("cuda")):
+                return self.resident_gpu_layers_count
+
+            self.clear_prefetch_cache()
+            target_count = max(0, min(48, int(target_count)))
+            dev = self.running_device
+
+            # Повышение числа резидентных слоёв (CPU pinned RAM -> GPU VRAM)
+            while len(self._resident_indices) < target_count and self._streamed_indices:
+                idx = self._streamed_indices[0]
+                bindings = self._fast_layer_bindings.get(idx, [])
+                buf_bindings = self._fast_buffer_bindings.get(idx, [])
+                try:
+                    gpu_bufs = [(submod, attr, cpu_t.to(dev, non_blocking=False)) for submod, attr, cpu_t in buf_bindings]
+                    gpu_params = [
+                        (submod, attr, torch.nn.Parameter(cpu_t.to(dev, non_blocking=False), requires_grad=False))
+                        for submod, attr, cpu_t, _ in bindings
+                    ]
+                    for submod, attr, gpu_t in gpu_bufs:
+                        submod._buffers[attr] = gpu_t
+                    for submod, attr, gpu_p in gpu_params:
+                        submod._parameters[attr] = gpu_p
+                    handles = self._hook_handles.pop(idx, None)
+                    if handles:
+                        handles[0].remove()
+                        handles[1].remove()
+                    self._fast_layer_bindings.pop(idx, None)
+                    self._fast_buffer_bindings.pop(idx, None)
+                    self._streamed_indices.pop(0)
+                    self._resident_indices.append(idx)
+                except RuntimeError as oom_exc:
+                    logger.warning("[AutoTuner] Нехватка VRAM при переносе слоя %d на GPU: %s", idx, oom_exc)
+                    for submod, attr, _ in buf_bindings:
+                        submod._buffers[attr] = None
+                    for submod, attr, _, meta_p in bindings:
+                        submod._parameters[attr] = meta_p
+                    torch.cuda.empty_cache()
+                    break
+
+            # Понижение числа резидентных слоёв (GPU VRAM -> CPU pinned RAM)
+            while len(self._resident_indices) > target_count and self._resident_indices:
+                idx = self._resident_indices.pop()
+                layer_mod = self.layers[idx]
+                bindings = []
+                buf_bindings = []
+                for submod in layer_mod.modules():
+                    if (
+                        isinstance(submod, W4A16Linear)
+                        and submod._int4_weight is not None
+                        and submod._int4_scales_zeros is not None
+                    ):
+                        p4_cpu = submod._int4_weight.detach().to("cpu").contiguous().pin_memory()
+                        sz_cpu = submod._int4_scales_zeros.detach().to("cpu").contiguous().pin_memory()
+                        submod._buffers["_int4_weight"] = None
+                        submod._buffers["_int4_scales_zeros"] = None
+                        buf_bindings.append((submod, "_int4_weight", p4_cpu))
+                        buf_bindings.append((submod, "_int4_scales_zeros", sz_cpu))
+                    for attr, param in list(submod._parameters.items()):
+                        if param is None or param.device.type == "meta":
+                            continue
+                        cpu_t = param.detach().to("cpu").contiguous().pin_memory()
+                        meta_p = torch.nn.Parameter(
+                            torch.empty(cpu_t.shape, dtype=cpu_t.dtype, device="meta"),
+                            requires_grad=False,
+                        )
+                        submod._parameters[attr] = meta_p
+                        bindings.append((submod, attr, cpu_t, meta_p))
+
+                self._fast_layer_bindings[idx] = bindings
+                self._fast_buffer_bindings[idx] = buf_bindings
+                self._streamed_indices.append(idx)
+                layer_mod._airllm_idx = idx
+                h_pre = layer_mod.register_forward_pre_hook(self._pre_hook)
+                h_post = layer_mod.register_forward_hook(self._post_hook)
+                self._hook_handles[idx] = (h_pre, h_post)
+
+            self._rebuild_stream_order()
+            torch.cuda.synchronize()
+            torch.cuda.empty_cache()
+            return self.resident_gpu_layers_count
 
         def _pre_hook(self, module, args):
             idx = module._airllm_idx
@@ -596,15 +753,30 @@ def _create_adaptive_airllm_model(
             buf_bindings = self._fast_buffer_bindings.get(idx)
             if bindings is not None or buf_bindings is not None:
                 dev = self.running_device
-                if buf_bindings:
-                    for submod, attr, cpu_t in buf_bindings:
-                        submod._buffers[attr] = cpu_t.to(dev, non_blocking=True)
-                if bindings:
-                    for submod, attr, cpu_t, _ in bindings:
-                        submod._parameters[attr] = torch.nn.Parameter(
-                            cpu_t.to(dev, non_blocking=True),
-                            requires_grad=False,
-                        )
+                prefetched = self._prefetched_gpu.pop(idx, None)
+                if prefetched is not None:
+                    ev, gpu_bufs, gpu_params = prefetched
+                    cur_stream = torch.cuda.current_stream(device=dev)
+                    cur_stream.wait_event(ev)
+                    for submod, attr, gpu_t in gpu_bufs:
+                        gpu_t.record_stream(cur_stream)
+                        submod._buffers[attr] = gpu_t
+                    for submod, attr, gpu_p in gpu_params:
+                        gpu_p.data.record_stream(cur_stream)
+                        submod._parameters[attr] = gpu_p
+                else:
+                    if buf_bindings:
+                        for submod, attr, cpu_t in buf_bindings:
+                            submod._buffers[attr] = cpu_t.to(dev, non_blocking=True)
+                    if bindings:
+                        for submod, attr, cpu_t, _ in bindings:
+                            submod._parameters[attr] = torch.nn.Parameter(
+                                cpu_t.to(dev, non_blocking=True),
+                                requires_grad=False,
+                            )
+                next_idx = self._next_streamed_map.get(idx)
+                if next_idx is not None:
+                    self._schedule_prefetch(next_idx)
                 return
             return super()._pre_hook(module, args)
 
@@ -651,6 +823,7 @@ class AirLLMVulkanOrchestrator:
         self._processor = None
         self._loaded_model_id: Optional[str] = None
         self._last_inference_ms: int = 0
+        self._autotune_profile: Optional[AirLLMAutotuneProfile] = None
 
     def register_cancel_event(self, session_id: str, event: threading.Event) -> None:
         """Регистрирует событие отмены для диагностической сессии."""
@@ -714,6 +887,11 @@ class AirLLMVulkanOrchestrator:
                 shards_dir,
                 max_seq,
             )
+            initial_free_vram_mb = (
+                int(torch.cuda.mem_get_info(0)[0] // (1024 * 1024))
+                if torch.cuda.is_available()
+                else 0
+            )
             self._processor = transformers.AutoProcessor.from_pretrained(
                 str(local_dir),
                 trust_remote_code=True,
@@ -724,6 +902,18 @@ class AirLLMVulkanOrchestrator:
                 max_seq_len=max_seq,
             )
             self._loaded_model_id = "google/gemma-4-12B-it-qat-w4a16-ct"
+
+            if os.environ.get("AUTODIAG_FAST_TEST") != "1" and os.environ.get("AIRLLM_SKIP_AUTOTUNE") != "1":
+                try:
+                    self._autotune_profile = run_startup_calibration(
+                        self._airllm_model,
+                        self._processor,
+                        shards_dir,
+                        initial_free_vram_mb=initial_free_vram_mb,
+                    )
+                except Exception as tune_exc:
+                    logger.warning("[AutoTuner] Ошибка стартовой калибровки (используются дефолтные лимиты): %s", tune_exc)
+
             return self._airllm_model, self._processor
 
     def preload_model_on_startup(self, async_load: bool = False) -> None:
@@ -785,6 +975,7 @@ class AirLLMVulkanOrchestrator:
                 "layer_wise_mode": True,
                 "total_layers": 48,
                 "vram_budget_gb": round(vk.vram_total_mb / 1024, 1),
+                "autotune": self._autotune_profile.to_dict() if self._autotune_profile else None,
             },
             "gguf": {
                 "rel_path": str(local_dir.relative_to(BASE_DIR)),
@@ -1095,10 +1286,15 @@ class AirLLMVulkanOrchestrator:
                 )
             )
 
+        primary_dtc_systems = {card.get("system", "engine") for card in dtc_cards.values()} if dtc_cards else set()
         for hit in rag_hits[:3]:
             meta = hit["meta"]
             code = meta.get("code", "N/A")
             if code in seen_codes or len(faults) >= 3:
+                continue
+            # Если пользователь указал конкретный код DTC (например P0171), не подмешиваем шумные коды из других систем
+            hit_sys = meta.get("system", "engine")
+            if primary_dtc_systems and hit_sys not in primary_dtc_systems and float(hit.get("score", 0.0)) < 1.5:
                 continue
             seen_codes.add(code)
             sym, sol = self.rag_engine._extract_symptom_and_solution(hit["text"])
@@ -1315,30 +1511,56 @@ class AirLLMVulkanOrchestrator:
         vehicle_info = (dialog_state.get("vehicle_info") or "").strip()
         active_codes = dialog_state.get("active_codes") or []
 
-        json_schema_hint_diag = (
-            "\n\nФОРМАТ ВЫВОДА:\n"
-            "1) Сначала напиши ёмкий и точный разбор на русском (90–140 слов, без приветствий и воды: физическая причина, точные ориентиры замеров).\n"
-            "2) Затем сразу в конце добавь ОДИН компактный блок ```json ... ``` БЕЗ поля mentor_reply:\n"
-            "```json\n"
-            "{\n"
-            '  "response_type": "diagnosis",\n'
-            '  "summary_title": "Заголовок до 7 слов",\n'
-            '  "vehicle_detected": "Марка Модель Двигатель (если известны)",\n'
-            '  "faults": [{"code": "P0300", "system": "engine", "system_ru": "Двигатель", "title": "Короткое название", "severity": "warning", "confidence": 90, "health_index": 70, "root_cause": "Короткая причина"}],\n'
-            '  "inventory": [{"name": "Нужный инструмент", "category": "tool", "spec": "Допуск", "required": true}],\n'
-            '  "repair_steps": [{"step_number": 1, "title": "Шаг", "instruction": "Краткое действие", "torque_or_spec": "Эталон"}],\n'
-            '  "recommendations": ["1 краткий практический совет"],\n'
-            '  "follow_up_question": "Один точный вопрос диагноста"\n'
-            "}\n"
-            "```\n"
-            "Правила точности: строго 1–2 faults, 2–3 inventory и 3 repair_steps (от простого к сложному, без повтора уже заменённого); "
-            "различай MPI (3.5–4.0 бар) и GDI/TSI (низкое до ТНВД 3.5–6 бар, высокое в рампе 40–150 бар); для STFT/LTFT указывай рабочую норму ±5–8%. "
-            "Допустимые system: engine, cooling, transmission, brakes, electrical, suspension, chassis, hybrid, battery."
-        )
+        profile = self._autotune_profile
+        prose_hint = profile.prose_word_hint if profile else "80–115 слов"
+        rag_top_n = profile.rag_top_n if profile else 2
+        compact_json = bool(profile.compact_json) if profile else False
+        max_mem_chars = profile.max_memory_chars if profile else 1000
+        if compact_json and not is_followup:
+            # На 8 ГБ GPU не раздуваем первичный промпт старыми несвязанными диалогами (экономим prefill и VRAM)
+            max_mem_chars = min(max_mem_chars, 320)
+        if global_summary and len(global_summary) > max_mem_chars:
+            global_summary = "…" + global_summary[-max_mem_chars:]
+        if dialog_summary and len(dialog_summary) > max_mem_chars:
+            dialog_summary = "…" + dialog_summary[-max_mem_chars:]
+
+        if compact_json:
+            json_schema_hint_diag = (
+                "\n\nФОРМАТ ВЫВОДА:\n"
+                f"1) Сначала 2–3 ёмких предложения на русском ({prose_hint}, без воды: точная физическая причина и контрольные цифры Live Data).\n"
+                "2) Сразу в конце добавь ОДИН компактный однострочный блок ```json ... ``` БЕЗ mentor_reply:\n"
+                "```json\n"
+                '{"response_type":"diagnosis","summary_title":"Заголовок до 6 слов","vehicle_detected":"Марка Модель Двигатель","faults":[{"code":"P0171","system":"engine","title":"Суть причины","severity":"warning","confidence":90,"root_cause":"Краткая причина"}],"repair_steps":[{"title":"Шаг 1","instruction":"Конкретное действие и норма"},{"title":"Шаг 2","instruction":"Следующая проверка"}],"follow_up_question":"Один точный вопрос диагноста"}\n'
+                "```\n"
+                "Правила: 1–2 faults, ровно 2 кратких repair_steps (без повтора текста из абзаца и без повтора заменённого); "
+                "MPI 3.5–4.0 бар, GDI/TSI низкое 3.5–6 бар / рампа 40–150 бар, норма STFT/LTFT ±5–8%. "
+                "system: engine, cooling, transmission, brakes, electrical, suspension, chassis, hybrid, battery."
+            )
+        else:
+            json_schema_hint_diag = (
+                "\n\nФОРМАТ ВЫВОДА:\n"
+                f"1) Сначала напиши ёмкий и точный разбор на русском ({prose_hint}, без приветствий и воды: физическая причина, точные ориентиры замеров).\n"
+                "2) Затем сразу в конце добавь ОДИН компактный блок ```json ... ``` БЕЗ поля mentor_reply:\n"
+                "```json\n"
+                "{\n"
+                '  "response_type": "diagnosis",\n'
+                '  "summary_title": "Заголовок до 7 слов",\n'
+                '  "vehicle_detected": "Марка Модель Двигатель (если известны)",\n'
+                '  "faults": [{"code": "P0300", "system": "engine", "system_ru": "Двигатель", "title": "Короткое название", "severity": "warning", "confidence": 90, "health_index": 70, "root_cause": "Короткая причина"}],\n'
+                '  "inventory": [{"name": "Нужный инструмент", "category": "tool", "spec": "Допуск", "required": true}],\n'
+                '  "repair_steps": [{"step_number": 1, "title": "Шаг", "instruction": "Краткое действие", "torque_or_spec": "Эталон"}],\n'
+                '  "recommendations": ["1 краткий практический совет"],\n'
+                '  "follow_up_question": "Один точный вопрос диагноста"\n'
+                "}\n"
+                "```\n"
+                "Правила точности: строго 1–2 faults, 2–3 inventory и 3 repair_steps (от простого к сложному, без повтора уже заменённого); "
+                "различай MPI (3.5–4.0 бар) и GDI/TSI (низкое до ТНВД 3.5–6 бар, высокое в рампе 40–150 бар); для STFT/LTFT указывай рабочую норму ±5–8%. "
+                "Допустимые system: engine, cooling, transmission, brakes, electrical, suspension, chassis, hybrid, battery."
+            )
 
         json_schema_hint_followup = (
             "\n\nФОРМАТ ВЫВОДА:\n"
-            "1) Сразу дай прямой, толковый ответ на русском (80–140 слов, без приветствий и без повтора исключённых версий; для GDI давление в рампе 40–150 бар, норма коррекций ±5–8%).\n"
+            f"1) Сразу дай прямой, толковый ответ на русском ({prose_hint}, без приветствий и без повтора исключённых версий; для GDI давление в рампе 40–150 бар, норма коррекций ±5–8%).\n"
             "2) В самом конце добавь компактный блок ```json ... ``` БЕЗ mentor_reply:\n"
             "```json\n"
             "{\n"
@@ -1461,13 +1683,13 @@ class AirLLMVulkanOrchestrator:
             )
             rag_context = self.rag_engine.prepare_llm_context(
                 query=query,
-                top_n=3,
+                top_n=rag_top_n,
                 dtc_codes=list(dtc_cards.keys()),
                 extra_docs_text=extra_docs_text or None,
                 dialog_summary=dialog_summary,
                 global_summary=global_summary,
                 vehicle_info=vehicle_info,
-                precomputed_hits=rag_hits,
+                precomputed_hits=rag_hits[:rag_top_n] if rag_hits else [],
             )
             sys_prompt = (
                 "Ты — ИИдеал Авто (AIdeal Auto), ведущий инженер-автодиагност и автоэлектрик. "
@@ -1526,11 +1748,20 @@ class AirLLMVulkanOrchestrator:
             if cancel_event and cancel_event.is_set():
                 raise GenerationCancelledError("Генерация диагностического ответа отменена пользователем.")
             try:
-                prompt_str = processor.apply_chat_template(
-                    chat_messages,
-                    tokenize=False,
-                    add_generation_prompt=True,
-                )
+                use_thinking = bool(profile and profile.enable_thinking and not is_greeting_or_casual)
+                try:
+                    prompt_str = processor.apply_chat_template(
+                        chat_messages,
+                        tokenize=False,
+                        add_generation_prompt=True,
+                        enable_thinking=use_thinking,
+                    )
+                except TypeError:
+                    prompt_str = processor.apply_chat_template(
+                        chat_messages,
+                        tokenize=False,
+                        add_generation_prompt=True,
+                    )
 
                 proc_kwargs: Dict[str, Any] = {"text": [prompt_str], "return_tensors": "pt", "padding": True}
                 if pil_images:
@@ -1553,31 +1784,44 @@ class AirLLMVulkanOrchestrator:
                 if env_max_new > 0:
                     target_max_new = min(env_max_new, available_ctx)
                 elif is_greeting_or_casual:
-                    target_max_new = min(80, available_ctx)
+                    target_max_new = min(profile.max_new_tokens_greeting if profile else 120, available_ctx)
                 elif is_followup:
-                    target_max_new = min(220, available_ctx)
+                    target_max_new = min(profile.max_new_tokens_followup if profile else 320, available_ctx)
                 else:
-                    target_max_new = min(360, available_ctx)
+                    target_max_new = min(profile.max_new_tokens_diag if profile else 460, available_ctx)
 
                 tok = getattr(processor, "tokenizer", processor)
-                # Токены закрытия Gemma 4: 106=<turn|>, 105=<|turn>, 101=<channel|>, 1=<eos>, 50=<|tool_response>
-                eos_ids = [1, 106, 105, 101, 50]
+                # Токены завершения хода Gemma 4: 1=<eos>, 106=<turn|>, 105=<|turn>.
+                # ВАЖНО: НЕ добавлять 101 (<channel|>) — иначе генерация оборвётся сразу после thought до ответа!
+                eos_ids = [1, 106, 105]
                 tok_eos = getattr(tok, "eos_token_id", None)
                 if tok_eos is not None:
                     if isinstance(tok_eos, list):
                         for eid in tok_eos:
-                            if int(eid) != 107 and int(eid) not in eos_ids:
+                            if int(eid) not in (101, 107) and int(eid) not in eos_ids:
                                 eos_ids.append(int(eid))
-                    elif int(tok_eos) != 107 and int(tok_eos) not in eos_ids:
+                    elif int(tok_eos) not in (101, 107) and int(tok_eos) not in eos_ids:
                         eos_ids.append(int(tok_eos))
 
-                gen_temp = 0.55 if is_greeting_or_casual else 0.38
+                gen_temp = 0.55 if is_greeting_or_casual else 0.35
 
                 from transformers import StoppingCriteria, StoppingCriteriaList
 
-                max_time_sec = 45.0 if is_greeting_or_casual else (90.0 if is_followup else 120.0)
+                if is_greeting_or_casual:
+                    max_time_sec = profile.max_time_sec_greeting if profile else 30.0
+                elif is_followup:
+                    max_time_sec = profile.max_time_sec_followup if profile else 50.0
+                else:
+                    max_time_sec = profile.max_time_sec_diag if profile else 60.0
 
                 class SmartDiagnosticStoppingCriteria(StoppingCriteria):
+                    """
+                    Умная остановка генерации без преждевременного обрыва:
+                    - Останавливает по cancel_event, SLA-таймауту или реальному маркеру конца хода (<eos>/<turn|>).
+                    - Для диагностического режима проверяет завершение ТОЛЬКО после закрывающего ```
+                      и успешного разбора JSON (никогда не обрывает на открывающем ```json\\n!).
+                    """
+
                     def __init__(self, ev, tokenizer, in_len: int, is_greet: bool, max_time: float):
                         self.ev = ev
                         self.tokenizer = tokenizer
@@ -1585,7 +1829,7 @@ class AirLLMVulkanOrchestrator:
                         self.is_greeting = is_greet
                         self.max_time = max_time
                         self.start_t = time.perf_counter()
-                        self.stop_ids = {1, 106, 105, 101, 50}
+                        self.stop_ids = {1, 106, 105}
 
                     def __call__(self, input_ids: torch.LongTensor, scores: torch.FloatTensor, **kwargs) -> torch.BoolTensor:
                         bsz = input_ids.shape[0]
@@ -1600,15 +1844,30 @@ class AirLLMVulkanOrchestrator:
                             if last_id in self.stop_ids:
                                 return torch.full((bsz,), True, device=dev, dtype=torch.bool)
                             new_cnt = cur_len - self.input_len
-                            if self.is_greeting and new_cnt >= 20:
-                                if last_id == 107:
-                                    tail = self.tokenizer.decode(input_ids[0, -5:].tolist(), skip_special_tokens=True)
-                                    if any(tail.endswith(p) for p in [".\n", "!\n", "?\n", "\n\n"]):
-                                        return torch.full((bsz,), True, device=dev, dtype=torch.bool)
-                            elif not self.is_greeting and new_cnt >= 50:
-                                tail = self.tokenizer.decode(input_ids[0, -6:].tolist(), skip_special_tokens=False)
-                                if "```" in tail and ("}" in tail or "\n" in tail):
-                                    return torch.full((bsz,), True, device=dev, dtype=torch.bool)
+                            if not self.is_greeting and new_cnt >= 45:
+                                piece = self.tokenizer.decode([last_id], skip_special_tokens=False)
+                                if "`" in piece or last_id == 107:
+                                    full_gen = self.tokenizer.decode(
+                                        input_ids[0, self.input_len :].tolist(),
+                                        skip_special_tokens=False,
+                                    )
+                                    visible = re.sub(
+                                        r"<\|channel>thought.*?<channel\|>",
+                                        "",
+                                        full_gen,
+                                        flags=re.DOTALL,
+                                    )
+                                    fence_m = re.search(
+                                        r"```(?:json)?\s*(\{.*?\})\s*```",
+                                        visible,
+                                        flags=re.DOTALL,
+                                    )
+                                    if fence_m:
+                                        try:
+                                            json.loads(fence_m.group(1))
+                                            return torch.full((bsz,), True, device=dev, dtype=torch.bool)
+                                        except Exception:
+                                            pass
                         return torch.full((bsz,), False, device=dev, dtype=torch.bool)
 
                 stopping_criteria = StoppingCriteriaList([
@@ -1646,11 +1905,15 @@ class AirLLMVulkanOrchestrator:
 
                 self._last_inference_ms = int((time.perf_counter() - t_start) * 1000)
                 logger.info(
-                    "[AirLLM Gemma 4] Ответ сгенерирован за %d мс (%d токенов, temp=%.2f, mode=%s).",
+                    "[AirLLM Gemma 4] Ответ сгенерирован за %d мс (in=%d, out=%d/%d токенов, %.2f tok/s, temp=%.2f, mode=%s, thinking=%s).",
                     self._last_inference_ms,
+                    input_len,
                     len(new_tokens),
+                    target_max_new,
+                    (len(new_tokens) / max(0.1, self._last_inference_ms / 1000.0)),
                     gen_temp,
                     "greeting" if is_greeting_or_casual else ("followup" if is_followup else "diag"),
+                    use_thinking,
                 )
                 return decoded
             except GenerationCancelledError:
@@ -1660,6 +1923,8 @@ class AirLLMVulkanOrchestrator:
                 logger.error("[AirLLM Gemma 4] Ошибка во время генерации: %s", exc)
                 return None
             finally:
+                if hasattr(model, "clear_prefetch_cache"):
+                    model.clear_prefetch_cache()
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
 

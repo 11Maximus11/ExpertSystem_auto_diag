@@ -10,6 +10,10 @@
 models/
 !models/.gitkeep
 
+# Профиль автоматической калибровки GPU/AirLLM (генерируется индивидуально на каждом устройстве)
+autotune_profile.json
+**/autotune_profile.json
+
 # Виртуальные окружения Python
 .venv/
 venv/

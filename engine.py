@@ -832,7 +832,25 @@ class VehicleExpertEngine:
         """
         Формирует структурированный контекст базы знаний и памяти для промпта LLM (Google Gemma 4 12B).
         """
-        hits = precomputed_hits if precomputed_hits is not None else self.diagnose(query=query, top_n=top_n, dtc_codes=dtc_codes)
+        hits = (
+            list(precomputed_hits[:top_n])
+            if precomputed_hits is not None
+            else self.diagnose(query=query, top_n=top_n, dtc_codes=dtc_codes)
+        )
+        # Если в запросе есть явные коды DTC и найдены точные совпадения, отсекаем шумные посторонние коды
+        if dtc_codes and hits:
+            dtc_set = {c.strip().upper() for c in dtc_codes if c and c.strip()}
+            exact_hits = [h for h in hits if ((h.get("meta") or {}).get("code") or "").upper() in dtc_set]
+            if exact_hits:
+                primary_systems = {((h.get("meta") or {}).get("system") or "").lower() for h in exact_hits}
+                filtered = list(exact_hits)
+                for h in hits:
+                    if h in filtered:
+                        continue
+                    h_sys = ((h.get("meta") or {}).get("system") or "").lower()
+                    if h_sys in primary_systems or float(h.get("score", 0.0)) >= 1.5:
+                        filtered.append(h)
+                hits = filtered[:top_n]
         parts: List[str] = []
 
         if vehicle_info and vehicle_info.strip():
@@ -851,13 +869,16 @@ class VehicleExpertEngine:
                 tel_str = ""
                 t_info = self.telemetry_stats.get(code)
                 if t_info and t_info.get("sample_measurements"):
-                    meas = ", ".join(f"{k}: {v}" for k, v in t_info["sample_measurements"].items())
+                    meas = ", ".join(f"{k}: {v}" for k, v in list(t_info["sample_measurements"].items())[:4])
                     tel_str = f"\n   Эталон телеметрии ({t_info.get('avg_health_index')}% HI): {meas}"
+                sym_txt = str(meta.get("symptoms", "") or "")[:180]
+                cause_txt = str(meta.get("cause", meta.get("reason", "")) or "")[:180]
+                fix_txt = str(meta.get("fix", meta.get("recommendation", "")) or "")[:240]
                 kb_lines.append(
                     f"{i}. Код: {code} ({sys_name}) | Релевантность: {h.get('score', 0):.3f}\n"
-                    f"   Симптомы: {meta.get('symptoms', '')}\n"
-                    f"   Причина: {meta.get('cause', meta.get('reason', ''))}\n"
-                    f"   Проверка и ремонт: {meta.get('fix', meta.get('recommendation', ''))}{tel_str}"
+                    f"   Симптомы: {sym_txt}\n"
+                    f"   Причина: {cause_txt}\n"
+                    f"   Проверка и ремонт: {fix_txt}{tel_str}"
                 )
             parts.append("\n".join(kb_lines))
 

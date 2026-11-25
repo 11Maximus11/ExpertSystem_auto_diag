@@ -924,6 +924,153 @@ class AIdealAutoComprehensiveTests(TransactionTestCase):
         self.assertIn("inspect_attached_image", tool_names)
         self.assertIn("inspect_attached_audio", tool_names)
 
+    def test_18_autotune_calibration_math_cache_and_gitignore(self):
+        """Проверка расчёта профилей авто-калибратора AirLLM, кэширования по GPU/VRAM и исключения из Git."""
+        import tempfile
+        from pathlib import Path
+        from diagnostics.autotune import (
+            compute_optimal_profile,
+            compute_vram_bucket_mb,
+            load_cached_profile,
+            save_cached_profile,
+        )
+
+        # 1. Профиль для 8 ГБ GPU (умеренный tok/s): без thinking, валидный JSON-бюджет в SLA <= 60 с
+        p_mid = compute_optimal_profile(
+            gpu_name="NVIDIA GeForce RTX 3050",
+            vram_total_mb=8192,
+            vram_free_bucket_mb=compute_vram_bucket_mb(5159),
+            optimal_gpu_layers=28,
+            prefill_ms=2800,
+            decode_tps=4.5,
+            min_free_vram_mb=950,
+            target_sla_sec=55.0,
+        )
+        self.assertEqual(p_mid.optimal_gpu_layers, 28)
+        self.assertEqual(p_mid.streamed_layers, 20)
+        self.assertFalse(p_mid.enable_thinking)
+        self.assertTrue(p_mid.compact_json)
+        self.assertGreaterEqual(p_mid.max_new_tokens_diag, 220)
+        self.assertLessEqual(p_mid.max_time_sec_diag, 60.0)
+
+        # 2. Профиль для быстрой GPU (>= 12 ГБ, высокий tok/s): максимум качества + enable_thinking=True
+        p_fast = compute_optimal_profile(
+            gpu_name="NVIDIA GeForce RTX 4080",
+            vram_total_mb=16384,
+            vram_free_bucket_mb=compute_vram_bucket_mb(14000),
+            optimal_gpu_layers=48,
+            prefill_ms=900,
+            decode_tps=18.0,
+            min_free_vram_mb=4000,
+            target_sla_sec=55.0,
+        )
+        self.assertTrue(p_fast.enable_thinking)
+        self.assertFalse(p_fast.compact_json)
+        self.assertGreaterEqual(p_fast.max_new_tokens_diag, 960)
+        self.assertEqual(p_fast.rag_top_n, 3)
+
+        # 3. Проверка восстановления усечённого JSON при обрыве генерации по 60с SLA
+        from diagnostics.schemas import DiagnosticStructuredResponse, validate_and_coerce_structured_json
+
+        truncated_llm = (
+            "На Skoda Octavia 1.8 TSI (CJSA) ошибка P0171 со свистом на ХХ и LTFT +18% "
+            "указывает на разрыв мембраны маслоотделителя КВКГ.\n\n"
+            "```json\n"
+            '{"response_type":"diagnosis","summary_title":"Подсос через КВКГ (P0171) на 1.8 TSI",'
+            '"vehicle_detected":"Skoda Octavia 1.8 TSI (CJSA)",'
+            '"faults":[{"code":"P0171","system":"engine","title":"Разрыв мембраны КВКГ","severity":"warning","confidence":90,"root_cause":"Неучтённый воздух на ХХ"}],'
+            '"repair_steps":[{"step_number":1,"title":"Проверка крышки КВКГ","instruction":"Приоткройте маслозаливную крышку на ХХ."},'
+            '{"step_number":2,"title":"Опрессовка дымом","instruction":"Подайте дым 0.6 бар во впуск и проверь'
+        )
+        fb = DiagnosticStructuredResponse(
+            response_type="diagnosis",
+            summary_title="Fallback заголовок",
+            mentor_reply="Fallback текст",
+            follow_up_question="Какой шаг выполняете?",
+        )
+        recovered = validate_and_coerce_structured_json(truncated_llm, fallback_response=fb)
+        self.assertEqual(recovered.summary_title, "Подсос через КВКГ (P0171) на 1.8 TSI")
+        self.assertEqual(recovered.vehicle_detected, "Skoda Octavia 1.8 TSI (CJSA)")
+        self.assertIn("КВКГ", recovered.mentor_reply)
+        self.assertEqual(len(recovered.faults), 1)
+        self.assertEqual(recovered.faults[0].code, "P0171")
+        self.assertEqual(recovered.faults[0].system_ru, "Двигатель")
+        self.assertGreaterEqual(len(recovered.repair_steps), 1)
+        self.assertEqual(recovered.repair_steps[0].title, "Проверка крышки КВКГ")
+
+        # Если обрыв произошёл на недописанном fault-объекте без title/root_cause — подставляется богатая карточка из fallback
+        stub_fault_llm = (
+            "Физическая причина — подсос воздуха через КВКГ.\n\n"
+            '```json\n{"response_type":"diagnosis","summary_title":"Подсос через КВКГ",'
+            '"vehicle_detected":"Skoda Octavia 1.8 TSI","faults":[{"code":"P0171","system":"engine","title":"Подс'
+        )
+        from diagnostics.schemas import DetectedFault
+        fb_rich = DiagnosticStructuredResponse(
+            response_type="diagnosis",
+            summary_title="Fallback",
+            mentor_reply="Fallback",
+            faults=[
+                DetectedFault(
+                    code="P0171",
+                    system="engine",
+                    system_ru="Двигатель",
+                    title="Бедная смесь Bank 1",
+                    severity="warning",
+                    confidence=95,
+                    health_index=66.0,
+                    root_cause="Подсос воздуха во впуск",
+                )
+            ],
+        )
+        rec_stub = validate_and_coerce_structured_json(stub_fault_llm, fallback_response=fb_rich)
+        self.assertEqual(rec_stub.summary_title, "Подсос через КВКГ")
+        self.assertEqual(rec_stub.vehicle_detected, "Skoda Octavia 1.8 TSI")
+        self.assertEqual(rec_stub.faults[0].title, "Бедная смесь Bank 1")
+        self.assertEqual(rec_stub.faults[0].system_ru, "Двигатель")
+
+        # 3. Сохранение, загрузка кэша и инвалидация при смене железа / VRAM / AIRLLM_RECALIBRATE=1
+        with tempfile.TemporaryDirectory() as tmpdir:
+            shards = Path(tmpdir)
+            saved = save_cached_profile(shards, p_mid)
+            self.assertTrue(saved.exists())
+
+            loaded = load_cached_profile(
+                shards,
+                gpu_name="NVIDIA GeForce RTX 3050",
+                vram_total_mb=8192,
+                vram_free_bucket_mb=p_mid.vram_free_bucket_mb,
+                target_sla_sec=55.0,
+            )
+            self.assertIsNotNone(loaded)
+            self.assertEqual(loaded.source, "cache")
+            self.assertEqual(loaded.optimal_gpu_layers, 28)
+
+            # Другая GPU -> кэш не подходит -> требуется перекалибровка
+            wrong_gpu = load_cached_profile(
+                shards,
+                gpu_name="NVIDIA GeForce RTX 4060",
+                vram_total_mb=8192,
+                vram_free_bucket_mb=p_mid.vram_free_bucket_mb,
+                target_sla_sec=55.0,
+            )
+            self.assertIsNone(wrong_gpu)
+
+            # Резкое изменение свободной VRAM -> перекалибровка
+            wrong_vram = load_cached_profile(
+                shards,
+                gpu_name="NVIDIA GeForce RTX 3050",
+                vram_total_mb=8192,
+                vram_free_bucket_mb=p_mid.vram_free_bucket_mb - 2048,
+                target_sla_sec=55.0,
+            )
+            self.assertIsNone(wrong_vram)
+
+        # 4. Проверка .gitignore: профиль калибровки строго исключён из Git
+        from django.conf import settings as dj_settings
+        gi_text = (Path(dj_settings.BASE_DIR) / ".gitignore").read_text(encoding="utf-8")
+        self.assertIn("autotune_profile.json", gi_text)
+
+
 
 
 

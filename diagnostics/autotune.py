@@ -121,8 +121,9 @@ def compute_optimal_profile(
     max_new_greeting = max(85, min(150, int(max(95, usable_decode_sec * tps * 0.35))))
 
     # Режим внутреннего рассуждения (thinking) выгоден только когда скорость позволяет
-    # уложить thought + полноценный ответ + JSON в SLA <= 55-60 с.
-    enable_thinking = bool(tps >= 11.0 and raw_diag_budget >= 580)
+    # уложить thought (~500 токенов) + полноценный ответ + закрытый JSON в SLA <= 55-60 с.
+    # При скорости < 17 tok/s включение thinking неизбежно сжигает весь бюджет токенов и SLA на рассуждения.
+    enable_thinking = bool(tps >= 17.0 and raw_diag_budget >= 850)
     if enable_thinking:
         # Добавляем резерв под скрытую цепочку рассуждений в пределах SLA
         max_new_diag = min(1150, max_new_diag + 160)

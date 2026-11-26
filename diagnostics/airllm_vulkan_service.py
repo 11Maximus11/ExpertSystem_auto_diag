@@ -1899,9 +1899,12 @@ class AirLLMVulkanOrchestrator:
                     raise GenerationCancelledError("Генерация диагностического ответа отменена пользователем.")
 
                 new_tokens = gen_ids[0][input_len:]
-                decoded = tok.decode(new_tokens, skip_special_tokens=True).strip()
-                decoded = re.sub(r"<\|channel>thought.*?<channel\|>", "", decoded, flags=re.DOTALL)
-                decoded = re.sub(r"<think>.*?</think>", "", decoded, flags=re.DOTALL).strip()
+                # Сначала декодируем со специальными токенами, чтобы гарантированно вырезать теги рассуждений
+                raw_with_specials = tok.decode(new_tokens, skip_special_tokens=False)
+                raw_cleaned = re.sub(r"<\|channel>thought.*?<channel\|>", "", raw_with_specials, flags=re.DOTALL)
+                raw_cleaned = re.sub(r"<think>.*?</think>", "", raw_cleaned, flags=re.DOTALL)
+                raw_cleaned = re.sub(r"^thought\s*\n.*?(?=(?:\n(?:[А-ЯA-Z#*]|На|В|Для|По|Про|При|Шаг|Симптом)|\Z))", "", raw_cleaned, flags=re.DOTALL)
+                decoded = re.sub(r"<\|[^>]+>|<[^>]+channel\|>|<turn\|>|<\|turn>|<pad>", "", raw_cleaned).strip()
 
                 self._last_inference_ms = int((time.perf_counter() - t_start) * 1000)
                 logger.info(

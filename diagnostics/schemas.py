@@ -236,6 +236,7 @@ def _strip_reasoning_tokens(text: str) -> str:
     """Удаляет скрытые теги рассуждений Gemma / Thinking перед парсингом текста и JSON."""
     cleaned = re.sub(r"<\|channel>thought.*?<channel\|>", "", text or "", flags=re.DOTALL)
     cleaned = re.sub(r"<think>.*?</think>", "", cleaned, flags=re.DOTALL)
+    cleaned = re.sub(r"^thought\s*\n.*?(?=(?:\n(?:[А-ЯA-Z#*]|На|В|Для|По|Про|При|Шаг|Симптом)|\Z))", "", cleaned, flags=re.DOTALL)
     return cleaned.strip()
 
 

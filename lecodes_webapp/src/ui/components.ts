@@ -7,6 +7,7 @@
  */
 
 import { apiClient } from "../api/BackendApiClient";
+import { externalDisplayBridge } from "../ar/ExternalDisplayBridge";
 import { cacheManager } from "../cache/ResourceCacheManager";
 import { appState, createWelcomeMessage } from "../state/appState";
 import {
@@ -281,6 +282,9 @@ export function LucideIcon(
       break;
     case "lucide:image":
       iconAsset = assetIcon("lucide:image");
+      break;
+    case "lucide:move":
+      iconAsset = assetIcon("lucide:move");
       break;
     default:
       iconAsset = assetIcon("lucide:circle-alert");
@@ -598,13 +602,13 @@ export function AppHeader(options: AppHeaderOptions): any {
     );
   }
 
-  // Крупная заметная кнопка AR HUD (в точности по запросу пользователя)
+  // Крупная заметная кнопка AR HUD (с индикатором подключённого внешнего AR-дисплея)
   if (options.onOpenAr) {
     actionControls.push(
       UIButton(
         UIRow(
           LucideIcon("lucide:glasses", 17, "#ffffff"),
-          UIText("AR").style({
+          UIText(() => (externalDisplayBridge.connectedSignal.value ? "AR • 2" : "AR")).style({
             color: "#ffffff",
             fontSize: 12,
             fontWeight: "bold"
@@ -612,7 +616,8 @@ export function AppHeader(options: AppHeaderOptions): any {
         ).style({ alignItems: "center", gap: 5 })
       )
         .style({
-          backgroundColor: () => THEME.accentOrange,
+          backgroundColor: () =>
+            externalDisplayBridge.connectedSignal.value ? "#0284c7" : THEME.accentOrange,
           paddingHorizontal: 11,
           height: 34,
           borderRadius: 9,
@@ -2604,6 +2609,21 @@ export function createArHudOverlay(options: {
       vrBgCamContainer.setContent([]);
       opticalWinCamContainer.setContent([]);
 
+      const customPhoto = externalDisplayBridge.customPhotoFileSignal.value;
+      if (customPhoto) {
+        const photoNode = UIImage(customPhoto).style({
+          width: "100%",
+          height: "100%",
+          objectFit: "cover"
+        });
+        if (arModeSignal.value === "vr") {
+          vrBgCamContainer.setContent([photoNode]);
+        } else {
+          opticalWinCamContainer.setContent([photoNode]);
+        }
+        return;
+      }
+
       if (!UICameraNode.supported) return;
 
       const cam = UICameraNode({ facingMode: cameraFacingSignal.value }).style({
@@ -2612,6 +2632,7 @@ export function createArHudOverlay(options: {
       });
       cam.onError((err: any) => {
         arStatusSignal.value = `Камера: ${err?.message || "отказ доступа"}`;
+        externalDisplayBridge.setStatus(arStatusSignal.value);
       });
       activeCamNode = cam;
 
@@ -2622,7 +2643,41 @@ export function createArHudOverlay(options: {
       }
     } catch (err: any) {
       arStatusSignal.value = `Камера: ${err?.message || err}`;
+      externalDisplayBridge.setStatus(arStatusSignal.value);
     }
+  };
+
+  const pickVisorPhotoFromGallery = async () => {
+    try {
+      if (externalDisplayBridge.isSupported()) {
+        const picked = await externalDisplayBridge.pickGalleryPhoto();
+        if (picked) {
+          arStatusSignal.value = `Фото в визире: ${picked.name}`;
+          externalDisplayBridge.setStatus(arStatusSignal.value);
+          mountCameraForCurrentMode();
+          toast(`Фото «${picked.name}» загружено в AR-визир`);
+        }
+        return;
+      }
+      const picked = await openFilePicker({ multiple: false, accept: "image/*" });
+      const f = Array.isArray(picked) ? picked[0] : picked;
+      if (f) {
+        externalDisplayBridge.customPhotoFileSignal.value = f;
+        externalDisplayBridge.customPhotoNameSignal.value = f.name || "engine_photo.jpg";
+        arStatusSignal.value = `Фото в визире: ${f.name || "из галереи"}`;
+        mountCameraForCurrentMode();
+        toast("Фото загружено в AR-визир");
+      }
+    } catch (err: any) {
+      toast(`Галерея: ${err?.message || "недоступно"}`);
+    }
+  };
+
+  const clearVisorPhoto = async () => {
+    await externalDisplayBridge.clearCustomPhoto();
+    arStatusSignal.value = "Возврат к живой камере";
+    externalDisplayBridge.setStatus(arStatusSignal.value);
+    mountCameraForCurrentMode();
   };
 
   const cleanupResources = () => {
@@ -2658,13 +2713,22 @@ export function createArHudOverlay(options: {
       activeRecorder = null;
     }
     isListeningArSignal.value = false;
+    externalDisplayBridge.setListening(false);
     try {
       app.setOrientation("auto");
     } catch (_) {}
+    if (externalDisplayBridge.connectedSignal.value) {
+      setTimeout(() => {
+        void externalDisplayBridge.setCameraEnabled(true);
+      }, 220);
+    }
   };
 
   const startResources = () => {
     cleanupResources();
+    if (externalDisplayBridge.connectedSignal.value) {
+      void externalDisplayBridge.setCameraEnabled(false);
+    }
     try {
       app.setOrientation("landscape");
     } catch (_) {}
@@ -2694,41 +2758,72 @@ export function createArHudOverlay(options: {
   };
 
   const captureArPhotoToAi = async () => {
-    if (!UICameraNode.supported) {
-      toast("Модуль камеры не поддерживается");
-      return;
-    }
-    if (!activeCamNode) {
-      mountCameraForCurrentMode();
-      toast("Камера инициализируется, повторите через секунду");
-      return;
-    }
-
     try {
-      arStatusSignal.value = "Захват кадра узла...";
-      const file = await activeCamNode.takePhoto();
+      let file: File | null = null;
+      let labelPrefix = "AR снимок";
+
+      // 1. Если в визире выбрано фото узла из галереи — отправляем именно его
+      if (externalDisplayBridge.customPhotoFileSignal.value) {
+        file = externalDisplayBridge.customPhotoFileSignal.value;
+        labelPrefix = externalDisplayBridge.customPhotoNameSignal.value || "AR фото узла";
+      } else if (externalDisplayBridge.connectedSignal.value && !activeCamNode) {
+        // 2. Если активен внешний AR-дисплей (очки / 2-й экран) — захватываем кадр напрямую с его камеры
+        arStatusSignal.value = "Захват кадра с внешнего AR-дисплея...";
+        externalDisplayBridge.setStatus(arStatusSignal.value);
+        const cap = await externalDisplayBridge.capturePhoto();
+        if (!cap) {
+          toast("Не удалось захватить кадр с внешнего AR-дисплея");
+          arStatusSignal.value = "Ошибка захвата кадра";
+          externalDisplayBridge.setStatus(arStatusSignal.value);
+          return;
+        }
+        file = cap.file;
+      } else {
+        // 3. Локальная камера на телефоне
+        if (!UICameraNode.supported) {
+          toast("Модуль камеры не поддерживается — выберите фото из галереи");
+          return;
+        }
+        if (!activeCamNode) {
+          mountCameraForCurrentMode();
+          toast("Камера инициализируется, повторите через секунду");
+          return;
+        }
+        arStatusSignal.value = "Захват кадра узла...";
+        file = await activeCamNode.takePhoto();
+      }
+
+      if (!file) {
+        arStatusSignal.value = "Пустой кадр камеры";
+        externalDisplayBridge.setStatus(arStatusSignal.value);
+        return;
+      }
+
       const item: StagedItem = {
         id: "ar-photo-" + Date.now(),
         type: "photo",
-        label: `AR снимок (${new Date().toLocaleTimeString("ru-RU", {
+        label: `${labelPrefix} (${new Date().toLocaleTimeString("ru-RU", {
           hour: "2-digit",
           minute: "2-digit"
         })})`,
-        meta: file?.size ? `${Math.round(file.size / 1024)} КБ` : "JPEG AR",
+        meta: file?.size ? `${Math.max(1, Math.round(file.size / 1024))} КБ` : "JPEG AR",
         data: file,
         file,
         mimeType: "image/jpeg"
       };
       appState.stagedItemsSignal.value = [...appState.stagedItemsSignal.value, item];
       arStatusSignal.value = "Кадр передан нейросети...";
+      externalDisplayBridge.setStatus(arStatusSignal.value);
       if (appState.askHandler) {
         await appState.askHandler("Осмотри этот узел автомобиля и подскажи возможную неисправность", true);
         arStatusSignal.value = "Вердикт ИИ обновлён в AR";
+        externalDisplayBridge.setStatus(arStatusSignal.value);
       } else {
         toast("Кадр добавлен в чат");
       }
     } catch (err: any) {
       arStatusSignal.value = `Ошибка снимка: ${err?.message || err}`;
+      externalDisplayBridge.setStatus(arStatusSignal.value);
     }
   };
 
@@ -3339,7 +3434,25 @@ export function createArHudOverlay(options: {
         const s = getSensors();
         return `${s.rpm || 0} rpm • ${s.coolantTemp || 0}°C • ${(s.voltage || 12.6).toFixed(1)}V`;
       }).style({ color: "#38bdf8", fontSize: 9, fontWeight: "bold" })
-    ])
+    ]),
+    UIButton(
+      UIText("✕ Живая камера").style({ color: "#fde68a", fontSize: 9, fontWeight: "bold" })
+    )
+      .style({
+        position: "absolute",
+        top: 8,
+        right: 8,
+        backgroundColor: "rgba(15, 23, 42, 0.86)",
+        borderWidth: 1,
+        borderColor: "rgba(245, 158, 11, 0.65)",
+        borderRadius: 6,
+        paddingHorizontal: 7,
+        paddingVertical: 3,
+        display: () => (externalDisplayBridge.customPhotoFileSignal.value ? "flex" : "none")
+      })
+      .onClick(() => {
+        void clearVisorPhoto();
+      })
   ).style({
     position: "absolute",
     left: 0,
@@ -3378,6 +3491,20 @@ export function createArHudOverlay(options: {
           } else {
             mountCameraForCurrentMode();
           }
+        }),
+      UIButton(LucideIcon("lucide:image", 15, "#38bdf8"))
+        .style({
+          width: 34,
+          height: 34,
+          borderRadius: 9,
+          backgroundColor: "rgba(56, 189, 248, 0.16)",
+          borderWidth: 1,
+          borderColor: "rgba(56, 189, 248, 0.45)",
+          alignItems: "center",
+          justifyContent: "center"
+        })
+        .onClick(() => {
+          void pickVisorPhotoFromGallery();
         }),
       UIButton(
         UIRow(
@@ -3820,8 +3947,457 @@ export function createArHudOverlay(options: {
       options.onClose?.();
     });
 
+  // 5. ПУЛЬТ УПРАВЛЕНИЯ ВНЕШНИМ AR-ДИСПЛЕЕМ (открывается на телефоне при подключённых очках / 2-м экране)
+  const padTargetSignal = signal<"camera" | "assistant">("assistant");
+  const remoteQuerySignal = signal<string>("");
+  let remoteModalRef: any = null;
+
+  const remoteInput = UIInput()
+    .style({
+      flex: 1,
+      height: 38,
+      backgroundColor: () => THEME.bgInput,
+      color: () => THEME.textPrimary,
+      placeholder: "Вопрос или DTC для AR-очков...",
+      placeholderColor: () => THEME.inputPlaceholder,
+      borderWidth: 1,
+      borderColor: () => THEME.borderStrong,
+      borderRadius: 10,
+      paddingHorizontal: 10,
+      fontSize: 13
+    })
+    .onChange((val: string) => {
+      remoteQuerySignal.value = val;
+    });
+
+  const handleRemoteSend = async () => {
+    const q = (remoteInput.value || remoteQuerySignal.value || "").trim();
+    if (!q && (appState.stagedItemsSignal.value || []).length === 0) {
+      toast("Введите вопрос или нажмите «Сфоткать в ИИ»");
+      return;
+    }
+    remoteInput.value = "";
+    remoteQuerySignal.value = "";
+    arStatusSignal.value = "ИИ формирует диагностику...";
+    externalDisplayBridge.setStatus(arStatusSignal.value);
+    await appState.askHandler?.(q || undefined, true);
+    arStatusSignal.value = "Ответ ИИ обновлён на AR-дисплее";
+    externalDisplayBridge.setStatus(arStatusSignal.value);
+  };
+
+  const remoteTouchpad = UIButton(
+    UIColumn(
+      LucideIcon("lucide:move", 20, "#38bdf8"),
+      UIText(() =>
+        padTargetSignal.value === "camera"
+          ? "Тачпад: перемещение окна «Камера» на внешнем экране"
+          : "Тачпад: перемещение окна «Ассистент» на внешнем экране"
+      ).style({
+        color: "#cbd5e1",
+        fontSize: 11,
+        textAlign: "center",
+        marginTop: 4
+      })
+    ).style({ alignItems: "center", justifyContent: "center" })
+  ).style({
+    width: "100%",
+    height: 94,
+    borderRadius: 12,
+    backgroundColor: "rgba(2, 6, 23, 0.72)",
+    borderWidth: 1,
+    borderColor: "rgba(56, 189, 248, 0.4)",
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 12
+  });
+
+  remoteTouchpad.onTouchStart((ev: any) => {
+    let lastX = ev.clientX;
+    let lastY = ev.clientY;
+    ev.track?.({
+      claim: true,
+      onMove: (pos: any) => {
+        const dx = (pos.clientX - lastX) * 2.2;
+        const dy = (pos.clientY - lastY) * 2.2;
+        lastX = pos.clientX;
+        lastY = pos.clientY;
+        if (Math.abs(dx) >= 1 || Math.abs(dy) >= 1) {
+          void externalDisplayBridge.moveWindow(padTargetSignal.value, dx, dy);
+        }
+      }
+    });
+  });
+
+  const remoteModePill = (label: string, iconName: string, mode: "optical" | "vr") =>
+    UIButton(
+      UIRow(
+        LucideIcon(iconName, 14, () =>
+          externalDisplayBridge.infoSignal.value.mode === mode ? "#ffffff" : THEME.textSecondary
+        ),
+        UIText(label).style({
+          color: () =>
+            externalDisplayBridge.infoSignal.value.mode === mode ? "#ffffff" : THEME.textSecondary,
+          fontSize: 12,
+          fontWeight: "bold"
+        })
+      ).style({ alignItems: "center", justifyContent: "center", gap: 6 })
+    )
+      .style({
+        flex: 1,
+        height: 36,
+        borderRadius: 10,
+        backgroundColor: () =>
+          externalDisplayBridge.infoSignal.value.mode === mode ? "#ea580c" : THEME.bgElevated,
+        borderWidth: 1,
+        borderColor: () =>
+          externalDisplayBridge.infoSignal.value.mode === mode ? "#f97316" : THEME.borderDefault,
+        alignItems: "center",
+        justifyContent: "center"
+      })
+      .onClick(() => {
+        arModeSignal.value = mode;
+        void externalDisplayBridge.setMode(mode);
+      });
+
+  remoteModalRef = UIModal(
+    UIColumn(
+      UIRow(
+        UIBox(LucideIcon("lucide:glasses", 18, "#38bdf8")).style({
+          width: 34,
+          height: 34,
+          borderRadius: 10,
+          backgroundColor: "rgba(56, 189, 248, 0.16)",
+          borderWidth: 1,
+          borderColor: "rgba(56, 189, 248, 0.45)",
+          alignItems: "center",
+          justifyContent: "center"
+        }),
+        UIColumn(
+          UIText("Пульт внешнего AR HUD").style({
+            color: () => THEME.textPrimary,
+            fontSize: 15,
+            fontWeight: "bold"
+          }),
+          UIText(() => {
+            const info = externalDisplayBridge.infoSignal.value;
+            const att = externalDisplayBridge.attitudeSignal.value;
+            return info.connected
+              ? `${info.name || "Внешний экран"} (${info.width}×${info.height}) • 3DoF Y${att.yaw}° P${att.pitch}°`
+              : "Внешний дисплей отключён";
+          }).style({
+            color: "#10b981",
+            fontSize: 10.5,
+            numberOfLines: 1
+          })
+        ).style({ flex: 1, gap: 1 }),
+        UIButton(LucideIcon("lucide:x", 18, () => THEME.textMuted))
+          .style({ padding: 4 })
+          .onClick(() => remoteModalRef?.hide())
+      ).style({ width: "100%", alignItems: "center", gap: 9, marginBottom: 10 }),
+
+      // Переключатель AR-очки / VR режим на внешнем экране
+      UIRow(
+        remoteModePill("AR-очки", "lucide:glasses", "optical"),
+        remoteModePill("VR режим", "lucide:eye", "vr")
+      ).style({ width: "100%", gap: 8, marginBottom: 10 }),
+
+      // Управление камерой и подменой фото в визире внешнего дисплея
+      UIRow(
+        UIButton(
+          UIRow(
+            LucideIcon("lucide:camera", 15, "#ffffff"),
+            UIText("Сфоткать в ИИ").style({ color: "#ffffff", fontSize: 12, fontWeight: "bold" })
+          ).style({ alignItems: "center", gap: 6 })
+        )
+          .style({
+            flex: 1,
+            height: 38,
+            borderRadius: 10,
+            backgroundColor: "#ea580c",
+            alignItems: "center",
+            justifyContent: "center"
+          })
+          .onClick(() => {
+            void captureArPhotoToAi();
+          }),
+        UIButton(
+          UIRow(
+            LucideIcon("lucide:image", 15, "#38bdf8"),
+            UIText("Из галереи").style({ color: "#38bdf8", fontSize: 12, fontWeight: "bold" })
+          ).style({ alignItems: "center", gap: 5 })
+        )
+          .style({
+            height: 38,
+            paddingHorizontal: 11,
+            borderRadius: 10,
+            backgroundColor: "rgba(56, 189, 248, 0.14)",
+            borderWidth: 1,
+            borderColor: "rgba(56, 189, 248, 0.42)",
+            alignItems: "center",
+            justifyContent: "center"
+          })
+          .onClick(() => {
+            void pickVisorPhotoFromGallery();
+          }),
+        UIButton(LucideIcon("lucide:switch-camera", 16, () => THEME.textPrimary))
+          .style({
+            width: 38,
+            height: 38,
+            borderRadius: 10,
+            backgroundColor: () => THEME.bgElevated,
+            borderWidth: 1,
+            borderColor: () => THEME.borderDefault,
+            alignItems: "center",
+            justifyContent: "center"
+          })
+          .onClick(() => {
+            const nextFacing =
+              externalDisplayBridge.infoSignal.value.facing === "back" ? "front" : "back";
+            cameraFacingSignal.value = nextFacing;
+            void externalDisplayBridge.setCameraFacing(nextFacing);
+          })
+      ).style({ width: "100%", gap: 7, marginBottom: 8 }),
+
+      // Плашка загруженного фото в AR-визире
+      UIRow(
+        LucideIcon("lucide:image", 13, "#fbbf24"),
+        UIText(() => `В визире: ${externalDisplayBridge.customPhotoNameSignal.value || "фото узла"}`).style({
+          color: "#fde68a",
+          fontSize: 11,
+          flex: 1,
+          numberOfLines: 1
+        }),
+        UIButton(
+          UIText("Живая камера").style({ color: "#fbbf24", fontSize: 11, fontWeight: "bold" })
+        )
+          .style({ paddingHorizontal: 6, paddingVertical: 2 })
+          .onClick(() => {
+            void clearVisorPhoto();
+          })
+      ).style({
+        width: "100%",
+        paddingHorizontal: 10,
+        paddingVertical: 6,
+        borderRadius: 8,
+        backgroundColor: "rgba(245, 158, 11, 0.14)",
+        borderWidth: 1,
+        borderColor: "rgba(245, 158, 11, 0.42)",
+        alignItems: "center",
+        gap: 6,
+        marginBottom: 8,
+        display: () =>
+          externalDisplayBridge.customPhotoFileSignal.value ||
+          externalDisplayBridge.infoSignal.value.hasCustomPhoto
+            ? "flex"
+            : "none"
+      }),
+
+      // Быстрый ввод вопроса / голоса прямо на внешний AR HUD
+      UIRow(
+        remoteInput,
+        UIButton(LucideIcon("lucide:mic", 16, () => (isListeningArSignal.value ? "#ffffff" : "#ec4899")))
+          .style({
+            width: 38,
+            height: 38,
+            borderRadius: 10,
+            backgroundColor: () =>
+              isListeningArSignal.value ? "#ef4444" : "rgba(236, 72, 153, 0.15)",
+            borderWidth: 1,
+            borderColor: () =>
+              isListeningArSignal.value ? "#ef4444" : "rgba(236, 72, 153, 0.45)",
+            alignItems: "center",
+            justifyContent: "center"
+          })
+          .onClick(handleArVoiceToggle),
+        UIButton(LucideIcon("lucide:send", 15, "#ffffff"))
+          .style({
+            width: 38,
+            height: 38,
+            borderRadius: 10,
+            backgroundColor: "#0284c7",
+            alignItems: "center",
+            justifyContent: "center"
+          })
+          .onClick(() => {
+            void handleRemoteSend();
+          })
+      ).style({ width: "100%", gap: 7, alignItems: "center", marginBottom: 10 }),
+
+      // Выбор окна + Тачпад перемещения окон на внешнем AR-экране
+      UIRow(
+        UIButton(
+          UIText("Окно: Камера").style({
+            color: () => (padTargetSignal.value === "camera" ? "#fb923c" : THEME.textSecondary),
+            fontSize: 11,
+            fontWeight: "bold"
+          })
+        )
+          .style({
+            flex: 1,
+            paddingVertical: 6,
+            borderRadius: 8,
+            backgroundColor: () =>
+              padTargetSignal.value === "camera" ? "rgba(249, 115, 22, 0.16)" : THEME.bgElevated,
+            borderWidth: 1,
+            borderColor: () =>
+              padTargetSignal.value === "camera" ? "rgba(249, 115, 22, 0.55)" : THEME.borderDefault,
+            alignItems: "center"
+          })
+          .onClick(() => {
+            padTargetSignal.value = "camera";
+          }),
+        UIButton(
+          UIText("Окно: Ассистент").style({
+            color: () => (padTargetSignal.value === "assistant" ? "#38bdf8" : THEME.textSecondary),
+            fontSize: 11,
+            fontWeight: "bold"
+          })
+        )
+          .style({
+            flex: 1,
+            paddingVertical: 6,
+            borderRadius: 8,
+            backgroundColor: () =>
+              padTargetSignal.value === "assistant" ? "rgba(56, 189, 248, 0.16)" : THEME.bgElevated,
+            borderWidth: 1,
+            borderColor: () =>
+              padTargetSignal.value === "assistant" ? "rgba(56, 189, 248, 0.55)" : THEME.borderDefault,
+            alignItems: "center"
+          })
+          .onClick(() => {
+            padTargetSignal.value = "assistant";
+          }),
+        UIButton(LucideIcon("lucide:rotate-ccw", 14, () => THEME.textSecondary))
+          .style({
+            width: 34,
+            height: 30,
+            borderRadius: 8,
+            backgroundColor: () => THEME.bgElevated,
+            borderWidth: 1,
+            borderColor: () => THEME.borderDefault,
+            alignItems: "center",
+            justifyContent: "center"
+          })
+          .onClick(() => {
+            void externalDisplayBridge.resetLayout();
+            toast("Позиция окон на внешнем экране сброшена");
+          })
+      ).style({ width: "100%", gap: 6, marginBottom: 6 }),
+
+      remoteTouchpad,
+
+      // Нижний ряд: новый диалог, открыть локальный HUD на телефоне, свернуть пульт
+      UIRow(
+        UIButton(
+          UIText("+ Диалог").style({ color: "#38bdf8", fontSize: 11, fontWeight: "bold" })
+        )
+          .style({
+            paddingHorizontal: 10,
+            paddingVertical: 8,
+            borderRadius: 9,
+            backgroundColor: "rgba(56, 189, 248, 0.14)",
+            borderWidth: 1,
+            borderColor: "rgba(56, 189, 248, 0.4)"
+          })
+          .onClick(() => {
+            void createNewSessionFromAr();
+          }),
+        UIButton(
+          UIText("HUD на телефоне").style({ color: () => THEME.textSecondary, fontSize: 11, fontWeight: "600" })
+        )
+          .style({
+            flex: 1,
+            paddingVertical: 8,
+            borderRadius: 9,
+            backgroundColor: () => THEME.bgElevated,
+            borderWidth: 1,
+            borderColor: () => THEME.borderDefault,
+            alignItems: "center"
+          })
+          .onClick(() => {
+            remoteModalRef?.hide();
+            modalRef?.show();
+          }),
+        UIButton(
+          UIText("Свернуть").style({ color: "#ffffff", fontSize: 11, fontWeight: "bold" })
+        )
+          .style({
+            paddingHorizontal: 12,
+            paddingVertical: 8,
+            borderRadius: 9,
+            backgroundColor: "#334155"
+          })
+          .onClick(() => remoteModalRef?.hide())
+      ).style({ width: "100%", gap: 7, marginTop: 10 })
+    ).style({
+      backgroundColor: () => THEME.bgSurface,
+      borderRadius: 18,
+      padding: 16,
+      borderWidth: 1,
+      borderColor: () => THEME.borderStrong,
+      width: "100%"
+    })
+  ).transition({ opacity: 0, transform: "scale(0.95)", duration: 190 });
+
+  // Реактивная синхронизация статуса и состояния микрофона на внешний AR HUD
+  effect(() => {
+    externalDisplayBridge.setListening(isListeningArSignal.value);
+    externalDisplayBridge.setStatus(arStatusSignal.value);
+  });
+
+  // Подписка на действия пользователя, нажатые напрямую на внешнем AR-экране
+  externalDisplayBridge.onAction(ev => {
+    switch (ev.action) {
+      case "capturePhoto":
+        void captureArPhotoToAi();
+        break;
+      case "toggleVoice":
+        void handleArVoiceToggle();
+        break;
+      case "newSession":
+        void createNewSessionFromAr();
+        break;
+      case "openSessionPicker":
+        void openArSessionPicker();
+        break;
+      case "toggleTask":
+        if (ev.messageId && ev.stepId !== undefined) {
+          appState.toggleTaskHandler?.(ev.messageId, "step", ev.stepId, !!ev.done);
+        }
+        break;
+      case "exitAr":
+        remoteModalRef?.hide();
+        modalRef?.hide();
+        toast("Выход из пульта AR (проекция остаётся в режиме ожидания)");
+        break;
+      case "galleryPhotoPicked":
+        arStatusSignal.value = `Фото в визире: ${ev.name || "из галереи"}`;
+        externalDisplayBridge.setStatus(arStatusSignal.value);
+        mountCameraForCurrentMode();
+        toast(`Фото «${ev.name || "узла"}» загружено в AR-визир`);
+        break;
+      case "clearGalleryPhoto":
+        arStatusSignal.value = "Возврат к живой камере";
+        externalDisplayBridge.setStatus(arStatusSignal.value);
+        mountCameraForCurrentMode();
+        break;
+    }
+  });
+
   (modalRef as any).openWithMode = (mode?: "optical" | "vr") => {
-    if (mode) arModeSignal.value = mode;
+    const targetMode = mode || arModeSignal.value || "optical";
+    arModeSignal.value = targetMode;
+
+    // Если подключён внешний AR-дисплей (очки / 2-й экран) — полноценный AR HUD работает на нём,
+    // а на основном экране телефона открывается пульт управления вместо дублирования HUD!
+    if (externalDisplayBridge.connectedSignal.value) {
+      void externalDisplayBridge.setMode(targetMode);
+      void externalDisplayBridge.setCameraEnabled(true);
+      externalDisplayBridge.scheduleSync(true);
+      remoteModalRef?.show();
+      return;
+    }
+
     modalRef.show();
   };
 

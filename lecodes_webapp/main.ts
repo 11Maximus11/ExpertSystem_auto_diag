@@ -9,8 +9,12 @@
 import "./src/utils/polyfills";
 
 import { apiClient } from "./src/api/BackendApiClient";
+import { externalDisplayBridge } from "./src/ar/ExternalDisplayBridge";
 import { cacheManager } from "./src/cache/ResourceCacheManager";
 import { appState, createWelcomeMessage } from "./src/state/appState";
+
+// Инициализируем нативный мост внешнего AR-дисплея (RayNeo / XREAL / эмулируемый 2-й экран)
+externalDisplayBridge.init();
 import {
   createArHudOverlay,
   currentThemeSignal,

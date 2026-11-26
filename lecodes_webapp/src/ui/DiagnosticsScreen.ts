@@ -9,6 +9,7 @@
  */
 
 import { apiClient } from "../api/BackendApiClient";
+import { externalDisplayBridge } from "../ar/ExternalDisplayBridge";
 import { cacheManager } from "../cache/ResourceCacheManager";
 import {
   appState,
@@ -363,6 +364,9 @@ export function createDiagnosticsScreen(callbacks?: DiagnosticsScreenCallbacks):
 
     const mountCam = () => {
       camErrSignal.value = "";
+      if (externalDisplayBridge.connectedSignal.value) {
+        void externalDisplayBridge.setCameraEnabled(false);
+      }
       camNode = UICameraNode({ facingMode: facingSignal.value }).style({
         width: "100%",
         height: 330
@@ -376,6 +380,11 @@ export function createDiagnosticsScreen(callbacks?: DiagnosticsScreenCallbacks):
     const unmountCam = () => {
       camNode = null;
       previewHolder.setContent([]);
+      if (externalDisplayBridge.connectedSignal.value) {
+        setTimeout(() => {
+          void externalDisplayBridge.setCameraEnabled(true);
+        }, 250);
+      }
     };
 
     modal = UIModal(

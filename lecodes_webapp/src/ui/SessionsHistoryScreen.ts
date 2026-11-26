@@ -226,7 +226,7 @@ export function createSessionsHistoryScreen(callbacks?: SessionsHistoryCallbacks
             color: () => THEME.textPrimary,
             fontSize: 13,
             fontWeight: "bold",
-            numberOfLines: 1
+            lineClamp: 1
           }),
           UIText(
             [
@@ -239,7 +239,7 @@ export function createSessionsHistoryScreen(callbacks?: SessionsHistoryCallbacks
           ).style({
             color: () => THEME.textMuted,
             fontSize: 10,
-            numberOfLines: 1
+            lineClamp: 1
           })
         ).style({ flex: 1, gap: 2 }),
         ...(isActive

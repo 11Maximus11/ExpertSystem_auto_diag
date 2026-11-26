@@ -559,7 +559,7 @@ export function AppHeader(options: AppHeaderOptions): any {
         color: () => THEME.textPrimary,
         fontSize: 14,
         fontWeight: "bold",
-        numberOfLines: 1
+        lineClamp: 1
       }),
       UIRow(
         UIBox().style({
@@ -572,7 +572,7 @@ export function AppHeader(options: AppHeaderOptions): any {
         UIText(statusText).style({
           color: () => THEME.textMuted,
           fontSize: 10,
-          numberOfLines: 1
+          lineClamp: 1
         })
       ).style({ alignItems: "center" })
     ).style({ flex: 1, flexShrink: 1, gap: 1 })
@@ -1104,7 +1104,7 @@ export function openDocumentPreviewModal(
             color: () => THEME.textPrimary,
             fontSize: 14,
             fontWeight: "bold",
-            numberOfLines: 1
+            lineClamp: 1
           }),
           UIText(
             `Объём текста: ${doc.char_length || excerpt.length} симв. • Режим: ${
@@ -1385,7 +1385,7 @@ export function VehicleBar(vehicleSignal: any, onEdit?: () => void): any {
       fontSize: 12,
       fontWeight: "bold",
       flex: 1,
-      numberOfLines: 1
+      lineClamp: 1
     }),
     UIButton(
       UIRow(
@@ -1467,7 +1467,7 @@ export function StagingBar(
                 color: () => THEME.textPrimary,
                 fontSize: 11,
                 fontWeight: "600",
-                numberOfLines: 1,
+                lineClamp: 1,
                 maxWidth: 165
               }),
               ...(item.meta
@@ -1475,7 +1475,7 @@ export function StagingBar(
                     UIText(item.meta).style({
                       color: () => THEME.textMuted,
                       fontSize: 9,
-                      numberOfLines: 1,
+                      lineClamp: 1,
                       maxWidth: 165
                     })
                   ]
@@ -1994,7 +1994,7 @@ export function MessageCard(msg: ChatMessageItem, callbacks?: MessageCardCallbac
               color: () => (isDone() ? THEME.textMuted : THEME.textPrimary),
               fontSize: 12,
               lineHeight: 17,
-              textDecorationLine: () => (isDone() ? "line-through" : "none")
+              textDecoration: () => (isDone() ? "line-through" : "none")
             }),
             ...(task.torque_or_spec || task.estimated_minutes
               ? [
@@ -2079,7 +2079,7 @@ export function MessageCard(msg: ChatMessageItem, callbacks?: MessageCardCallbac
             color: () => (isChecked() ? THEME.textMuted : THEME.textSecondary),
             fontSize: 11,
             flex: 1,
-            textDecorationLine: () => (isChecked() ? "line-through" : "none")
+            textDecoration: () => (isChecked() ? "line-through" : "none")
           })
         ).style({ alignItems: "center", gap: 7, width: "100%" })
       )
@@ -2739,8 +2739,15 @@ export function createArHudOverlay(options: {
         try {
           const att = device.motion.attitude;
           if (att) {
-            arAttitudeSignal.value = `3DoF Y${Math.round((att.yaw || 0) * 57.3)}° P${Math.round(
-              (att.pitch || 0) * 57.3
+            const qx = att.x || 0;
+            const qy = att.y || 0;
+            const qz = att.z || 0;
+            const qw = att.w ?? 1;
+            const yawRad = Math.atan2(2 * (qw * qz + qx * qy), 1 - 2 * (qy * qy + qz * qz));
+            const sinP = Math.max(-1, Math.min(1, 2 * (qw * qy - qz * qx)));
+            const pitchRad = Math.asin(sinP);
+            arAttitudeSignal.value = `3DoF Y${Math.round(yawRad * 57.3)}° P${Math.round(
+              pitchRad * 57.3
             )}°`;
           }
         } catch (_) {}
@@ -2814,8 +2821,24 @@ export function createArHudOverlay(options: {
       appState.stagedItemsSignal.value = [...appState.stagedItemsSignal.value, item];
       arStatusSignal.value = "Кадр передан нейросети...";
       externalDisplayBridge.setStatus(arStatusSignal.value);
+      const typedArQuery = (
+        remoteInput?.value ||
+        remoteQuerySignal?.value ||
+        arQuickInput?.value ||
+        arQuerySignal?.value ||
+        ""
+      ).trim();
+      if (typedArQuery) {
+        if (remoteInput) remoteInput.value = "";
+        if (remoteQuerySignal) remoteQuerySignal.value = "";
+        if (arQuickInput) arQuickInput.value = "";
+        arQuerySignal.value = "";
+      }
       if (appState.askHandler) {
-        await appState.askHandler("Осмотри этот узел автомобиля и подскажи возможную неисправность", true);
+        await appState.askHandler(
+          typedArQuery || "Осмотри этот узел автомобиля и подскажи возможную неисправность",
+          true
+        );
         arStatusSignal.value = "Вердикт ИИ обновлён в AR";
         externalDisplayBridge.setStatus(arStatusSignal.value);
       } else {
@@ -2946,12 +2969,12 @@ export function createArHudOverlay(options: {
                 color: "#f8fafc",
                 fontSize: 12,
                 fontWeight: "bold",
-                numberOfLines: 1
+                lineClamp: 1
               }),
               UIText(`${sess.vehicle_info || "Авто не указано"} • ${sess.updated_at || ""}`).style({
                 color: "#94a3b8",
                 fontSize: 10,
-                numberOfLines: 1
+                lineClamp: 1
               })
             ).style({ flex: 1, gap: 1 }),
             isCurrent
@@ -3203,7 +3226,7 @@ export function createArHudOverlay(options: {
                 color: t.done ? "#64748b" : "#e2e8f0",
                 fontSize: 12,
                 flex: 1,
-                textDecorationLine: t.done ? "line-through" : "none"
+                textDecoration: t.done ? "line-through" : "none"
               })
             ).style({ alignItems: "center", gap: 8, width: "100%" })
           )
@@ -3286,7 +3309,7 @@ export function createArHudOverlay(options: {
               fontSize: 11,
               fontWeight: "600",
               maxWidth: 120,
-              numberOfLines: 1
+              lineClamp: 1
             })
           ).style({ alignItems: "center", gap: 5 })
         )
@@ -3389,7 +3412,7 @@ export function createArHudOverlay(options: {
           color: "#f8fafc",
           fontSize: 12,
           fontWeight: "bold",
-          numberOfLines: 1
+          lineClamp: 1
         })
       ).style({ alignItems: "center", gap: 6, flex: 1 }),
       UIText("::: Перетащить").style({
@@ -3564,12 +3587,12 @@ export function createArHudOverlay(options: {
             color: "#f8fafc",
             fontSize: 12,
             fontWeight: "bold",
-            numberOfLines: 1
+            lineClamp: 1
           }),
           UIText(() => `${arAttitudeSignal.value} • ${arStatusSignal.value}`).style({
             color: "#94a3b8",
             fontSize: 9,
-            numberOfLines: 1
+            lineClamp: 1
           })
         ).style({ flex: 1, gap: 0 })
       ).style({ alignItems: "center", gap: 6, flex: 1 }),
@@ -3920,7 +3943,6 @@ export function createArHudOverlay(options: {
       top: 0,
       bottom: 0,
       padding: 0,
-      margin: 0,
       borderRadius: 0,
       backgroundColor: "#000000"
     })
@@ -4087,7 +4109,7 @@ export function createArHudOverlay(options: {
           }).style({
             color: "#10b981",
             fontSize: 10.5,
-            numberOfLines: 1
+            lineClamp: 1
           })
         ).style({ flex: 1, gap: 1 }),
         UIButton(LucideIcon("lucide:x", 18, () => THEME.textMuted))
@@ -4165,7 +4187,7 @@ export function createArHudOverlay(options: {
           color: "#fde68a",
           fontSize: 11,
           flex: 1,
-          numberOfLines: 1
+          lineClamp: 1
         }),
         UIButton(
           UIText("Живая камера").style({ color: "#fbbf24", fontSize: 11, fontWeight: "bold" })

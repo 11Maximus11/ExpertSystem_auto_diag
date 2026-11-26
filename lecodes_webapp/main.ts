@@ -54,8 +54,6 @@ appState.switchTabFn = switchTab;
 // Экраны приложения внутри безопасных отступов системных панелей Android
 const wrapTabScreen = (content: any) =>
   UIScreen(content).style({
-    width: "100%",
-    height: "100%",
     backgroundColor: () => THEME.bgBase,
     paddingTop: "safe-top"
   });

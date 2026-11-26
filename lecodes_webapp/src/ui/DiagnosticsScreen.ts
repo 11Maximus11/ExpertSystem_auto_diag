@@ -396,7 +396,7 @@ export function createDiagnosticsScreen(callbacks?: DiagnosticsScreenCallbacks):
             fontSize: 14,
             fontWeight: "bold",
             flex: 1,
-            numberOfLines: 1
+            lineClamp: 1
           }),
           UIButton(LucideIcon("lucide:switch-camera", 17, () => THEME.accentCyan))
             .style({

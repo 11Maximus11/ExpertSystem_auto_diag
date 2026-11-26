@@ -10,8 +10,8 @@ const g: any =
     ? globalThis
     : typeof window !== "undefined"
     ? window
-    : typeof global !== "undefined"
-    ? global
+    : typeof self !== "undefined"
+    ? self
     : {};
 
 if (typeof g.TextDecoder === "undefined") {

@@ -190,7 +190,7 @@ export function createDtcDictionaryScreen(
                     color: () => (task.done ? THEME.textMuted : THEME.textPrimary),
                     fontSize: 12,
                     lineHeight: 17,
-                    textDecorationLine: task.done ? "line-through" : "none"
+                    textDecoration: task.done ? "line-through" : "none"
                   }),
                   ...(task.torque_or_spec || task.safety_warning
                     ? [
@@ -258,7 +258,7 @@ export function createDtcDictionaryScreen(
                   color: () => (item.checked ? THEME.textMuted : THEME.textPrimary),
                   fontSize: 12,
                   flex: 1,
-                  textDecorationLine: item.checked ? "line-through" : "none"
+                  textDecoration: item.checked ? "line-through" : "none"
                 })
               ).style({ alignItems: "center", gap: 8, width: "100%" })
             )

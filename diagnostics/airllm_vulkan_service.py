@@ -1470,7 +1470,7 @@ class AirLLMVulkanOrchestrator:
                     b64_part = data_url.split("base64,", 1)[-1]
                     pil_img = Image.open(io.BytesIO(base64.b64decode(b64_part))).convert("RGB")
                 if pil_img is not None:
-                    pil_img.thumbnail((768, 768))
+                    pil_img.thumbnail((640, 640))
                     pil_images.append(pil_img)
             except Exception as img_exc:
                 logger.warning("[AirLLM Vision] Ошибка декодирования фото %s: %s", img_info.get("filename"), img_exc)
@@ -1577,6 +1577,12 @@ class AirLLMVulkanOrchestrator:
         )
 
         if has_images:
+            vision_schema_hint = (
+                json_schema_hint_diag
+                .replace('"response_type": "diagnosis"', '"response_type": "visual_inspection"')
+                .replace('"response_type":"diagnosis"', '"response_type":"visual_inspection"')
+                .replace(prose_hint, "55–85 слов")
+            )
             sys_prompt = (
                 "Ты — ИИдеал Авто (AIdeal Auto), ведущий автодиагност и автоэлектрик. "
                 "К запросу ПРИКРЕПЛЕНА ФОТОГРАФИЯ (передана напрямую в Gemma 4 Vision)."
@@ -1588,11 +1594,11 @@ class AirLLMVulkanOrchestrator:
                 + "Внимательно осмотри фото"
                 + (" и прослушай аудио! " if has_native_audio else "! ")
                 + "Не проси прислать фото или аудио повторно. "
-                "1) Конкретно опиши детали на изображении (жгуты, разъемы, окисление, подтеки, повреждения, код/лампа на приборке); "
-                "2) Объясни физическую причину неисправности; "
-                "3) Дай практический порядок ремонта и проверки с конкретными параметрами. "
+                "1) Определи двигатель/узел на фото и чётко укажи по видимым на изображении ориентирам (крышка мотора, гофрированный воздуховод, корпус воздушного фильтра, бачки, разъёмы), где именно на этом фото расположен искомый узел или дефект; "
+                "2) Объясни физическую причину симптомов; "
+                "3) Дай практический порядок проверки/чистки и адаптации с конкретными параметрами. "
                 "Без банальных инструкций и без лишней воды."
-                + json_schema_hint_diag.replace('"response_type": "diagnosis"', '"response_type": "visual_inspection"')
+                + vision_schema_hint
             )
             extra_notes = []
             if vehicle_info:
@@ -1787,6 +1793,9 @@ class AirLLMVulkanOrchestrator:
                     target_max_new = min(profile.max_new_tokens_greeting if profile else 120, available_ctx)
                 elif is_followup:
                     target_max_new = min(profile.max_new_tokens_followup if profile else 320, available_ctx)
+                elif has_images:
+                    # Для Vision-инспекции нужен запас токенов на ориентиры по фото + компактный JSON
+                    target_max_new = min(max(profile.max_new_tokens_diag if profile else 340, 300), available_ctx)
                 else:
                     target_max_new = min(profile.max_new_tokens_diag if profile else 460, available_ctx)
 
@@ -1811,6 +1820,10 @@ class AirLLMVulkanOrchestrator:
                     max_time_sec = profile.max_time_sec_greeting if profile else 30.0
                 elif is_followup:
                     max_time_sec = profile.max_time_sec_followup if profile else 50.0
+                elif has_images:
+                    # Мультимодальный Vision-проход включает embed_vision prefill + визуальное описание + JSON
+                    base_diag = profile.max_time_sec_diag if profile else 60.0
+                    max_time_sec = max(base_diag, 260.0)
                 else:
                     max_time_sec = profile.max_time_sec_diag if profile else 60.0
 

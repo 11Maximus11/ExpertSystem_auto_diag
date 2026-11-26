@@ -110,9 +110,14 @@ export class ResourceCacheManager {
    * Быстрый интеллектуальный поиск по словарю кодов (в памяти / из кэша)
    * Поддерживает поиск по коду (P0300), названию, описанию, симптомам и причинам неисправности.
    */
-  public searchDtc(query: string, systemFilter?: string): DtcCodeInfo[] {
+  public searchDtcPage(
+    query: string,
+    systemFilter?: string,
+    offset: number = 0,
+    limit: number = 80
+  ): { items: DtcCodeInfo[]; total: number } {
     const q = query.trim().toUpperCase();
-    const results: DtcCodeInfo[] = [];
+    const matched: DtcCodeInfo[] = [];
 
     // Если словарь в памяти пуст, пробуем загрузить из localStorage
     if (this.inMemoryDtc.size === 0) {
@@ -134,30 +139,39 @@ export class ResourceCacheManager {
       }
 
       if (!q) {
-        results.push(info);
+        matched.push(info);
       } else {
         const hasSymptom = info.symptoms?.some(s => s.toUpperCase().includes(q));
         const hasCause = info.causes?.some(c => c.toUpperCase().includes(q));
+        const hasEn = info.en_title ? info.en_title.toUpperCase().includes(q) : false;
         if (
           code.includes(q) ||
           info.title.toUpperCase().includes(q) ||
           info.description.toUpperCase().includes(q) ||
           hasSymptom ||
-          hasCause
+          hasCause ||
+          hasEn
         ) {
-          results.push(info);
+          matched.push(info);
         }
       }
-
-      if (results.length >= 80) break; // Ограничение для плавности UI
     }
 
     // Если ничего не найдено, но запрос похож на код ошибки (например P0300), синтезируем базовую подсказку
-    if (results.length === 0 && q.match(/^[PCBU][0-9]{4}$/i)) {
-      results.push(this.synthesizeDtcInfo(q));
+    if (matched.length === 0 && q.match(/^[PCBU][0-9]{4}$/i)) {
+      matched.push(this.synthesizeDtcInfo(q));
     }
 
-    return results;
+    const safeOffset = Math.max(0, Math.floor(offset));
+    const safeLimit = Math.max(1, Math.floor(limit));
+    return {
+      items: matched.slice(safeOffset, safeOffset + safeLimit),
+      total: matched.length
+    };
+  }
+
+  public searchDtc(query: string, systemFilter?: string): DtcCodeInfo[] {
+    return this.searchDtcPage(query, systemFilter, 0, 80).items;
   }
 
   public getDtc(code: string): DtcCodeInfo | undefined {
@@ -239,14 +253,38 @@ export class ResourceCacheManager {
   }
 
   /**
+   * Полная очистка пользовательских кэшей (сессии, профиль авто, оффлайн-очередь, активная сессия)
+   * при выходе, удалении или смене аккаунта без удаления глобального словаря DTC.
+   */
+  public clearUserScopedCache(clearAuthKey: boolean = false): void {
+    try {
+      localStorage.removeItem(STORAGE_KEY_SESSIONS);
+      localStorage.removeItem("aideal_vehicle_info");
+      localStorage.removeItem(STORAGE_KEY_QUEUE);
+      localStorage.removeItem("active_session_id");
+      if (clearAuthKey) {
+        localStorage.removeItem("auth_session_key");
+      }
+    } catch (_) {}
+
+    try {
+      const settings = this.getSettings();
+      delete settings["active_session_id"];
+      if (clearAuthKey) {
+        delete settings["auth_session_key"];
+      }
+      localStorage.setItem(STORAGE_KEY_SETTINGS, JSON.stringify(settings));
+    } catch (_) {}
+  }
+
+  /**
    * Полная очистка локального кэша
    */
   public async clearCache(): Promise<void> {
     this.inMemoryDtc.clear();
     localStorage.removeItem(STORAGE_KEY_DTC);
     localStorage.removeItem(STORAGE_KEY_DTC + "_time");
-    localStorage.removeItem(STORAGE_KEY_SESSIONS);
-    localStorage.removeItem(STORAGE_KEY_QUEUE);
+    this.clearUserScopedCache(true);
 
     if (this.isCacheApiSupported()) {
       try {

@@ -135,6 +135,39 @@ export const appState = {
   switchTabFn: null as ((tabId: string) => void) | null
 };
 
+export function purgeUserSessionAndMemoryState(clearAuthKey: boolean = false): void {
+  const freshSessionId = generateUuidV4();
+
+  appState.globalMemorySummarySignal.value = "";
+  appState.sessionSummarySignal.value = "";
+  appState.latestAssistantMessageSignal.value = null;
+  appState.vehicleSignal.value = "";
+  appState.selectedMessageIdsSignal.value = [];
+  appState.messagesSignal.value = [createWelcomeMessage()];
+  appState.demoProjectsSignal.value = [];
+  appState.demoSessionsSignal.value = [
+    {
+      id: freshSessionId,
+      title: "Демо-диагностика",
+      is_pinned: false,
+      tag: "",
+      project_id: null,
+      vehicle_info: "",
+      summary: "",
+      updated_at: "Сейчас",
+      message_count: 0
+    }
+  ];
+  appState.demoMessagesBySession = {};
+  appState.stagedItemsSignal.value = [];
+  appState.currentSessionIdSignal.value = freshSessionId;
+  appState.currentSessionTitleSignal.value = "Демо-диагностика";
+  appState.workerStatusSignal.value = "idle";
+
+  cacheManager.clearUserScopedCache(clearAuthKey);
+  appState.sessionsRefreshCounterSignal.value++;
+}
+
 export function stageDtcCodes(codes: string[]): void {
   const cleanList = codes.map(c => c.trim().toUpperCase()).filter(Boolean);
   if (cleanList.length === 0) return;

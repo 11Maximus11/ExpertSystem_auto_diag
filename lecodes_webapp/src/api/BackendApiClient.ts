@@ -27,6 +27,8 @@ import {
   ChatRepairTask,
   DiagnosticSessionItem,
   DtcCodeInfo,
+  DtcPageResult,
+  DtcSystemCount,
   OBDLiveSensors,
   ParsedDocInfo,
   ProjectItem,
@@ -209,6 +211,10 @@ export class BackendApiClient {
     return this.sessionKey;
   }
 
+  public clearSessionKey(): void {
+    this.setSessionKey("");
+  }
+
   private setSessionKey(key?: string): void {
     this.sessionKey = (key || "").trim();
     cacheManager.saveSetting("auth_session_key", this.sessionKey);
@@ -224,6 +230,8 @@ export class BackendApiClient {
     }
     if (this.sessionKey) {
       headers["X-Session-Key"] = this.sessionKey;
+    } else {
+      headers["X-Demo-Mode"] = "1";
     }
     return headers;
   }
@@ -953,37 +961,95 @@ export class BackendApiClient {
       health_index: item.health_index,
       has_telemetry: Boolean(item.has_telemetry),
       symptoms,
-      causes
+      causes,
+      en_title: typeof item.en_title === "string" ? item.en_title : undefined,
+      solution: typeof item.solution === "string" ? item.solution : undefined,
+      system_ru: typeof item.system_ru === "string" ? item.system_ru : undefined,
+      lang: typeof item.lang === "string" ? item.lang : undefined,
+      oem_variants: item.oem_variants,
+      nhtsa_stats: item.nhtsa_stats
     };
   }
 
   public async syncDtcDictionary(): Promise<number> {
-    const res = await this.fetchJson("/api/dtc/?limit=500");
-    if (!res.ok) {
-      throw new Error(`HTTP ${res.status}`);
+    const collected: DtcCodeInfo[] = [];
+    const seen = new Set<string>();
+    const pageSize = 500;
+    const maxItems = 1000;
+
+    for (let offset = 0; offset < maxItems; offset += pageSize) {
+      const res = await this.fetchJson(`/api/dtc/?limit=${pageSize}&offset=${offset}`, { timeout: 15000 });
+      if (!res.ok) {
+        if (offset === 0) {
+          throw new Error(`HTTP ${res.status}`);
+        }
+        break;
+      }
+      const data = await this.safeParseJson(res);
+      const rawList = data.items || data.codes || (Array.isArray(data) ? data : []);
+      if (!Array.isArray(rawList) || rawList.length === 0) break;
+
+      for (const raw of rawList) {
+        const mapped = this.mapDtcItem(raw);
+        if (mapped.code && !seen.has(mapped.code)) {
+          seen.add(mapped.code);
+          collected.push(mapped);
+        }
+      }
+      const total = typeof data.total === "number" ? data.total : collected.length;
+      if (rawList.length < pageSize || offset + rawList.length >= total || collected.length >= maxItems) {
+        break;
+      }
     }
-    const data = await this.safeParseJson(res);
-    const rawList = data.items || data.codes || (Array.isArray(data) ? data : []);
-    const dtcList: DtcCodeInfo[] = rawList.map((item: any) => this.mapDtcItem(item));
-    await cacheManager.cacheDtcDictionary(dtcList);
-    return dtcList.length;
+
+    if (collected.length > 0) {
+      await cacheManager.cacheDtcDictionary(collected);
+    }
+    return collected.length;
   }
 
-  public async getDtcList(query?: string, system?: string): Promise<DtcCodeInfo[]> {
+  public async getDtcPage(
+    query: string = "",
+    system: string = "all",
+    offset: number = 0,
+    limit: number = 80
+  ): Promise<DtcPageResult> {
+    const cleanQ = (query || "").trim();
+    const sysParam = !system || system === "ALL" ? "all" : system;
+    const safeOffset = Math.max(0, Math.floor(offset));
+    const safeLimit = Math.max(1, Math.min(500, Math.floor(limit)));
     try {
-      const params: string[] = ["limit=120"];
-      if (query) params.push(`q=${encodeURIComponent(query)}`);
-      const sysParam = !system || system === "ALL" ? "all" : system;
-      params.push(`system=${encodeURIComponent(sysParam)}`);
+      const params: string[] = [
+        `limit=${safeLimit}`,
+        `offset=${safeOffset}`,
+        `system=${encodeURIComponent(sysParam)}`
+      ];
+      if (cleanQ) params.push(`q=${encodeURIComponent(cleanQ)}`);
 
-      const res = await this.fetchJson(`/api/dtc/?${params.join("&")}`, { timeout: 8000 });
+      const res = await this.fetchJson(`/api/dtc/?${params.join("&")}`, { timeout: 10000 });
       if (res.ok) {
         const data = await this.safeParseJson(res);
         const rawList = data.items || data.codes || (Array.isArray(data) ? data : []);
-        return rawList.map((item: any) => this.mapDtcItem(item));
+        const items: DtcCodeInfo[] = rawList.map((item: any) => this.mapDtcItem(item));
+        const total = typeof data.total === "number" ? data.total : items.length;
+        const totalCatalog = typeof data.total_catalog === "number" ? data.total_catalog : total;
+        const systems: DtcSystemCount[] = Array.isArray(data.systems) ? data.systems : [];
+        return { items, total, totalCatalog, systems };
       }
     } catch (_) {}
-    return cacheManager.searchDtc(query || "", system);
+
+    const localPage = cacheManager.searchDtcPage(cleanQ, sysParam, safeOffset, safeLimit);
+    return {
+      items: localPage.items,
+      total: localPage.total,
+      totalCatalog: cacheManager.getStats().dtcCount,
+      systems: []
+    };
+  }
+
+  public async getDtcList(query?: string, system?: string): Promise<DtcCodeInfo[]> {
+    const page = await this.getDtcPage(query || "", system || "all", 0, 120);
+    return page.items;
   }
 
   // =========================================================================
@@ -1006,6 +1072,9 @@ export class BackendApiClient {
   }
 
   public async saveSettings(settings: Partial<SystemSettingsInfo>): Promise<boolean> {
+    if (!this.sessionKey) {
+      return false;
+    }
     try {
       const res = await this.fetchJson("/api/settings/", {
         method: "POST",
@@ -1019,11 +1088,17 @@ export class BackendApiClient {
   }
 
   public async clearGlobalMemory(): Promise<boolean> {
+    if (!this.sessionKey) {
+      return true;
+    }
     try {
       const res = await this.fetchJson("/api/settings/", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ global_memory_summary: "" })
+        body: JSON.stringify({
+          global_memory_summary: "",
+          clear_global_memory: true
+        })
       });
       return !!res.ok;
     } catch (_) {

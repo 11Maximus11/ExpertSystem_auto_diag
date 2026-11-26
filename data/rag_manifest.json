@@ -1,0 +1,93 @@
+{
+  "generated_at_utc": "2026-11-26T18:51:07.157358+00:00",
+  "project_license": "GPL-3.0",
+  "output_file": "data/kb_external.jsonl.gz",
+  "output_size_bytes": 522024,
+  "totals": {
+    "records": 12354,
+    "unique_valid_obd2_dtcs": 12128,
+    "non_obd_or_general_records": 134,
+    "by_system": {
+      "battery": 698,
+      "brakes": 641,
+      "chassis": 889,
+      "cooling": 649,
+      "electrical": 2129,
+      "engine": 4784,
+      "hybrid": 778,
+      "suspension": 236,
+      "transmission": 1550
+    },
+    "by_source": {
+      "MechanicDB-public": 190,
+      "commonmanual": 12163,
+      "karsonmadden/us-vehicle-trouble-codes": 1
+    },
+    "by_tier": {
+      "2": 117,
+      "3": 12237
+    }
+  },
+  "sources": {
+    "commonmanual": {
+      "url": "https://github.com/xsvdevelopment/commonmanual",
+      "license": "CC-BY-SA-4.0 (data) / MIT (code)",
+      "status": "ingested",
+      "records_emitted": 12163,
+      "codes_total_raw": 12127,
+      "codes_with_generic": 9342,
+      "codes_oem_only_synthesized": 2785,
+      "codes_enriched_with_generic_powertrain": 104,
+      "kb_known_issues_total": 23,
+      "kb_procedures_total": 13,
+      "kb_verified_or_cited": 27,
+      "kb_draft": 9,
+      "kb_linked_to_dtc": 15,
+      "kb_standalone_emitted": 34
+    },
+    "MechanicDB-public": {
+      "url": "https://github.com/MechanicDB/MechanicDB-public",
+      "license": "ODbL-1.0 (dataset) / MIT (upstream J2012) / CC-BY-4.0 (docs)",
+      "status": "ingested",
+      "obd_codes_ingested": 90,
+      "j1939_faults_ingested": 100,
+      "total_emitted": 190
+    },
+    "karsonmadden/us-vehicle-trouble-codes": {
+      "url": "https://huggingface.co/datasets/karsonmadden/us-vehicle-trouble-codes",
+      "license": "CC-BY-4.0",
+      "status": "ingested_and_enriched",
+      "rows_total": 1142,
+      "invalid_codes": 0,
+      "enriched_commonmanual_records": 838,
+      "enriched_mechanicdb_records": 68,
+      "standalone_emitted": 1,
+      "skipped_uncovered_empty_meaning": 303
+    },
+    "RRK1987/automotive-diagnostics-v2": {
+      "url": "https://huggingface.co/datasets/RRK1987/automotive-diagnostics-v2",
+      "license": "MIT",
+      "status": "audited_zero_kept_low_quality_synthetic",
+      "rows_inspected": 100,
+      "rows_kept": 0,
+      "rows_rejected": 100,
+      "rejection_breakdown": {
+        "contradictory_ecu_dtc_mapping": 35,
+        "placeholder_dtc": 40,
+        "synthetic_truncated_noise": 25
+      }
+    },
+    "GITheMan/vehicle-repair-manuals": {
+      "url": "https://github.com/GITheMan/vehicle-repair-manuals",
+      "license": "MIT",
+      "status": "skipped_empty_upstream_repository",
+      "verified_files": [
+        "Folder Structure",
+        "LICENSE",
+        "README.md"
+      ],
+      "manual_file_count": 0,
+      "records_emitted": 0
+    }
+  }
+}

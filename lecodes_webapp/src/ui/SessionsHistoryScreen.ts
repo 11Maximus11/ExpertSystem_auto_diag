@@ -94,8 +94,10 @@ export function createSessionsHistoryScreen(callbacks?: SessionsHistoryCallbacks
   effect(() => {
     const _tick = appState.sessionsRefreshCounterSignal.value;
     const _auth = appState.currentUserSignal.value.is_authenticated;
+    const _user = appState.currentUserSignal.value.username;
     void _tick;
     void _auth;
+    void _user;
     void refreshData();
   });
 
@@ -359,14 +361,63 @@ export function createSessionsHistoryScreen(callbacks?: SessionsHistoryCallbacks
               message: `Диалог «${s.title}» будет удалён без возможности восстановления.`,
               confirmLabel: "Удалить",
               onConfirm: async () => {
+                const wasActive = s.id === appState.currentSessionIdSignal.value;
                 if (!appState.currentUserSignal.value.is_authenticated) {
-                  appState.demoSessionsSignal.value = appState.demoSessionsSignal.value.filter(
-                    d => d.id !== s.id
-                  );
+                  delete appState.demoMessagesBySession[s.id];
+                  const remaining = appState.demoSessionsSignal.value.filter(d => d.id !== s.id);
+                  if (remaining.length === 0) {
+                    const freshId = generateUuidV4();
+                    const freshSession: DiagnosticSessionItem = {
+                      id: freshId,
+                      title: "Демо-диагностика",
+                      is_pinned: false,
+                      tag: "",
+                      project_id: null,
+                      vehicle_info: "",
+                      summary: "",
+                      updated_at: "Сейчас",
+                      message_count: 0
+                    };
+                    appState.demoSessionsSignal.value = [freshSession];
+                    appState.currentSessionIdSignal.value = freshId;
+                    appState.currentSessionTitleSignal.value = freshSession.title;
+                    appState.sessionSummarySignal.value = "";
+                    appState.messagesSignal.value = [createWelcomeMessage()];
+                    appState.latestAssistantMessageSignal.value = null;
+                  } else {
+                    appState.demoSessionsSignal.value = remaining;
+                    if (wasActive) {
+                      const nextSess = remaining[0];
+                      const nextMsgs = appState.demoMessagesBySession[nextSess.id] || [createWelcomeMessage()];
+                      appState.currentSessionIdSignal.value = nextSess.id;
+                      appState.currentSessionTitleSignal.value = nextSess.title;
+                      appState.sessionSummarySignal.value = nextSess.summary || "";
+                      appState.messagesSignal.value = nextMsgs;
+                      appState.latestAssistantMessageSignal.value =
+                        [...nextMsgs].reverse().find(m => m.role === "assistant") || null;
+                    }
+                  }
                 } else {
                   const res = await apiClient.deleteSession(s.id);
                   if (res.active_session_id) {
                     appState.currentSessionIdSignal.value = res.active_session_id;
+                    cacheManager.saveSetting("active_session_id", res.active_session_id);
+                    if (wasActive) {
+                      const detail = await apiClient.getSessionDetail(res.active_session_id);
+                      if (detail) {
+                        appState.currentSessionTitleSignal.value = detail.title;
+                        appState.vehicleSignal.value = detail.vehicle_info || "";
+                        appState.sessionSummarySignal.value = detail.summary || "";
+                        const msgs = detail.messages.length > 0 ? detail.messages : [createWelcomeMessage()];
+                        appState.messagesSignal.value = msgs;
+                        appState.latestAssistantMessageSignal.value =
+                          [...msgs].reverse().find(m => m.role === "assistant") || msgs[0];
+                      }
+                    }
+                  } else if (wasActive) {
+                    appState.sessionSummarySignal.value = "";
+                    appState.messagesSignal.value = [createWelcomeMessage()];
+                    appState.latestAssistantMessageSignal.value = null;
                   }
                 }
                 await refreshData();

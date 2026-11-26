@@ -1,5 +1,5 @@
 from django.contrib import admin
-from .models import ChatMessage, DialogSession, SystemSettings
+from .models import ChatMessage, DialogSession, DiagnosticProject, SystemSettings, UserMemorySettings
 
 
 @admin.register(SystemSettings)
@@ -15,10 +15,28 @@ class SystemSettingsAdmin(admin.ModelAdmin):
     )
 
 
+@admin.register(UserMemorySettings)
+class UserMemorySettingsAdmin(admin.ModelAdmin):
+    list_display = (
+        "user",
+        "cross_dialog_memory_enabled",
+        "memory_cleared_at",
+        "updated_at",
+    )
+    list_filter = ("cross_dialog_memory_enabled",)
+    search_fields = ("user__username", "global_memory_summary")
+
+
+@admin.register(DiagnosticProject)
+class DiagnosticProjectAdmin(admin.ModelAdmin):
+    list_display = ("name", "user", "updated_at")
+    search_fields = ("name", "description", "user__username")
+
+
 @admin.register(DialogSession)
 class DialogSessionAdmin(admin.ModelAdmin):
-    list_display = ("title", "vehicle_info", "worker_status", "worker_version", "updated_at")
-    search_fields = ("title", "vehicle_info", "summary")
+    list_display = ("title", "user", "vehicle_info", "worker_status", "worker_version", "updated_at")
+    search_fields = ("title", "vehicle_info", "summary", "user__username")
 
 
 @admin.register(ChatMessage)

@@ -18,7 +18,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600&family=Inter:wght@400;500;600;700&family=Share+Tech+Mono&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="{% static 'css/app.css' %}?v=5.0" />
+  <link rel="stylesheet" href="{% static 'css/app.css' %}?v=6.1" />
 </head>
 <body class="{% if ar_mode_initial %}ar-glasses-mode{% endif %}" data-initial-session="{{ current_session.id }}" data-is-authenticated="{% if current_user %}true{% else %}false{% endif %}" data-username="{{ current_user.username|default:'' }}">
 
@@ -214,7 +214,7 @@
           <label for="dialogSummaryTextarea" style="display:block; font-size:0.73rem; font-weight:600; margin-bottom:4px; color:var(--text-secondary);">
             Выжимка ранней истории:
           </label>
-          <textarea id="dialogSummaryTextarea" class="summary-box" rows="3" style="width:100%; resize:vertical;" placeholder="Выжимка сформируется автоматически...">{{ current_session.summary }}</textarea>
+          <textarea id="dialogSummaryTextarea" class="summary-box" rows="3" style="width:100%; resize:vertical;" autocomplete="off" placeholder="Выжимка сформируется автоматически...">{% if current_user %}{{ current_session.summary }}{% endif %}</textarea>
         </div>
       </div>
     </aside>
@@ -233,7 +233,7 @@
           type="text"
           id="vehicleInfoInput"
           class="vehicle-input"
-          value="{{ current_session.vehicle_info|default:'' }}"
+          value="{% if current_user %}{{ current_session.vehicle_info|default:'' }}{% endif %}"
           placeholder="Марка, модель, двигатель (напр. Skoda Octavia 1.4 TSI)"
           aria-label="Автомобиль в текущей сессии диагностики"
           autocomplete="off"
@@ -651,14 +651,14 @@
             <label for="chkCrossDialogMemory" style="cursor:pointer; flex:1; font-weight:600;">
               Включить накопление глобальной памяти между диалогами
             </label>
-            <input type="checkbox" id="chkCrossDialogMemory" class="custom-checkbox" {% if active_settings.cross_dialog_memory_enabled %}checked{% endif %} />
+            <input type="checkbox" id="chkCrossDialogMemory" class="custom-checkbox" {% if current_user %}{% if active_settings.cross_dialog_memory_enabled %}checked{% endif %}{% else %}checked{% endif %} />
           </div>
 
-          <div id="globalMemorySectionWrap" style="margin-top: 12px; {% if not active_settings.cross_dialog_memory_enabled %}display:none;{% endif %}">
+          <div id="globalMemorySectionWrap" style="margin-top: 12px; {% if current_user and not active_settings.cross_dialog_memory_enabled %}display:none;{% endif %}">
             <label for="globalSummaryTextarea" style="display:block; font-size:0.75rem; font-weight:600; color:var(--text-secondary); margin-bottom:4px;">
               Глобальная база знаний и накопленный профиль:
             </label>
-            <textarea id="globalSummaryTextarea" class="summary-box" rows="5" style="width:100%; resize:vertical;" placeholder="Глобальный профиль сформируется автоматически по ходу диалогов...">{{ active_settings.global_memory_summary }}</textarea>
+            <textarea id="globalSummaryTextarea" class="summary-box" rows="5" style="width:100%; resize:vertical;" autocomplete="off" placeholder="Глобальный профиль сформируется автоматически по ходу диалогов...">{% if current_user %}{{ active_settings.global_memory_summary }}{% endif %}</textarea>
             <div style="display:flex; justify-content:flex-end; gap:8px; margin-top:8px;">
               <button type="button" class="btn-action-danger" id="btnClearGlobalMemory">Очистить глобальную память</button>
             </div>
@@ -960,7 +960,7 @@
   </div>
 
   <script id="initialHardwareTelemetry" type="application/json">{{ hw_telemetry_json|safe }}</script>
-  <script src="{% static 'js/obd2.js' %}?v=5.0"></script>
-  <script src="{% static 'js/app.js' %}?v=5.0"></script>
+  <script src="{% static 'js/obd2.js' %}?v=6.1"></script>
+  <script src="{% static 'js/app.js' %}?v=6.1"></script>
 </body>
 </html>

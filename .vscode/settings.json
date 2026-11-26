@@ -23,6 +23,7 @@
     "AIRLLM_COMPRESSION": "4bit"
   },
   "java.configuration.updateBuildConfiguration": "automatic",
+  "java.import.gradle.enabled": false,
   "android-ide.fixSoftwareRendering": true,
   "android-ide.embeddedEmulator": false,
   "android-ide.deviceViewMode": "mirror"

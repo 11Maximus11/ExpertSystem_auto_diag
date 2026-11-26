@@ -93,10 +93,16 @@ body.ar-glasses-mode::before {
 }
 
 .app-header,
-.workbench-grid,
 .mobile-bottom-nav {
   position: relative;
   z-index: 1;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+.workbench-grid {
+  position: relative;
   width: 100%;
   max-width: 100%;
   box-sizing: border-box;

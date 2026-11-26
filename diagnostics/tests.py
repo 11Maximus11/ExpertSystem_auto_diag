@@ -29,7 +29,7 @@ from engine import VehicleExpertEngine
 from vulkan_backend import BASE_DIR, compute_optimal_vulkan_layers, init_vulkan_environment
 from .context_worker import compute_dynamic_context_budget, context_worker_manager
 from .document_service import parse_uploaded_document
-from .models import ChatMessage, DiagnosticProject, DialogSession, SystemSettings
+from .models import ChatMessage, DiagnosticProject, DialogSession, SystemSettings, UserMemorySettings
 from .schemas import (
     DIAGNOSTIC_JSON_SCHEMA,
     DiagnosticStructuredResponse,
@@ -129,7 +129,14 @@ class AIdealAutoComprehensiveTests(TransactionTestCase):
         Проверка динамического фонового воркера выжимки контекста:
         приоритет ответа пользователю со сбросом старого воркера.
         """
+        from django.contrib.auth import get_user_model
+
+        User = get_user_model()
+        user = User.objects.create_user(username="worker_ctx_user", password="Password123!")
+        self.client.force_login(user)
+
         session = DialogSession.objects.create(
+            user=user,
             title="Тест воркера контекста",
             vehicle_info="Toyota RAV4",
         )
@@ -175,8 +182,9 @@ class AIdealAutoComprehensiveTests(TransactionTestCase):
             time.sleep(0.05)
         session.refresh_from_db()
         self.assertIn("C0050", session.summary)
-        settings_obj = SystemSettings.get_active()
-        self.assertIn("C0050", settings_obj.global_memory_summary)
+        mem_settings, _ = UserMemorySettings.for_user(user)
+        self.assertIn("C0050", mem_settings.global_memory_summary)
+        self.assertEqual(SystemSettings.get_active().global_memory_summary, "")
 
     def test_05_multimodal_photo_and_ar_two_submodes(self):
         """Проверка прикрепления фото, PWA манифеста и двух подрежимов AR (RayNeo и Passthrough)."""
@@ -1069,6 +1077,418 @@ class AIdealAutoComprehensiveTests(TransactionTestCase):
         from django.conf import settings as dj_settings
         gi_text = (Path(dj_settings.BASE_DIR) / ".gitignore").read_text(encoding="utf-8")
         self.assertIn("autotune_profile.json", gi_text)
+
+    @staticmethod
+    def _wait_worker(session_id: str, timeout_steps: int = 40) -> None:
+        for _ in range(timeout_steps):
+            if not context_worker_manager.get_worker_state(str(session_id))["is_running"]:
+                return
+            time.sleep(0.05)
+
+    def test_19_cross_account_global_memory_isolation(self):
+        """Проверка строгой изоляции междиалоговой памяти между User A, User B, гостем и LLM-вызовами."""
+        from unittest.mock import patch
+        from django.contrib.auth import get_user_model
+        from .airllm_vulkan_service import orchestrator
+
+        User = get_user_model()
+        user_a = User.objects.create_user(username="iso_user_a", password="Password123!")
+        user_b = User.objects.create_user(username="iso_user_b", password="Password123!")
+
+        # Искусственно помещаем устаревшие данные в SystemSettings — они НИКОГДА не должны протекать
+        sys_cfg = SystemSettings.get_active()
+        sys_cfg.global_memory_summary = "POLLUTED_SYSTEM_SECRET"
+        sys_cfg.save()
+
+        client_a = Client()
+        client_b = Client()
+        guest_client = Client()
+        client_a.force_login(user_a)
+        client_b.force_login(user_b)
+
+        try:
+            # User A задает вопрос с уникальным кодом P0300
+            sa_resp = client_a.post(
+                "/api/sessions/",
+                data=json.dumps({"title": "Авто А", "vehicle_info": "Skoda Octavia A7"}),
+                content_type="application/json",
+            )
+            sa_id = sa_resp.json()["id"]
+            ask_a = client_a.post(
+                "/api/ask/",
+                data=json.dumps({"session_id": sa_id, "query": "Троит мотор MARKER_ALPHA", "dtc_codes": ["P0300"]}),
+                content_type="application/json",
+            )
+            self.assertEqual(ask_a.status_code, 200)
+            self._wait_worker(sa_id)
+
+            # User B задает вопрос с уникальным кодом P0420
+            sb_resp = client_b.post(
+                "/api/sessions/",
+                data=json.dumps({"title": "Авто Б", "vehicle_info": "Kia Rio 1.6"}),
+                content_type="application/json",
+            )
+            sb_id = sb_resp.json()["id"]
+            ask_b = client_b.post(
+                "/api/ask/",
+                data=json.dumps({"session_id": sb_id, "query": "Низкая эффективность катализатора MARKER_BETA", "dtc_codes": ["P0420"]}),
+                content_type="application/json",
+            )
+            self.assertEqual(ask_b.status_code, 200)
+            self._wait_worker(sb_id)
+
+            # 1. Проверка GET /api/settings/
+            set_a = client_a.get("/api/settings/").json()
+            set_b = client_b.get("/api/settings/").json()
+            set_g = guest_client.get("/api/settings/").json()
+
+            self.assertIn("MARKER_ALPHA", set_a["global_memory_summary"])
+            self.assertNotIn("MARKER_BETA", set_a["global_memory_summary"])
+            self.assertNotIn("POLLUTED_SYSTEM_SECRET", set_a["global_memory_summary"])
+
+            self.assertIn("MARKER_BETA", set_b["global_memory_summary"])
+            self.assertNotIn("MARKER_ALPHA", set_b["global_memory_summary"])
+            self.assertNotIn("POLLUTED_SYSTEM_SECRET", set_b["global_memory_summary"])
+
+            self.assertEqual(set_g["global_memory_summary"], "")
+            self.assertTrue(set_g["cross_dialog_memory_enabled"])
+
+            # 2. Проверка GET /api/sessions/<id>/ и /api/worker-status/<id>/
+            det_a = client_a.get(f"/api/sessions/{sa_id}/").json()
+            ws_a = client_a.get(f"/api/worker-status/{sa_id}/").json()
+            self.assertIn("MARKER_ALPHA", det_a["global_memory_summary"])
+            self.assertNotIn("MARKER_BETA", det_a["global_memory_summary"])
+            self.assertIn("MARKER_ALPHA", ws_a["global_memory_summary"])
+            self.assertNotIn("MARKER_BETA", ws_a["global_memory_summary"])
+
+            # 3. Проверка GET / (HTML + context)
+            idx_a = client_a.get("/")
+            idx_b = client_b.get("/")
+            idx_g = guest_client.get("/")
+            self.assertIn("MARKER_ALPHA", idx_a.context["active_settings"].global_memory_summary)
+            self.assertNotIn("MARKER_BETA", idx_a.context["active_settings"].global_memory_summary)
+            self.assertIn("MARKER_BETA", idx_b.context["active_settings"].global_memory_summary)
+            self.assertNotIn("MARKER_ALPHA", idx_b.context["active_settings"].global_memory_summary)
+            self.assertEqual(idx_g.context["active_settings"].global_memory_summary, "")
+            self.assertNotContains(idx_g, "MARKER_ALPHA")
+            self.assertNotContains(idx_g, "POLLUTED_SYSTEM_SECRET")
+
+            # 4. Проверка diagnose_and_respond: передает только память владельца сессии и никогда SystemSettings
+            captured_globals = []
+            with patch.object(orchestrator, "_run_airllm_inference", side_effect=lambda **kw: (captured_globals.append(kw["global_summary"]), None)[1]):
+                sess_a_obj = DialogSession.objects.get(pk=sa_id)
+                sess_b_obj = DialogSession.objects.get(pk=sb_id)
+                guest_sess = DialogSession(title="Демо")
+                orchestrator.diagnose_and_respond("проверка", sess_a_obj, sys_cfg, [], [], [], [])
+                orchestrator.diagnose_and_respond("проверка", sess_b_obj, sys_cfg, [], [], [], [])
+                orchestrator.diagnose_and_respond("проверка", guest_sess, sys_cfg, [], [], [], [])
+
+            self.assertIn("MARKER_ALPHA", captured_globals[0])
+            self.assertNotIn("MARKER_BETA", captured_globals[0])
+            self.assertNotIn("POLLUTED_SYSTEM_SECRET", captured_globals[0])
+            self.assertIn("MARKER_BETA", captured_globals[1])
+            self.assertNotIn("MARKER_ALPHA", captured_globals[1])
+            self.assertEqual(captured_globals[2], "")
+
+            # 5. Ручные заметки сохраняются, а выключение cross_dialog_memory_enabled очищает автостроки
+            manual_note = "Гараж: компрессор 8 бар"
+            upd = client_a.post(
+                "/api/settings/",
+                data=json.dumps({
+                    "cross_dialog_memory_enabled": True,
+                    "global_memory_summary": manual_note + "\n" + set_a["global_memory_summary"],
+                }),
+                content_type="application/json",
+            )
+            self.assertEqual(upd.status_code, 200)
+            rebuilt = context_worker_manager.rebuild_user_cross_dialog_memory(user_a.id)
+            self.assertIn(manual_note, rebuilt)
+            self.assertIn("MARKER_ALPHA", rebuilt)
+
+            off_resp = client_a.post(
+                "/api/settings/",
+                data=json.dumps({
+                    "cross_dialog_memory_enabled": False,
+                    "global_memory_summary": rebuilt,
+                }),
+                content_type="application/json",
+            )
+            self.assertEqual(off_resp.status_code, 200)
+            off_summary = off_resp.json()["global_memory_summary"]
+            self.assertIn(manual_note, off_summary)
+            self.assertNotIn("• Сессия «", off_summary)
+        finally:
+            sys_cfg.global_memory_summary = ""
+            sys_cfg.save()
+
+    def test_20_global_memory_clear_and_lifecycle_purge(self):
+        """Проверка очистки глобальной памяти (memory_cleared_at) и мгновенного удаления из памяти при удалении сообщений/сессий/проектов."""
+        from django.contrib.auth import get_user_model
+
+        User = get_user_model()
+        user = User.objects.create_user(username="lifecycle_u1", password="Password123!")
+        self.client.force_login(user)
+
+        # 1. Создаем проект и сессию, добавляем два сообщения и ждём воркера
+        proj_resp = self.client.post(
+            "/api/projects/",
+            data=json.dumps({"name": "Проект ЖЦ"}),
+            content_type="application/json",
+        )
+        proj_id = proj_resp.json()["id"]
+
+        s1_resp = self.client.post(
+            "/api/sessions/",
+            data=json.dumps({"title": "Диалог 1", "vehicle_info": "Lada Vesta", "project_id": proj_id}),
+            content_type="application/json",
+        )
+        s1_id = s1_resp.json()["id"]
+
+        ask1 = self.client.post(
+            "/api/ask/",
+            data=json.dumps({"session_id": s1_id, "query": "Симптом OLD_SECRET_SYMPTOM код P0300", "dtc_codes": ["P0300"]}),
+            content_type="application/json",
+        )
+        self.assertEqual(ask1.status_code, 200)
+        msg1_user_id = ask1.json()["user_message"]["id"]
+        msg1_ai_id = ask1.json()["assistant_message"]["id"]
+
+        ask2 = self.client.post(
+            "/api/ask/",
+            data=json.dumps({"session_id": s1_id, "query": "Второй вопрос KEEP_THIS_SYMPTOM"}),
+            content_type="application/json",
+        )
+        self.assertEqual(ask2.status_code, 200)
+        self._wait_worker(s1_id)
+
+        mem_before = UserMemorySettings.for_user(user)[0].global_memory_summary
+        self.assertIn("OLD_SECRET_SYMPTOM", mem_before)
+
+        # 2. Частичное удаление сообщения с OLD_SECRET_SYMPTOM мгновенно убирает его из summary и global_memory_summary
+        del_one = self.client.post(f"/api/messages/{msg1_user_id}/delete/")
+        self.assertEqual(del_one.status_code, 200)
+        del_one_json = del_one.json()
+        self.assertNotIn("OLD_SECRET_SYMPTOM", del_one_json["session_summary"])
+        self.assertNotIn("OLD_SECRET_SYMPTOM", del_one_json["global_memory_summary"])
+        self.assertIn("KEEP_THIS_SYMPTOM", del_one_json["session_summary"])
+
+        # 3. Удаление оставшихся сообщений через delete_all=True обнуляет session.summary и убирает сессию из global_memory
+        del_all = self.client.post(
+            "/api/messages/delete/",
+            data=json.dumps({"session_id": s1_id, "delete_all": True}),
+            content_type="application/json",
+        )
+        self.assertEqual(del_all.status_code, 200)
+        self.assertEqual(del_all.json()["session_summary"], "")
+        self.assertNotIn("Диалог 1", del_all.json()["global_memory_summary"])
+
+        # 4. Новый вопрос + переименование + удаление сессии + удаление проекта
+        self.client.post(
+            "/api/ask/",
+            data=json.dumps({"session_id": s1_id, "query": "Проверка проекта TEMP_PROJ_TOKEN"}),
+            content_type="application/json",
+        )
+        self._wait_worker(s1_id)
+        self.assertIn("TEMP_PROJ_TOKEN", UserMemorySettings.for_user(user)[0].global_memory_summary)
+
+        # Переименование отражается в глобальной памяти
+        ren = self.client.post(
+            f"/api/sessions/{s1_id}/rename/",
+            data=json.dumps({"title": "Переименованная сессия"}),
+            content_type="application/json",
+        )
+        self.assertEqual(ren.status_code, 200)
+        self.assertIn("Переименованная сессия", UserMemorySettings.for_user(user)[0].global_memory_summary)
+
+        # Удаление проекта очищает глобальную память от сессий этого проекта
+        del_proj = self.client.delete(f"/api/projects/{proj_id}/")
+        self.assertEqual(del_proj.status_code, 200)
+        self.assertNotIn("TEMP_PROJ_TOKEN", UserMemorySettings.for_user(user)[0].global_memory_summary)
+
+        # 5. Очистка глобальной памяти + новая сессия: старые сессии до memory_cleared_at не всплывают
+        s_old = self.client.post(
+            "/api/sessions/",
+            data=json.dumps({"title": "Старая сессия"}),
+            content_type="application/json",
+        ).json()["id"]
+        self.client.post(
+            "/api/ask/",
+            data=json.dumps({"session_id": s_old, "query": "Старая ошибка BURIED_TOKEN"}),
+            content_type="application/json",
+        )
+        self._wait_worker(s_old)
+        self.assertIn("BURIED_TOKEN", UserMemorySettings.for_user(user)[0].global_memory_summary)
+
+        clear_resp = self.client.post(
+            "/api/settings/",
+            data=json.dumps({"global_memory_summary": "", "clear_global_memory": True}),
+            content_type="application/json",
+        )
+        self.assertEqual(clear_resp.status_code, 200)
+        mem_after_clear = UserMemorySettings.for_user(user)[0]
+        self.assertEqual(mem_after_clear.global_memory_summary, "")
+        self.assertIsNotNone(mem_after_clear.memory_cleared_at)
+
+        # Создаем новую сессию после очистки
+        time.sleep(0.02)
+        s_new = self.client.post(
+            "/api/sessions/",
+            data=json.dumps({"title": "Новая сессия"}),
+            content_type="application/json",
+        ).json()["id"]
+        self.client.post(
+            "/api/ask/",
+            data=json.dumps({"session_id": s_new, "query": "Новый симптом FRESH_TOKEN"}),
+            content_type="application/json",
+        )
+        self._wait_worker(s_new)
+
+        final_mem = UserMemorySettings.for_user(user)[0].global_memory_summary
+        self.assertIn("FRESH_TOKEN", final_mem)
+        self.assertNotIn("BURIED_TOKEN", final_mem)
+
+        # 6. Удаление сессии убирает её из глобальной памяти
+        self.client.delete(f"/api/sessions/{s_new}/")
+        self.assertNotIn("FRESH_TOKEN", UserMemorySettings.for_user(user)[0].global_memory_summary)
+
+        # 7. Удаление аккаунта удаляет и UserMemorySettings
+        uid = user.id
+        del_acc = self.client.post("/api/auth/delete-account/")
+        self.assertEqual(del_acc.status_code, 200)
+        self.assertFalse(UserMemorySettings.objects.filter(user_id=uid).exists())
+
+    def test_21_idor_and_cancel_generation_isolation(self):
+        """Проверка IDOR защиты (/pin, /tag, /rename, /sessions/<id>, /ask/job, /cancel) и защиты /api/settings/ в демо/госте."""
+        from django.contrib.auth import get_user_model
+        from .airllm_vulkan_service import orchestrator
+
+        User = get_user_model()
+        user_a = User.objects.create_user(username="idor_a", password="Password123!")
+        user_b = User.objects.create_user(username="idor_b", password="Password123!")
+
+        client_a = Client()
+        client_b = Client()
+        guest = Client()
+        client_a.force_login(user_a)
+        client_b.force_login(user_b)
+
+        sa_id = client_a.post(
+            "/api/sessions/",
+            data=json.dumps({"title": "Приватная А"}),
+            content_type="application/json",
+        ).json()["id"]
+
+        # Гость и User B не могут pin/tag/rename/get/patch/delete чужую сессию
+        for attacker in (guest, client_b):
+            self.assertEqual(attacker.post(f"/api/sessions/{sa_id}/pin/").status_code, 403)
+            self.assertEqual(
+                attacker.post(f"/api/sessions/{sa_id}/tag/", data=json.dumps({"tag": "HACK"}), content_type="application/json").status_code,
+                403,
+            )
+            self.assertEqual(
+                attacker.post(f"/api/sessions/{sa_id}/rename/", data=json.dumps({"title": "HACK"}), content_type="application/json").status_code,
+                403,
+            )
+            self.assertEqual(attacker.get(f"/api/sessions/{sa_id}/").status_code, 403)
+            self.assertEqual(
+                attacker.patch(f"/api/sessions/{sa_id}/", data=json.dumps({"title": "HACK"}), content_type="application/json").status_code,
+                403,
+            )
+            self.assertEqual(attacker.delete(f"/api/sessions/{sa_id}/").status_code, 403)
+
+        # Авторизованный пользователь НЕ может присвоить анонимную (user=None) сессию через /api/ask/
+        anon_sess = DialogSession.objects.create(title="Анонимная")
+        claim_attempt = client_a.post(
+            "/api/ask/",
+            data=json.dumps({"session_id": str(anon_sess.id), "query": "test"}),
+            content_type="application/json",
+        )
+        self.assertEqual(claim_attempt.status_code, 403)
+        anon_sess.refresh_from_db()
+        self.assertIsNone(anon_sess.user_id)
+
+        # Изоляция /api/ask/job/<job_id>/
+        async_resp = client_a.post(
+            "/api/ask/?async=1",
+            data=json.dumps({"session_id": sa_id, "query": "привет"}),
+            content_type="application/json",
+        )
+        self.assertEqual(async_resp.status_code, 202)
+        job_id = async_resp.json()["job_id"]
+        self.assertEqual(guest.get(f"/api/ask/job/{job_id}/").status_code, 403)
+        self.assertEqual(client_b.get(f"/api/ask/job/{job_id}/").status_code, 403)
+        for _ in range(30):
+            r = client_a.get(f"/api/ask/job/{job_id}/")
+            self.assertEqual(r.status_code, 200)
+            if r.json()["status"] in ("done", "error"):
+                break
+            time.sleep(0.05)
+        self._wait_worker(sa_id)
+
+        # Изоляция /api/cancel/
+        ev_a = threading.Event()
+        ev_b = threading.Event()
+        orchestrator.register_cancel_event(str(sa_id), ev_a, owner_user_id=user_a.id)
+        sb_id = client_b.post("/api/sessions/", data=json.dumps({"title": "Б"}), content_type="application/json").json()["id"]
+        orchestrator.register_cancel_event(str(sb_id), ev_b, owner_user_id=user_b.id)
+        try:
+            self.assertEqual(
+                guest.post("/api/cancel/", data=json.dumps({"session_id": sa_id}), content_type="application/json").status_code,
+                403,
+            )
+            self.assertEqual(
+                client_b.post("/api/cancel/", data=json.dumps({"session_id": sa_id}), content_type="application/json").status_code,
+                403,
+            )
+            self.assertFalse(ev_a.is_set())
+
+            # Вызов /api/cancel/ без session_id от имени User B отменяет только генерацию User B, не трогая User A
+            cancel_b = client_b.post("/api/cancel/", data=json.dumps({}), content_type="application/json")
+            self.assertEqual(cancel_b.status_code, 200)
+            self.assertTrue(ev_b.is_set())
+            self.assertFalse(ev_a.is_set())
+        finally:
+            orchestrator.unregister_cancel_event(str(sa_id))
+            orchestrator.unregister_cancel_event(str(sb_id))
+
+        # Демо и неавторизованный POST /api/settings/ никогда не меняют БД
+        mem_a_before = UserMemorySettings.for_user(user_a)[0].global_memory_summary
+        demo_post = guest.post(
+            "/api/settings/",
+            data=json.dumps({"global_memory_summary": "DEMO_POISON", "cross_dialog_memory_enabled": False}),
+            headers={"X-Demo-Mode": "1"},
+            content_type="application/json",
+        )
+        self.assertEqual(demo_post.status_code, 200)
+        self.assertTrue(demo_post.json().get("is_demo"))
+        self.assertEqual(SystemSettings.get_active().global_memory_summary, "")
+        self.assertTrue(SystemSettings.get_active().cross_dialog_memory_enabled)
+        self.assertEqual(UserMemorySettings.for_user(user_a)[0].global_memory_summary, mem_a_before)
+
+        unauth_post = guest.post(
+            "/api/settings/",
+            data=json.dumps({"global_memory_summary": "UNAUTH_POISON"}),
+            content_type="application/json",
+        )
+        self.assertEqual(unauth_post.status_code, 401)
+        self.assertEqual(SystemSettings.get_active().global_memory_summary, "")
+
+    def test_22_dtc_dictionary_pagination(self):
+        """Проверка пагинации словаря DTC через offset/limit и корректной обработки некорректных параметров."""
+        p1 = self.client.get("/api/dtc/?q=&system=all&limit=10&offset=0")
+        self.assertEqual(p1.status_code, 200)
+        d1 = p1.json()
+        self.assertEqual(d1["limit"], 10)
+        self.assertEqual(d1["offset"], 0)
+        self.assertIn("total", d1)
+        self.assertIn("total_catalog", d1)
+        self.assertLessEqual(len(d1["items"]), 10)
+
+        bad_offset = self.client.get("/api/dtc/?q=&system=all&limit=5&offset=not_an_int")
+        self.assertEqual(bad_offset.status_code, 200)
+        self.assertEqual(bad_offset.json()["offset"], 0)
+        self.assertEqual(bad_offset.json()["limit"], 5)
+
 
 
 

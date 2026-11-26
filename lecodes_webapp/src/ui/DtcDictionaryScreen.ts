@@ -34,9 +34,14 @@ export function createDtcDictionaryScreen(
 
   const activeSubTabSignal = signal<"checklist" | "dtc">("checklist");
   const searchQuerySignal = signal<string>("");
-  const systemFilterSignal = signal<string>("ALL");
-  const dtcResultsSignal = signal<DtcCodeInfo[]>(cacheManager.searchDtc("", "ALL"));
+  const systemFilterSignal = signal<string>("all");
+  const initialLocalPage = cacheManager.searchDtcPage("", "all", 0, 80);
+  const dtcResultsSignal = signal<DtcCodeInfo[]>(initialLocalPage.items);
+  const dtcTotalSignal = signal<number>(initialLocalPage.total);
+  const dtcTotalCatalogSignal = signal<number>(cacheManager.getStats().dtcCount);
+  const dtcLoadingMoreSignal = signal<boolean>(false);
   const isSyncingSignal = signal<boolean>(false);
+  let dtcRequestSeq = 0;
 
   const header = AppHeader({
     title: "ИИДЕАЛ АВТО",
@@ -295,16 +300,47 @@ export function createDtcDictionaryScreen(
   // =========================================================================
 
   let searchDebounce: any = null;
-  const runDtcSearch = async () => {
+  const runDtcSearch = async (append: boolean = false) => {
+    if (append && dtcLoadingMoreSignal.value) return;
+
     const q = searchQuerySignal.value.trim();
     const sys = systemFilterSignal.value;
-    const localHits = cacheManager.searchDtc(q, sys);
-    dtcResultsSignal.value = localHits;
+    const offset = append ? dtcResultsSignal.value.length : 0;
+    const reqId = ++dtcRequestSeq;
 
-    const onlineHits = await apiClient.getDtcList(q, sys);
-    if (onlineHits && onlineHits.length > 0) {
-      dtcResultsSignal.value = onlineHits;
-      void cacheManager.cacheDtcDictionary(onlineHits);
+    if (!append) {
+      const localPage = cacheManager.searchDtcPage(q, sys, 0, 80);
+      dtcResultsSignal.value = localPage.items;
+      dtcTotalSignal.value = localPage.total;
+    } else {
+      dtcLoadingMoreSignal.value = true;
+    }
+
+    try {
+      const page = await apiClient.getDtcPage(q, sys, offset, 80);
+      if (reqId !== dtcRequestSeq) return;
+
+      if (!append) {
+        dtcResultsSignal.value = page.items;
+      } else {
+        const existingCodes = new Set(dtcResultsSignal.value.map(x => x.code));
+        const nextItems = [...dtcResultsSignal.value];
+        for (const item of page.items) {
+          if (!existingCodes.has(item.code)) {
+            existingCodes.add(item.code);
+            nextItems.push(item);
+          }
+        }
+        dtcResultsSignal.value = nextItems;
+      }
+      dtcTotalSignal.value = Math.max(page.total, dtcResultsSignal.value.length);
+      if (page.totalCatalog > 0) {
+        dtcTotalCatalogSignal.value = page.totalCatalog;
+      }
+    } finally {
+      if (reqId === dtcRequestSeq) {
+        dtcLoadingMoreSignal.value = false;
+      }
     }
   };
 
@@ -326,7 +362,7 @@ export function createDtcDictionaryScreen(
       searchQuerySignal.value = val;
       if (searchDebounce) clearTimeout(searchDebounce);
       searchDebounce = setTimeout(() => {
-        void runDtcSearch();
+        void runDtcSearch(false);
       }, 250);
     });
 
@@ -349,14 +385,40 @@ export function createDtcDictionaryScreen(
       })
       .onClick(() => {
         systemFilterSignal.value = sys;
-        void runDtcSearch();
+        void runDtcSearch(false);
       });
   };
 
   const dtcListContainer = UIColumn().style({ width: "100%", gap: 8 });
 
+  const formatOemLine = (oemRaw: any): string => {
+    if (!oemRaw) return "";
+    const parts: string[] = [];
+    if (Array.isArray(oemRaw)) {
+      for (let i = 0; i < oemRaw.length && parts.length < 3; i++) {
+        const v = oemRaw[i];
+        if (!v) continue;
+        if (typeof v === "string") parts.push(v.trim());
+        else if (typeof v === "object") {
+          const make = String(v.make || v.oem || v.brand || "").trim();
+          const txt = String(v.description || v.title || v.symptom || v.text || "").trim();
+          if (make && txt) parts.push(`${make}: ${txt}`);
+          else if (make || txt) parts.push(make || txt);
+        }
+      }
+    } else if (typeof oemRaw === "object") {
+      for (const k of Object.keys(oemRaw).slice(0, 3)) {
+        const val = oemRaw[k];
+        const txt = typeof val === "string" ? val.trim() : val?.description || val?.title || "";
+        parts.push(txt ? `${k}: ${txt}` : k);
+      }
+    }
+    return parts.filter(Boolean).join(" • ");
+  };
+
   const renderDtcList = () => {
     const items = dtcResultsSignal.value || [];
+    const total = Math.max(dtcTotalSignal.value || 0, items.length);
     if (items.length === 0) {
       dtcListContainer.setContent([
         UIText("Коды не найдены. Попробуйте обновить словарь с сервера или изменить запрос.").style({
@@ -369,66 +431,130 @@ export function createDtcDictionaryScreen(
       return;
     }
 
-    dtcListContainer.setContent(
-      items.slice(0, 80).map(item =>
-        UIColumn(
-          UIRow(
-            DtcChip(item.code, () => {
+    const cards: any[] = items.map(item => {
+      const enTitle =
+        item.en_title && item.en_title.toLowerCase() !== (item.title || "").toLowerCase()
+          ? `EN: ${item.en_title}`
+          : "";
+      const oemLine = formatOemLine(item.oem_variants);
+      const tsbCount =
+        item.nhtsa_stats && typeof item.nhtsa_stats === "object"
+          ? Number(item.nhtsa_stats.bulletins || item.nhtsa_stats.tsb_count || 0)
+          : 0;
+
+      return UIColumn(
+        UIRow(
+          DtcChip(item.code, () => {
+            stageDtcCodes([item.code]);
+            callbacks.onSelectCode?.(item.code);
+          }),
+          UIText(item.title || "Описание ошибки").style({
+            color: () => THEME.textPrimary,
+            fontSize: 13,
+            fontWeight: "bold",
+            flex: 1
+          }),
+          UIButton(
+            UIRow(
+              LucideIcon("lucide:plus", 12, "#ffffff"),
+              UIText("В чат").style({
+                color: "#ffffff",
+                fontSize: 11,
+                fontWeight: "bold"
+              })
+            ).style({ alignItems: "center", gap: 4 })
+          )
+            .style({
+              backgroundColor: () => THEME.accentOrange,
+              paddingHorizontal: 9,
+              paddingVertical: 5,
+              borderRadius: 7
+            })
+            .onClick(() => {
               stageDtcCodes([item.code]);
+              toast(`Код ${item.code} прикреплён в чат`);
               callbacks.onSelectCode?.(item.code);
-            }),
-            UIText(item.title || "Описание ошибки").style({
-              color: () => THEME.textPrimary,
-              fontSize: 13,
-              fontWeight: "bold",
-              flex: 1
-            }),
-            UIButton(
-              UIRow(
-                LucideIcon("lucide:plus", 12, "#ffffff"),
-                UIText("В чат").style({
-                  color: "#ffffff",
-                  fontSize: 11,
-                  fontWeight: "bold"
-                })
-              ).style({ alignItems: "center", gap: 4 })
-            )
-              .style({
-                backgroundColor: () => THEME.accentOrange,
-                paddingHorizontal: 9,
-                paddingVertical: 5,
-                borderRadius: 7
+            })
+        ).style({ alignItems: "center", gap: 8, width: "100%", marginBottom: 4 }),
+        ...(item.description && item.description !== item.title
+          ? [
+              UIText(item.description).style({
+                color: () => THEME.textSecondary,
+                fontSize: 11,
+                lineHeight: 16
               })
-              .onClick(() => {
-                stageDtcCodes([item.code]);
-                toast(`Код ${item.code} прикреплён в чат`);
-                callbacks.onSelectCode?.(item.code);
+            ]
+          : []),
+        ...(enTitle
+          ? [
+              UIText(enTitle).style({
+                color: () => THEME.textMuted,
+                fontSize: 10,
+                marginTop: 2
               })
-          ).style({ alignItems: "center", gap: 8, width: "100%", marginBottom: 4 }),
-          ...(item.description
-            ? [
-                UIText(item.description).style({
-                  color: () => THEME.textSecondary,
-                  fontSize: 11,
-                  lineHeight: 16
-                })
-              ]
-            : [])
-        ).style({
-          backgroundColor: () => THEME.bgSurface,
-          borderWidth: 1,
-          borderColor: () => THEME.borderDefault,
-          borderRadius: 11,
-          padding: 11,
-          width: "100%"
-        })
-      )
-    );
+            ]
+          : []),
+        ...(item.solution
+          ? [
+              UIText(`Решение: ${item.solution}`).style({
+                color: () => THEME.textSecondary,
+                fontSize: 11,
+                lineHeight: 15,
+                marginTop: 2
+              })
+            ]
+          : []),
+        ...(oemLine
+          ? [
+              UIText(`OEM: ${oemLine}`).style({
+                color: () => THEME.textMuted,
+                fontSize: 10,
+                lineHeight: 14,
+                marginTop: 2
+              })
+            ]
+          : []),
+        ...(tsbCount > 0
+          ? [
+              UIText(`Сервисные бюллетени: ${tsbCount}`).style({
+                color: () => THEME.accentCyan,
+                fontSize: 10,
+                marginTop: 2
+              })
+            ]
+          : [])
+      ).style({
+        backgroundColor: () => THEME.bgSurface,
+        borderWidth: 1,
+        borderColor: () => THEME.borderDefault,
+        borderRadius: 11,
+        padding: 11,
+        width: "100%"
+      });
+    });
+
+    if (items.length < total) {
+      cards.push(
+        SecondaryButton(
+          () => (dtcLoadingMoreSignal.value ? "Загрузка..." : "Загрузить ещё"),
+          () => {
+            void runDtcSearch(true);
+          },
+          "lucide:refresh-cw"
+        ).style({ width: "100%", justifyContent: "center", paddingVertical: 10 })
+      );
+    }
+
+    dtcListContainer.setContent(cards);
   };
 
   effect(() => {
     const _res = dtcResultsSignal.value;
+    const _tot = dtcTotalSignal.value;
+    const _more = dtcLoadingMoreSignal.value;
     void _res;
+    void _tot;
+    void _more;
     renderDtcList();
   });
 
@@ -450,7 +576,7 @@ export function createDtcDictionaryScreen(
           isSyncingSignal.value = true;
           const cnt = await apiClient.syncDtcDictionary();
           isSyncingSignal.value = false;
-          await runDtcSearch();
+          await runDtcSearch(false);
           toast(cnt > 0 ? `Синхронизировано кодов: ${cnt}` : "Словарь актуален");
         })
     ).style({ alignItems: "center", gap: 8, width: "100%" }),
@@ -466,9 +592,16 @@ export function createDtcDictionaryScreen(
     ).style({ scrollDirection: "horizontal", showScrollbar: false, width: "100%" }),
 
     PrimaryButton(
-      () => `Найдено кодов: ${dtcResultsSignal.value.length}`,
       () => {
-        void runDtcSearch();
+        const shown = dtcResultsSignal.value.length;
+        const total = Math.max(dtcTotalSignal.value, shown);
+        const cat = dtcTotalCatalogSignal.value;
+        return cat > total
+          ? `Показано ${shown} из ${total} (база: ${cat})`
+          : `Показано ${shown} из ${total}`;
+      },
+      () => {
+        void runDtcSearch(false);
       },
       isSyncingSignal
     ).style({ width: "100%" }),

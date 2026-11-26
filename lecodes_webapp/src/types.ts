@@ -33,6 +33,25 @@ export interface DtcCodeInfo {
   has_telemetry?: boolean;
   symptoms?: string[];
   causes?: string[];
+  en_title?: string;
+  solution?: string;
+  system_ru?: string;
+  lang?: string;
+  oem_variants?: any;
+  nhtsa_stats?: any;
+}
+
+export interface DtcSystemCount {
+  id: string;
+  name: string;
+  count: number;
+}
+
+export interface DtcPageResult {
+  items: DtcCodeInfo[];
+  total: number;
+  totalCatalog: number;
+  systems: DtcSystemCount[];
 }
 
 export interface ChatRepairTask {

@@ -1,5 +1,5 @@
 """
-Фоновый воркер сжатия контекста и междиалоговой памяти с динамической оптимизацией
+Фоновый воркер сжатия контекста и персональной междиалоговой памяти с динамической оптимизацией
 относительно свободного размера окна контекста (~5000 токенов).
 
 Архитектура динамического управления контекстом:
@@ -11,12 +11,12 @@
      результатов BERT-RAG, резерва генерации и последних 5 пар «вопрос-ответ».
    - Динамически масштабирует объем выжимки (`DialogSession.summary`) под свободный контекст,
      упаковывая более старые сообщения диалога и накопленные технические факты без потерь.
-   - При включенной настройке `cross_dialog_memory_enabled` обновляет глобальную
-     междиалоговую память (`SystemSettings.global_memory_summary`).
+   - При включенной персональной настройке `cross_dialog_memory_enabled` обновляет строго
+     изолированную междиалоговую память конкретного владельца (`UserMemorySettings.global_memory_summary`).
 3. ПРИОРИТЕТ ОТВЕТА ПОЛЬЗОВАТЕЛЮ (Zero-Wait Preemption):
-   Если пользователь задал новый вопрос, пока фоновый воркер еще работает,
-   вызывается `preempt_if_running(session_id)`, который мгновенно выставляет `cancel_event.set()`
-   и увеличивает `worker_version` без ожидания.
+   Если пользователь задал новый вопрос или удалил сообщения/сессию/память, пока фоновый воркер
+   еще работает, вызывается `preempt_if_running` / `preempt_user_workers`, который мгновенно
+   выставляет `cancel_event.set()` и атомарно увеличивает `worker_version` без ожидания.
 """
 
 import logging
@@ -26,9 +26,12 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional
 
-from django.db import close_old_connections
+from django.contrib.auth import get_user_model
+from django.db import close_old_connections, transaction
+from django.db.models import Exists, F, OuterRef, Q
+from django.utils import timezone
 
-from .models import ChatMessage, DialogSession, SystemSettings
+from .models import ChatMessage, DialogSession, SystemSettings, UserMemorySettings
 
 logger = logging.getLogger(__name__)
 
@@ -133,6 +136,7 @@ class ActiveWorkerHandle:
     cancel_event: threading.Event
     thread: threading.Thread
     started_at: float
+    user_id: Optional[int] = None
 
 
 class ContextSummarizerWorkerManager:
@@ -143,6 +147,18 @@ class ContextSummarizerWorkerManager:
         self._active_workers: Dict[str, ActiveWorkerHandle] = {}
         self._last_budgets: Dict[str, Dict[str, int]] = {}
         self._llm_summarizer_fn: Optional[Callable[[str, threading.Event], Optional[str]]] = None
+        self._user_memory_locks_guard = threading.Lock()
+        self._user_memory_locks: Dict[int, threading.RLock] = {}
+
+    def _get_user_memory_lock(self, user_id: int) -> threading.RLock:
+        """Возвращает персональную реентерабельную блокировку междиалоговой памяти пользователя."""
+        uid = int(user_id)
+        with self._user_memory_locks_guard:
+            lock = self._user_memory_locks.get(uid)
+            if lock is None:
+                lock = threading.RLock()
+                self._user_memory_locks[uid] = lock
+            return lock
 
     def register_llm_summarizer(self, fn: Optional[Callable[[str, threading.Event], Optional[str]]]):
         """Регистрирует опциональную функцию LLM-суммаризации с поддержкой прерывания по cancel_event."""
@@ -158,19 +174,20 @@ class ContextSummarizerWorkerManager:
 
         with self._lock:
             handle = self._active_workers.get(sid)
-            if handle and handle.thread.is_alive():
+            if handle:
                 handle.cancel_event.set()
-                was_running = True
+                if handle.thread.is_alive():
+                    was_running = True
                 self._active_workers.pop(sid, None)
 
         if was_running:
             try:
                 close_old_connections()
-                session = DialogSession.objects.filter(pk=session_id).first()
-                if session:
-                    session.worker_version += 1
-                    session.worker_status = "aborted_for_priority"
-                    session.save(update_fields=["worker_version", "worker_status", "updated_at"])
+                DialogSession.objects.filter(pk=session_id).update(
+                    worker_version=F("worker_version") + 1,
+                    worker_status="aborted_for_priority",
+                    updated_at=timezone.now(),
+                )
                 logger.info(
                     "[CONTEXT WORKER] Принудительный сброс воркера сессии %s: приоритет отдан новому запросу пользователя.",
                     sid,
@@ -180,27 +197,70 @@ class ContextSummarizerWorkerManager:
 
         return was_running
 
+    def preempt_user_workers(self, user_id: Optional[int]) -> int:
+        """
+        Мгновенно выставляет cancel_event для всех активных воркеров указанного пользователя
+        и атомарно увеличивает поколения их сессий.
+        """
+        if user_id is None:
+            return 0
+        uid = int(user_id)
+        preempted_sids: List[str] = []
+
+        with self._lock:
+            for sid, handle in list(self._active_workers.items()):
+                if handle.user_id == uid:
+                    handle.cancel_event.set()
+                    if handle.thread.is_alive():
+                        preempted_sids.append(sid)
+                    self._active_workers.pop(sid, None)
+
+        try:
+            close_old_connections()
+            qs = DialogSession.objects.filter(user_id=uid)
+            if preempted_sids:
+                qs.filter(Q(pk__in=preempted_sids) | Q(worker_status="running")).update(
+                    worker_version=F("worker_version") + 1,
+                    worker_status="aborted_for_priority",
+                    updated_at=timezone.now(),
+                )
+            else:
+                qs.filter(worker_status="running").update(
+                    worker_version=F("worker_version") + 1,
+                    worker_status="aborted_for_priority",
+                    updated_at=timezone.now(),
+                )
+        except Exception as exc:
+            logger.warning("[CONTEXT WORKER] Ошибка при массовом сбросе воркеров пользователя %s: %s", uid, exc)
+
+        return len(preempted_sids)
+
     def start_background_update(self, session_id: str) -> int:
         """
-        Запускает фоновый воркер обновления выжимки диалога (и междиалоговой памяти, если включена).
+        Запускает фоновый воркер обновления выжимки диалога (и персональной междиалоговой памяти, если включена).
         """
         sid = str(session_id)
         self.preempt_if_running(sid)
 
         close_old_connections()
-        session = DialogSession.objects.filter(pk=session_id).first()
-        if not session:
-            return 0
-
-        session.worker_version += 1
-        new_version = session.worker_version
-        session.worker_status = "running"
-        session.save(update_fields=["worker_version", "worker_status", "updated_at"])
+        with transaction.atomic():
+            updated = DialogSession.objects.filter(pk=session_id).update(
+                worker_version=F("worker_version") + 1,
+                worker_status="running",
+                updated_at=timezone.now(),
+            )
+            if not updated:
+                return 0
+            session = DialogSession.objects.filter(pk=session_id).only("id", "user_id", "worker_version").first()
+            if not session:
+                return 0
+            new_version = int(session.worker_version)
+            owner_user_id = session.user_id
 
         cancel_event = threading.Event()
         worker_thread = threading.Thread(
             target=self._worker_loop,
-            args=(sid, new_version, cancel_event),
+            args=(sid, new_version, cancel_event, owner_user_id),
             name=f"ContextWorker-{sid[:8]}-v{new_version}",
             daemon=True,
         )
@@ -212,6 +272,7 @@ class ContextSummarizerWorkerManager:
                 cancel_event=cancel_event,
                 thread=worker_thread,
                 started_at=time.perf_counter(),
+                user_id=owner_user_id,
             )
 
         logger.debug("[CONTEXT WORKER] Запущен фоновый воркер сессии %s (версия v%d).", sid, new_version)
@@ -236,6 +297,7 @@ class ContextSummarizerWorkerManager:
         vehicle_info: str,
         context_window_tokens: int,
         cancel_event: threading.Event,
+        allow_llm: bool = True,
     ) -> tuple[Optional[str], Dict[str, int]]:
         """
         Формирует динамически масштабируемую техническую выжимку диалога
@@ -247,6 +309,9 @@ class ContextSummarizerWorkerManager:
         )
         if cancel_event.is_set():
             return None, budget
+
+        if not messages:
+            return "", budget
 
         max_chars = budget["max_summary_chars"]
         dtc_codes: List[str] = []
@@ -340,7 +405,7 @@ class ContextSummarizerWorkerManager:
         if len(base_digest) > max_chars:
             base_digest = base_digest[:max_chars].rsplit(".", 1)[0] + "."
 
-        if self._llm_summarizer_fn is not None and not cancel_event.is_set():
+        if allow_llm and self._llm_summarizer_fn is not None and not cancel_event.is_set():
             try:
                 llm_digest = self._llm_summarizer_fn(base_digest, cancel_event)
                 if llm_digest and not cancel_event.is_set():
@@ -350,46 +415,185 @@ class ContextSummarizerWorkerManager:
 
         return base_digest, budget
 
-    def _update_cross_dialog_memory(self, cancel_event: threading.Event):
+    def recompute_session_summary_sync(self, session_id: str) -> str:
         """
-        Обновляет единую междиалоговую выжимку по всем сессиям пользователя,
-        если активирована настройка `cross_dialog_memory_enabled`, сохраняя вручную заданные заметки.
+        Синхронно и мгновенно пересчитывает выжимку `DialogSession.summary` строго
+        по актуально оставшимся сообщениям в БД (или очищает до `""`, если сообщений нет)
+        и немедленно пересобирает персональную междиалоговую память владельца.
         """
-        if cancel_event.is_set():
-            return
+        sid = str(session_id)
+        self.preempt_if_running(sid)
+        close_old_connections()
 
+        session = DialogSession.objects.filter(pk=session_id).first()
+        if not session:
+            return ""
+
+        user_id = session.user_id
         settings_obj = SystemSettings.get_active()
-        if not settings_obj.cross_dialog_memory_enabled:
-            return
 
-        recent_sessions = list(
-            DialogSession.objects.exclude(summary="").order_by("-updated_at")[:6]
-        )
-        if not recent_sessions or cancel_event.is_set():
-            return
+        def _do_sync() -> str:
+            fresh_session = DialogSession.objects.filter(pk=session_id).first()
+            if not fresh_session:
+                return ""
+            messages = list(ChatMessage.objects.filter(session=fresh_session).order_by("created_at"))
+            if not messages:
+                digest = ""
+                budget = compute_dynamic_context_budget(
+                    context_window_tokens=settings_obj.context_window_tokens,
+                    messages=[],
+                )
+            else:
+                raw_digest, budget = self._build_dynamic_structured_digest(
+                    messages=messages,
+                    vehicle_info=fresh_session.vehicle_info,
+                    context_window_tokens=settings_obj.context_window_tokens,
+                    cancel_event=threading.Event(),
+                    allow_llm=False,
+                )
+                digest = raw_digest or ""
 
-        existing_manual_lines = [
+            with self._lock:
+                self._last_budgets[sid] = budget
+
+            DialogSession.objects.filter(pk=session_id).update(
+                summary=digest,
+                worker_status="completed" if digest else "idle",
+                worker_version=F("worker_version") + 1,
+                updated_at=timezone.now(),
+            )
+            if user_id is not None:
+                self._update_cross_dialog_memory_locked(int(user_id))
+            return digest
+
+        if user_id is not None:
+            with self._get_user_memory_lock(int(user_id)):
+                return _do_sync()
+        return _do_sync()
+
+    def _update_cross_dialog_memory_locked(
+        self,
+        user_id: int,
+        cancel_event: Optional[threading.Event] = None,
+        force_strip_if_disabled: bool = False,
+    ) -> str:
+        """
+        Пересобирает персональную междиалоговую выжимку строго по актуальным сессиям
+        конкретного пользователя `user_id` (требует удержания `_get_user_memory_lock(user_id)`).
+        """
+        if cancel_event is not None and cancel_event.is_set():
+            return ""
+
+        User = get_user_model()
+        if not User.objects.filter(pk=user_id).exists():
+            return ""
+
+        mem_settings, _ = UserMemorySettings.objects.get_or_create(user_id=user_id)
+        manual_lines = [
             ln.strip()
-            for ln in (settings_obj.global_memory_summary or "").splitlines()
+            for ln in (mem_settings.global_memory_summary or "").splitlines()
             if ln.strip() and not ln.strip().startswith("• Сессия «")
         ]
 
-        global_blocks: List[str] = list(existing_manual_lines)
+        if not mem_settings.cross_dialog_memory_enabled:
+            if force_strip_if_disabled:
+                cleaned = "\n".join(manual_lines)
+                if cleaned != (mem_settings.global_memory_summary or ""):
+                    mem_settings.global_memory_summary = cleaned
+                    mem_settings.save(update_fields=["global_memory_summary", "updated_at"])
+                return cleaned
+            return mem_settings.global_memory_summary or ""
+
+        qs = DialogSession.objects.filter(user_id=user_id).exclude(summary="")
+        if mem_settings.memory_cleared_at is not None:
+            qs = qs.filter(
+                Q(created_at__gt=mem_settings.memory_cleared_at)
+                | Exists(
+                    ChatMessage.objects.filter(
+                        session_id=OuterRef("pk"),
+                        created_at__gt=mem_settings.memory_cleared_at,
+                    )
+                )
+            )
+
+        recent_sessions = list(qs.order_by("-updated_at")[:6])
+        if cancel_event is not None and cancel_event.is_set():
+            return mem_settings.global_memory_summary or ""
+
+        auto_blocks: List[str] = []
         for sess in recent_sessions:
-            if cancel_event.is_set():
-                return
-            summary_lines = [ln.strip() for ln in sess.summary.splitlines() if ln.strip()]
+            if cancel_event is not None and cancel_event.is_set():
+                return mem_settings.global_memory_summary or ""
+            summary_lines = [ln.strip() for ln in (sess.summary or "").splitlines() if ln.strip()]
             compact_summary = " | ".join(summary_lines[:3]) if summary_lines else sess.title
             veh_prefix = f"[{sess.vehicle_info}] " if sess.vehicle_info else ""
-            global_blocks.append(f"• Сессия «{sess.title}» {veh_prefix}: {compact_summary[:280]}")
+            auto_blocks.append(f"• Сессия «{sess.title}» {veh_prefix}: {compact_summary[:280]}")
 
-        if cancel_event.is_set():
+        global_blocks: List[str] = list(manual_lines) + auto_blocks
+        new_global_summary = "\n".join(global_blocks)
+        if new_global_summary != (mem_settings.global_memory_summary or ""):
+            mem_settings.global_memory_summary = new_global_summary
+            mem_settings.save(update_fields=["global_memory_summary", "updated_at"])
+        return new_global_summary
+
+    def _update_cross_dialog_memory(
+        self,
+        user_id: Optional[int],
+        cancel_event: Optional[threading.Event] = None,
+    ) -> str:
+        """Безопасная обёртка обновления персональной междиалоговой памяти (NO-OP для анонимных/демо сессий)."""
+        if user_id is None or (cancel_event is not None and cancel_event.is_set()):
+            return ""
+        with self._get_user_memory_lock(int(user_id)):
+            return self._update_cross_dialog_memory_locked(int(user_id), cancel_event=cancel_event)
+
+    def rebuild_user_cross_dialog_memory(
+        self,
+        user_id: Optional[int],
+        force_strip_if_disabled: bool = False,
+    ) -> str:
+        """Публичный синхронный пересчёт персональной междиалоговой памяти пользователя."""
+        if user_id is None:
+            return ""
+        close_old_connections()
+        with self._get_user_memory_lock(int(user_id)):
+            return self._update_cross_dialog_memory_locked(
+                int(user_id),
+                cancel_event=None,
+                force_strip_if_disabled=force_strip_if_disabled,
+            )
+
+    def clear_user_global_memory(self, user_id: Optional[int]) -> None:
+        """
+        Полностью очищает персональную междиалоговую память пользователя, останавливает
+        все его фоновые воркеры, фиксирует `memory_cleared_at` и сбрасывает `summary`
+        существующих сессий пользователя, исключая повторное всплытие старых чатов.
+        """
+        if user_id is None:
             return
+        uid = int(user_id)
+        self.preempt_user_workers(uid)
+        close_old_connections()
+        with self._get_user_memory_lock(uid):
+            now_ts = timezone.now()
+            mem_settings, _ = UserMemorySettings.objects.get_or_create(user_id=uid)
+            mem_settings.global_memory_summary = ""
+            mem_settings.memory_cleared_at = now_ts
+            mem_settings.save(update_fields=["global_memory_summary", "memory_cleared_at", "updated_at"])
+            DialogSession.objects.filter(user_id=uid).update(
+                summary="",
+                worker_status="idle",
+                worker_version=F("worker_version") + 1,
+                updated_at=now_ts,
+            )
 
-        settings_obj.global_memory_summary = "\n".join(global_blocks)
-        settings_obj.save(update_fields=["global_memory_summary", "updated_at"])
-
-    def _worker_loop(self, session_id: str, version: int, cancel_event: threading.Event):
+    def _worker_loop(
+        self,
+        session_id: str,
+        version: int,
+        cancel_event: threading.Event,
+        owner_user_id: Optional[int] = None,
+    ):
         start_ts = time.perf_counter()
         try:
             close_old_connections()
@@ -401,14 +605,24 @@ class ContextSummarizerWorkerManager:
             if not session or session.worker_version != version or cancel_event.is_set():
                 return
 
+            user_id = session.user_id if session.user_id is not None else owner_user_id
             settings_obj = SystemSettings.get_active()
-            messages = list(session.messages.order_by("created_at"))
-            digest, budget = self._build_dynamic_structured_digest(
-                messages=messages,
-                vehicle_info=session.vehicle_info,
-                context_window_tokens=settings_obj.context_window_tokens,
-                cancel_event=cancel_event,
-            )
+            messages = list(ChatMessage.objects.filter(session=session).order_by("created_at"))
+
+            if not messages:
+                digest: Optional[str] = ""
+                budget = compute_dynamic_context_budget(
+                    context_window_tokens=settings_obj.context_window_tokens,
+                    messages=[],
+                )
+            else:
+                digest, budget = self._build_dynamic_structured_digest(
+                    messages=messages,
+                    vehicle_info=session.vehicle_info,
+                    context_window_tokens=settings_obj.context_window_tokens,
+                    cancel_event=cancel_event,
+                    allow_llm=True,
+                )
 
             with self._lock:
                 self._last_budgets[str(session_id)] = budget
@@ -416,22 +630,33 @@ class ContextSummarizerWorkerManager:
             if digest is None or cancel_event.is_set():
                 return
 
-            session.refresh_from_db(fields=["worker_version"])
-            if session.worker_version != version or cancel_event.is_set():
-                return
+            duration_ms = max(1, int((time.perf_counter() - start_ts) * 1000))
 
-            duration_ms = int((time.perf_counter() - start_ts) * 1000)
-            session.summary = digest
-            session.worker_status = "completed"
-            session.worker_last_duration_ms = max(1, duration_ms)
-            session.save(
-                update_fields=[
-                    "summary",
-                    "worker_status",
-                    "worker_last_duration_ms",
-                    "updated_at",
-                ]
-            )
+            def _commit_digest() -> bool:
+                fresh_session = DialogSession.objects.filter(pk=session_id).first()
+                if fresh_session is None or fresh_session.worker_version != version or cancel_event.is_set():
+                    return False
+                fresh_session.summary = digest
+                fresh_session.worker_status = "completed" if digest else "idle"
+                fresh_session.worker_last_duration_ms = duration_ms
+                fresh_session.save(
+                    update_fields=[
+                        "summary",
+                        "worker_status",
+                        "worker_last_duration_ms",
+                        "updated_at",
+                    ]
+                )
+                return True
+
+            if user_id is not None:
+                with self._get_user_memory_lock(int(user_id)):
+                    if not _commit_digest():
+                        return
+                    self._update_cross_dialog_memory_locked(int(user_id), cancel_event=cancel_event)
+            else:
+                if not _commit_digest():
+                    return
 
             logger.debug(
                 "[CONTEXT WORKER] Сессия %s (v%d) обновлена за %d мс | Окно=%d ток., свободно=%d ток., лимит выжимки=%d симв.",
@@ -442,8 +667,6 @@ class ContextSummarizerWorkerManager:
                 budget["free_context_tokens"],
                 budget["max_summary_chars"],
             )
-
-            self._update_cross_dialog_memory(cancel_event)
 
         except Exception as exc:
             logger.error("[CONTEXT WORKER] Ошибка в фоновом воркере сессии %s: %s", session_id, exc)

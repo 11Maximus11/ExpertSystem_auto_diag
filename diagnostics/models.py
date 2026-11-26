@@ -66,12 +66,14 @@ class SystemSettings(models.Model):
     )
     cross_dialog_memory_enabled = models.BooleanField(
         default=True,
-        verbose_name="Обновлять и использовать краткую выжимку МЕЖДУ диалогами",
+        verbose_name="[Устарело] Обновлять и использовать краткую выжимку МЕЖДУ диалогами",
+        help_text="Устаревшее глобальное поле (сохранено для совместимости); персональная настройка хранится в UserMemorySettings.",
     )
     global_memory_summary = models.TextField(
         blank=True,
         default="",
-        verbose_name="Глобальная междиалоговая выжимка (профиль авто и история ремонтов)",
+        verbose_name="[Устарело] Глобальная междиалоговая выжимка",
+        help_text="Устаревшее глобальное поле (очищено); персональная память изолирована в UserMemorySettings.",
     )
     voice_mode = models.CharField(
         max_length=32,
@@ -124,6 +126,45 @@ class SystemSettings(models.Model):
     @classmethod
     def load(cls) -> "SystemSettings":
         return cls.get_active()
+
+
+class UserMemorySettings(models.Model):
+    """Персональные настройки и изолированная междиалоговая память конкретного пользователя."""
+
+    user = models.OneToOneField(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="memory_settings",
+        verbose_name="Пользователь",
+    )
+    cross_dialog_memory_enabled = models.BooleanField(
+        default=True,
+        verbose_name="Междиалоговая память включена",
+    )
+    global_memory_summary = models.TextField(
+        blank=True,
+        default="",
+        verbose_name="Глобальная междиалоговая память пользователя",
+    )
+    memory_cleared_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        verbose_name="Момент последней очистки глобальной памяти",
+    )
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "Персональная междиалоговая память"
+        verbose_name_plural = "Персональная междиалоговая память"
+
+    def __str__(self) -> str:
+        return f"Междиалоговая память пользователя #{self.user_id}"
+
+    @classmethod
+    def for_user(cls, user) -> tuple["UserMemorySettings", bool]:
+        if not user or not getattr(user, "is_authenticated", False):
+            raise ValueError("UserMemorySettings.for_user требует авторизованного пользователя.")
+        return cls.objects.get_or_create(user=user)
 
 
 class DiagnosticProject(models.Model):

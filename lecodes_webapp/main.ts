@@ -11,7 +11,7 @@ import "./src/utils/polyfills";
 import { apiClient } from "./src/api/BackendApiClient";
 import { externalDisplayBridge } from "./src/ar/ExternalDisplayBridge";
 import { cacheManager } from "./src/cache/ResourceCacheManager";
-import { appState, createWelcomeMessage } from "./src/state/appState";
+import { appState, createWelcomeMessage, purgeUserSessionAndMemoryState } from "./src/state/appState";
 
 // Инициализируем нативный мост внешнего AR-дисплея (RayNeo / XREAL / эмулируемый 2-й экран)
 externalDisplayBridge.init();
@@ -171,7 +171,13 @@ async function bootstrapFromServer(): Promise<void> {
     }
 
     const auth = await apiClient.getAuthStatus();
+    const prevUsername = cacheManager.getSetting<string>("last_auth_username", "");
     if (auth.is_authenticated && auth.username) {
+      if (auth.username !== prevUsername) {
+        purgeUserSessionAndMemoryState(false);
+        cacheManager.saveSetting("last_auth_username", auth.username);
+      }
+
       appState.currentUserSignal.value = {
         username: auth.username,
         email: auth.email || auth.user?.email,
@@ -192,10 +198,9 @@ async function bootstrapFromServer(): Promise<void> {
         if (detail) {
           appState.currentSessionIdSignal.value = detail.id;
           appState.currentSessionTitleSignal.value = detail.title;
-          if (detail.vehicle_info) {
-            appState.vehicleSignal.value = detail.vehicle_info;
-          }
+          appState.vehicleSignal.value = detail.vehicle_info || "";
           appState.sessionSummarySignal.value = detail.summary || "";
+          cacheManager.saveSetting("active_session_id", detail.id);
           const msgs =
             detail.messages.length > 0 ? detail.messages : [createWelcomeMessage()];
           appState.messagesSignal.value = msgs;
@@ -205,6 +210,14 @@ async function bootstrapFromServer(): Promise<void> {
       }
       appState.sessionsRefreshCounterSignal.value++;
     } else {
+      const hasStaleSessionKey = Boolean(auth.success && apiClient.getSessionKey());
+      if ((prevUsername && prevUsername !== "__guest__") || hasStaleSessionKey) {
+        if (hasStaleSessionKey) {
+          apiClient.clearSessionKey();
+        }
+        purgeUserSessionAndMemoryState(Boolean(auth.success));
+      }
+      cacheManager.saveSetting("last_auth_username", "__guest__");
       appState.currentUserSignal.value = { username: "", is_authenticated: false };
     }
   } catch (_) {}

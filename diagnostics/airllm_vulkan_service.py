@@ -818,6 +818,7 @@ class AirLLMVulkanOrchestrator:
         self.rag_engine = VehicleExpertEngine()
         self._model_lock = threading.Lock()
         self._cancel_events: Dict[str, threading.Event] = {}
+        self._cancel_owners: Dict[str, Optional[int]] = {}
         self._cancel_lock = threading.Lock()
         self._airllm_model = None
         self._processor = None
@@ -825,25 +826,61 @@ class AirLLMVulkanOrchestrator:
         self._last_inference_ms: int = 0
         self._autotune_profile: Optional[AirLLMAutotuneProfile] = None
 
-    def register_cancel_event(self, session_id: str, event: threading.Event) -> None:
-        """Регистрирует событие отмены для диагностической сессии."""
+    def register_cancel_event(
+        self,
+        session_id: str,
+        event: threading.Event,
+        owner_user_id: Optional[int] = None,
+    ) -> None:
+        """Регистрирует событие отмены для диагностической сессии с привязкой к владельцу."""
         with self._cancel_lock:
-            self._cancel_events[str(session_id)] = event
+            sid = str(session_id)
+            self._cancel_events[sid] = event
+            self._cancel_owners[sid] = owner_user_id
 
     def unregister_cancel_event(self, session_id: str) -> None:
         """Удаляет событие отмены сессии после завершения генерации."""
         with self._cancel_lock:
-            self._cancel_events.pop(str(session_id), None)
+            sid = str(session_id)
+            self._cancel_events.pop(sid, None)
+            self._cancel_owners.pop(sid, None)
 
-    def cancel_generation(self, session_id: Optional[str] = None) -> bool:
+    def cancel_all_for_user(self, owner_user_id: Optional[int]) -> bool:
+        """Устанавливает флаг отмены строго для активных генераций указанного пользователя (или гостя)."""
+        with self._cancel_lock:
+            cancelled = False
+            for sid, ev in list(self._cancel_events.items()):
+                if self._cancel_owners.get(sid) == owner_user_id:
+                    ev.set()
+                    cancelled = True
+            return cancelled
+
+    def cancel_generation(
+        self,
+        session_id: Optional[str] = None,
+        owner_user_id: Optional[int] = None,
+        restrict_to_owner: bool = False,
+    ) -> bool:
         """
-        Устанавливает флаг отмены для указанной сессии или всех активных генераций.
+        Устанавливает флаг отмены для указанной сессии или активных генераций владельца.
         Возвращает True, если было отменено хотя бы одно событие.
         """
         with self._cancel_lock:
-            if session_id and str(session_id) in self._cancel_events:
-                self._cancel_events[str(session_id)].set()
-                return True
+            if session_id:
+                sid = str(session_id)
+                if sid in self._cancel_events:
+                    if restrict_to_owner and self._cancel_owners.get(sid) != owner_user_id:
+                        return False
+                    self._cancel_events[sid].set()
+                    return True
+                return False
+            if restrict_to_owner:
+                cancelled = False
+                for sid, ev in list(self._cancel_events.items()):
+                    if self._cancel_owners.get(sid) == owner_user_id:
+                        ev.set()
+                        cancelled = True
+                return cancelled
             cancelled = False
             for ev in list(self._cancel_events.values()):
                 ev.set()
@@ -2001,11 +2038,26 @@ class AirLLMVulkanOrchestrator:
             except Exception:
                 settings_obj = None
 
-        global_summary = (
-            settings_obj.global_memory_summary
-            if settings_obj and settings_obj.cross_dialog_memory_enabled
-            else ""
-        )
+        global_summary = ""
+        session_user_id = getattr(session, "user_id", None) if session is not None else None
+        if session is not None and session_user_id is not None:
+            try:
+                from .models import UserMemorySettings
+
+                session_user = getattr(session, "user", None)
+                if session_user is not None and getattr(session_user, "is_authenticated", False):
+                    mem_settings, _ = UserMemorySettings.for_user(session_user)
+                else:
+                    mem_settings = UserMemorySettings.objects.filter(user_id=int(session_user_id)).first()
+                if mem_settings is not None and mem_settings.cross_dialog_memory_enabled:
+                    global_summary = mem_settings.global_memory_summary or ""
+            except Exception as mem_exc:
+                logger.warning(
+                    "[AirLLM] Не удалось получить персональную междиалоговую память (user_id=%s): %s",
+                    session_user_id,
+                    mem_exc,
+                )
+                global_summary = ""
 
         scaffolding = self._build_diagnostic_scaffolding(
             query=query,

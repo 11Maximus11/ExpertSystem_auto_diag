@@ -13,7 +13,7 @@
 
 import { apiClient, DEFAULT_BACKEND_URL } from "../api/BackendApiClient";
 import { cacheManager } from "../cache/ResourceCacheManager";
-import { appState, createWelcomeMessage } from "../state/appState";
+import { appState, purgeUserSessionAndMemoryState } from "../state/appState";
 import { AuthUser } from "../types";
 import {
   AppHeader,
@@ -128,9 +128,10 @@ export function createSettingsScreen(callbacks?: SettingsScreenCallbacks): any {
     });
 
   const applyAuthenticatedState = async (user: AuthUser) => {
+    purgeUserSessionAndMemoryState(false);
+    cacheManager.saveSetting("last_auth_username", user.username);
     appState.currentUserSignal.value = user;
     callbacks?.onAuthChanged?.(user);
-    appState.sessionsRefreshCounterSignal.value++;
 
     // Загружаем облачные настройки и междиалоговую память пользователя
     const srvSettings = await apiClient.getSettings();
@@ -138,6 +139,27 @@ export function createSettingsScreen(callbacks?: SettingsScreenCallbacks): any {
     appState.globalMemorySummarySignal.value = srvSettings.global_memory_summary || "";
     memoryEditSignal.value = appState.globalMemorySummarySignal.value;
     memoryTextArea.value = memoryEditSignal.value;
+
+    const sessions = await apiClient.getSessions();
+    if (sessions.length > 0) {
+      const detail = await apiClient.getSessionDetail(sessions[0].id);
+      if (detail) {
+        appState.currentSessionIdSignal.value = detail.id;
+        appState.currentSessionTitleSignal.value = detail.title;
+        appState.vehicleSignal.value = detail.vehicle_info || "";
+        appState.sessionSummarySignal.value = detail.summary || "";
+        if (detail.worker_status) {
+          appState.workerStatusSignal.value = detail.worker_status;
+        }
+        cacheManager.saveSetting("active_session_id", detail.id);
+        if (detail.messages.length > 0) {
+          appState.messagesSignal.value = detail.messages;
+          appState.latestAssistantMessageSignal.value =
+            [...detail.messages].reverse().find(m => m.role === "assistant") || detail.messages[0];
+        }
+      }
+    }
+    appState.sessionsRefreshCounterSignal.value++;
   };
 
   const handleAuthSubmit = async () => {
@@ -263,9 +285,12 @@ export function createSettingsScreen(callbacks?: SettingsScreenCallbacks): any {
           "Выйти",
           async () => {
             await apiClient.logout();
+            purgeUserSessionAndMemoryState(true);
+            cacheManager.saveSetting("last_auth_username", "__guest__");
             appState.currentUserSignal.value = { username: "", is_authenticated: false };
-            appState.messagesSignal.value = [createWelcomeMessage()];
-            appState.sessionsRefreshCounterSignal.value++;
+            memoryEditSignal.value = "";
+            memoryTextArea.value = "";
+            callbacks?.onAuthChanged?.(appState.currentUserSignal.value);
             toast("Вы вышли из аккаунта");
           },
           "lucide:log-out"
@@ -297,9 +322,12 @@ export function createSettingsScreen(callbacks?: SettingsScreenCallbacks): any {
               onConfirm: async () => {
                 const res = await apiClient.deleteAccount();
                 if (res.success) {
+                  purgeUserSessionAndMemoryState(true);
+                  cacheManager.saveSetting("last_auth_username", "__guest__");
                   appState.currentUserSignal.value = { username: "", is_authenticated: false };
-                  appState.messagesSignal.value = [createWelcomeMessage()];
-                  appState.sessionsRefreshCounterSignal.value++;
+                  memoryEditSignal.value = "";
+                  memoryTextArea.value = "";
+                  callbacks?.onAuthChanged?.(appState.currentUserSignal.value);
                   toast("Аккаунт удалён");
                 } else {
                   toast(res.error || "Ошибка удаления аккаунта");
@@ -553,6 +581,10 @@ export function createSettingsScreen(callbacks?: SettingsScreenCallbacks): any {
         .onClick(async () => {
           const next = !appState.crossMemoryEnabledSignal.value;
           appState.crossMemoryEnabledSignal.value = next;
+          if (!appState.currentUserSignal.value?.is_authenticated) {
+            toast(next ? "Междиалоговая память включена (локально)" : "Междиалоговая память выключена (локально)");
+            return;
+          }
           await apiClient.saveSettings({ cross_dialog_memory_enabled: next });
           toast(next ? "Междиалоговая память включена" : "Междиалоговая память выключена");
         })
@@ -575,10 +607,21 @@ export function createSettingsScreen(callbacks?: SettingsScreenCallbacks): any {
             message: "Накопленная сводка знаний о прошлых ремонтах будет сброшена.",
             confirmLabel: "Очистить",
             onConfirm: async () => {
-              const ok = await apiClient.clearGlobalMemory();
               appState.globalMemorySummarySignal.value = "";
+              appState.sessionSummarySignal.value = "";
               memoryEditSignal.value = "";
               memoryTextArea.value = "";
+
+              if (!appState.currentUserSignal.value?.is_authenticated) {
+                appState.demoSessionsSignal.value = appState.demoSessionsSignal.value.map(s => ({
+                  ...s,
+                  summary: ""
+                }));
+                toast("Глобальная память очищена локально");
+                return;
+              }
+
+              const ok = await apiClient.clearGlobalMemory();
               toast(ok ? "Глобальная память очищена" : "Сброшено локально");
             }
           });
@@ -590,8 +633,12 @@ export function createSettingsScreen(callbacks?: SettingsScreenCallbacks): any {
         () => (isMemorySavingSignal.value ? "Сохранение..." : "Сохранить память"),
         async () => {
           const txt = (memoryTextArea.value || memoryEditSignal.value || "").trim();
-          isMemorySavingSignal.value = true;
           appState.globalMemorySummarySignal.value = txt;
+          if (!appState.currentUserSignal.value?.is_authenticated) {
+            toast("Память сохранена локально (Демо-режим)");
+            return;
+          }
+          isMemorySavingSignal.value = true;
           const ok = await apiClient.saveSettings({
             cross_dialog_memory_enabled: appState.crossMemoryEnabledSignal.value,
             global_memory_summary: txt

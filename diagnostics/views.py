@@ -15,6 +15,7 @@ import mimetypes
 import threading
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Tuple
 
 from django.conf import settings
@@ -36,8 +37,16 @@ from .document_service import (
     extract_dtc_codes,
     parse_uploaded_document,
 )
-from .models import ChatMessage, DialogSession, DiagnosticProject, SystemSettings
+from .models import ChatMessage, DialogSession, DiagnosticProject, SystemSettings, UserMemorySettings
 from .voice_service import process_voice_input
+
+
+def _get_user_memory_state(user) -> Tuple[bool, str]:
+    """Возвращает изолированные настройки междиалоговой памяти (enabled, summary) для пользователя или гостя."""
+    if user and getattr(user, "is_authenticated", False):
+        mem_settings, _ = UserMemorySettings.for_user(user)
+        return bool(mem_settings.cross_dialog_memory_enabled), (mem_settings.global_memory_summary or "")
+    return True, ""
 
 
 # Временный in-memory буфер ответов для демо-режима (без записи в БД SQLite)
@@ -174,9 +183,26 @@ def index_view(request: HttpRequest) -> HttpResponse:
     systems_list = orchestrator.rag_engine.get_all_systems()
     hw_telemetry = orchestrator.get_hardware_and_model_telemetry(active_settings)
     ar_mode_initial = request.GET.get("mode", "").lower() == "ar"
+    mem_enabled, mem_summary = _get_user_memory_state(current_user)
+    active_settings_ctx = SimpleNamespace(
+        llm_backend=active_settings.llm_backend,
+        airllm_model_id=active_settings.airllm_model_id,
+        airllm_compression=active_settings.airllm_compression,
+        gguf_model_rel_path=active_settings.gguf_model_rel_path,
+        llama_server_url=active_settings.llama_server_url,
+        vulkan_gpu_layers=active_settings.vulkan_gpu_layers,
+        context_window_tokens=active_settings.context_window_tokens,
+        voice_mode=active_settings.voice_mode,
+        strict_json_mode=active_settings.strict_json_mode,
+        model_name=active_settings.model_name,
+        voice_input_mode=active_settings.voice_input_mode,
+        max_response_tokens=active_settings.max_response_tokens,
+        cross_dialog_memory_enabled=mem_enabled,
+        global_memory_summary=mem_summary,
+    )
 
     context = {
-        "active_settings": active_settings,
+        "active_settings": active_settings_ctx,
         "current_session": current_session,
         "sessions": sessions,
         "projects": projects,
@@ -339,6 +365,7 @@ def api_project_detail(request: HttpRequest, project_id: int) -> JsonResponse:
             context_worker_manager.preempt_if_running(str(sess.id))
         proj.sessions.all().delete()
         proj.delete()
+        context_worker_manager.rebuild_user_cross_dialog_memory(user.id)
         next_sess = _ensure_default_session(user=user)
         return JsonResponse({
             "success": True,
@@ -455,22 +482,22 @@ def api_sessions(request: HttpRequest) -> JsonResponse:
 
 
 def _can_access_session(request: HttpRequest, session: Optional[DialogSession]) -> bool:
-    """Проверяет право доступа: открытая демо/анонимная ORM-сессия (user=None) или владелец-пользователь."""
+    """Строго проверяет изоляцию доступа: авторизованный пользователь — только свои сессии, гость — только user_id=None."""
     if session is None:
         return False
-    if session.user_id is None:
-        return True
-    return bool(request.user.is_authenticated and session.user_id == request.user.id)
+    if request.user and request.user.is_authenticated:
+        return session.user_id == request.user.id
+    return session.user_id is None
 
 
 @csrf_exempt
 @require_http_methods(["GET", "PATCH", "DELETE"])
 def api_session_detail(request: HttpRequest, session_id: uuid.UUID) -> JsonResponse:
     user = request.user if request.user.is_authenticated else None
-    if user:
-        session = DialogSession.objects.select_related("project").filter(pk=session_id, user=user).first()
-    else:
-        session = DialogSession.objects.select_related("project").filter(pk=session_id, user__isnull=True).first()
+    session = DialogSession.objects.select_related("project").filter(pk=session_id).first()
+
+    if session is not None and not _can_access_session(request, session):
+        return JsonResponse({"error": "Доступ к сессии запрещён"}, status=403)
 
     if not session:
         if not user:
@@ -496,7 +523,7 @@ def api_session_detail(request: HttpRequest, session_id: uuid.UUID) -> JsonRespo
                         "is_demo": True,
                     },
                 })
-            active_settings = SystemSettings.get_active()
+            mem_enabled, mem_summary = _get_user_memory_state(None)
             return JsonResponse({
                 "id": str(session_id),
                 "title": "Демо-диагностика",
@@ -510,8 +537,8 @@ def api_session_detail(request: HttpRequest, session_id: uuid.UUID) -> JsonRespo
                 "worker_version": 0,
                 "worker_last_duration_ms": 0,
                 "worker_live": {"is_running": False, "version": 0, "dynamic_budget": {}},
-                "cross_dialog_memory_enabled": active_settings.cross_dialog_memory_enabled,
-                "global_memory_summary": active_settings.global_memory_summary,
+                "cross_dialog_memory_enabled": mem_enabled,
+                "global_memory_summary": mem_summary,
                 "messages": [],
                 "is_demo": True,
             })
@@ -520,6 +547,8 @@ def api_session_detail(request: HttpRequest, session_id: uuid.UUID) -> JsonRespo
     if request.method == "DELETE":
         context_worker_manager.preempt_if_running(str(session.id))
         session.delete()
+        if user:
+            context_worker_manager.rebuild_user_cross_dialog_memory(user.id)
         next_sess = _ensure_default_session(user=user)
         return JsonResponse({"deleted": True, "active_session_id": str(next_sess.id)})
 
@@ -528,8 +557,12 @@ def api_session_detail(request: HttpRequest, session_id: uuid.UUID) -> JsonRespo
             payload = json.loads(request.body.decode("utf-8") or "{}")
         except Exception:
             payload = {}
+        memory_relevant_changed = False
         if "title" in payload:
-            session.title = str(payload["title"]).strip()[:200] or session.title
+            new_title = str(payload["title"]).strip()[:200] or session.title
+            if new_title != session.title:
+                session.title = new_title
+                memory_relevant_changed = True
         if "is_pinned" in payload:
             session.is_pinned = bool(payload["is_pinned"])
         if "tag" in payload:
@@ -541,10 +574,18 @@ def api_session_detail(request: HttpRequest, session_id: uuid.UUID) -> JsonRespo
             elif str(p_id).isdigit():
                 session.project = DiagnosticProject.objects.filter(pk=int(p_id), user=user).first()
         if "vehicle_info" in payload:
-            session.vehicle_info = str(payload["vehicle_info"]).strip()[:200]
+            new_veh = str(payload["vehicle_info"]).strip()[:200]
+            if new_veh != session.vehicle_info:
+                session.vehicle_info = new_veh
+                memory_relevant_changed = True
         if "summary" in payload:
-            session.summary = str(payload["summary"]).strip()
+            new_sum = str(payload["summary"]).strip()
+            if new_sum != session.summary:
+                session.summary = new_sum
+                memory_relevant_changed = True
         session.save()
+        if user and memory_relevant_changed:
+            context_worker_manager.rebuild_user_cross_dialog_memory(user.id)
         return JsonResponse({"success": True, "session": session.to_dict()})
 
     # Обработка GET-запроса: детали сессии и список всех сообщений
@@ -561,7 +602,7 @@ def api_session_detail(request: HttpRequest, session_id: uuid.UUID) -> JsonRespo
         for m in session.messages.all()
     ]
 
-    active_settings = SystemSettings.get_active()
+    mem_enabled, mem_summary = _get_user_memory_state(user)
     worker_live = context_worker_manager.get_worker_state(str(session.id))
 
     return JsonResponse(
@@ -578,8 +619,8 @@ def api_session_detail(request: HttpRequest, session_id: uuid.UUID) -> JsonRespo
             "worker_version": session.worker_version,
             "worker_last_duration_ms": session.worker_last_duration_ms,
             "worker_live": worker_live,
-            "cross_dialog_memory_enabled": active_settings.cross_dialog_memory_enabled,
-            "global_memory_summary": active_settings.global_memory_summary,
+            "cross_dialog_memory_enabled": mem_enabled,
+            "global_memory_summary": mem_summary,
             "messages": messages_data,
         }
     )
@@ -590,7 +631,9 @@ def api_session_detail(request: HttpRequest, session_id: uuid.UUID) -> JsonRespo
 def api_session_pin(request: HttpRequest, session_id: uuid.UUID) -> JsonResponse:
     """Переключение закрепления чата (Pin/Unpin)."""
     user = request.user if request.user.is_authenticated else None
-    session = DialogSession.objects.filter(pk=session_id, user=user).first() if user else DialogSession.objects.filter(pk=session_id).first()
+    session = DialogSession.objects.filter(pk=session_id).first()
+    if session is not None and not _can_access_session(request, session):
+        return JsonResponse({"error": "Доступ к сессии запрещён"}, status=403)
     if not session:
         if not user:
             return JsonResponse({"id": str(session_id), "is_pinned": True, "is_demo": True})
@@ -605,7 +648,9 @@ def api_session_pin(request: HttpRequest, session_id: uuid.UUID) -> JsonResponse
 def api_session_tag(request: HttpRequest, session_id: uuid.UUID) -> JsonResponse:
     """Установка или очистка тега чата."""
     user = request.user if request.user.is_authenticated else None
-    session = DialogSession.objects.filter(pk=session_id, user=user).first() if user else DialogSession.objects.filter(pk=session_id).first()
+    session = DialogSession.objects.filter(pk=session_id).first()
+    if session is not None and not _can_access_session(request, session):
+        return JsonResponse({"error": "Доступ к сессии запрещён"}, status=403)
     try:
         payload = json.loads(request.body.decode("utf-8") or "{}")
     except Exception:
@@ -625,7 +670,9 @@ def api_session_tag(request: HttpRequest, session_id: uuid.UUID) -> JsonResponse
 def api_session_rename(request: HttpRequest, session_id: uuid.UUID) -> JsonResponse:
     """Переименование названия чата."""
     user = request.user if request.user.is_authenticated else None
-    session = DialogSession.objects.filter(pk=session_id, user=user).first() if user else DialogSession.objects.filter(pk=session_id).first()
+    session = DialogSession.objects.filter(pk=session_id).first()
+    if session is not None and not _can_access_session(request, session):
+        return JsonResponse({"error": "Доступ к сессии запрещён"}, status=403)
     try:
         payload = json.loads(request.body.decode("utf-8") or "{}")
     except Exception:
@@ -635,9 +682,11 @@ def api_session_rename(request: HttpRequest, session_id: uuid.UUID) -> JsonRespo
         if not user:
             return JsonResponse({"id": str(session_id), "title": title or "Демо-диагностика", "is_demo": True})
         return JsonResponse({"error": "Сессия не найдена"}, status=404)
-    if title:
+    if title and title != session.title:
         session.title = title
         session.save(update_fields=["title", "updated_at"])
+        if user:
+            context_worker_manager.rebuild_user_cross_dialog_memory(user.id)
     return JsonResponse({"id": str(session.id), "title": session.title})
 
 
@@ -652,7 +701,8 @@ def api_worker_status(request: HttpRequest, session_id: uuid.UUID) -> JsonRespon
     if not _can_access_session(request, session):
         return JsonResponse({"error": "Доступ к сессии запрещён"}, status=403)
 
-    active_settings = SystemSettings.get_active()
+    caller_user = request.user if request.user.is_authenticated else None
+    mem_enabled, mem_summary = _get_user_memory_state(caller_user)
     live = context_worker_manager.get_worker_state(str(session.id))
 
     return JsonResponse(
@@ -663,8 +713,8 @@ def api_worker_status(request: HttpRequest, session_id: uuid.UUID) -> JsonRespon
             "worker_last_duration_ms": session.worker_last_duration_ms,
             "is_running": live["is_running"],
             "summary": session.summary,
-            "cross_dialog_memory_enabled": active_settings.cross_dialog_memory_enabled,
-            "global_memory_summary": active_settings.global_memory_summary,
+            "cross_dialog_memory_enabled": mem_enabled,
+            "global_memory_summary": mem_summary,
         }
     )
 
@@ -828,6 +878,7 @@ def _start_async_ask_job(request: HttpRequest) -> JsonResponse:
             _ASK_JOBS.pop(k, None)
         _ASK_JOBS[job_id] = {
             "job_id": job_id,
+            "owner_user_id": user_id,
             "status": "running",
             "started_at": started_at,
             "status_code": 202,
@@ -900,10 +951,13 @@ def _start_async_ask_job(request: HttpRequest) -> JsonResponse:
 def api_ask_job_status(request: HttpRequest, job_id: str) -> JsonResponse:
     """Возвращает статус и результат асинхронной генерации ИИ для нативных клиентов."""
     import time
+    caller_user_id = request.user.pk if getattr(request, "user", None) and request.user.is_authenticated else None
     with _get_jobs_lock():
         job = _ASK_JOBS.get(str(job_id))
         if not job:
             return JsonResponse({"error": "Задание не найдено или устарело"}, status=404)
+        if job.get("owner_user_id") != caller_user_id:
+            return JsonResponse({"error": "Доступ к заданию запрещён"}, status=403)
         elapsed_ms = int((time.time() - float(job.get("started_at", time.time()))) * 1000)
         payload = {
             "job_id": job["job_id"],
@@ -983,14 +1037,8 @@ def api_ask_expert(request: HttpRequest) -> JsonResponse:
             valid_uuid = None
 
     session = DialogSession.objects.filter(pk=valid_uuid).first() if valid_uuid else None
-    if session and session.user_id is not None:
-        if user is None:
-            session = None
-        elif session.user_id != user.id:
-            return JsonResponse({"error": "Доступ к чужой сессии запрещён"}, status=403)
-    if session and user and session.user is None:
-        session.user = user
-        session.save(update_fields=["user"])
+    if session and not _can_access_session(request, session):
+        return JsonResponse({"error": "Доступ к чужой сессии запрещён"}, status=403)
 
     # Если пользователь не авторизован и сессии нет в БД — работаем в чистом демо-режиме без записи в БД
     is_demo_request = (user is None) and (session is None)
@@ -1211,7 +1259,7 @@ def api_ask_expert(request: HttpRequest) -> JsonResponse:
         session.title = short_title
 
         cancel_event = threading.Event()
-        orchestrator.register_cancel_event(str(session.id), cancel_event)
+        orchestrator.register_cancel_event(str(session.id), cancel_event, owner_user_id=None)
         try:
             structured_response = orchestrator.generate_diagnostic_response(
                 query=query,
@@ -1297,7 +1345,7 @@ def api_ask_expert(request: HttpRequest) -> JsonResponse:
 
     # ШАГ 3: Генерация строгого JSON ответа через AirLLM / Vulkan + Function Calling
     cancel_event = threading.Event()
-    orchestrator.register_cancel_event(str(session.id), cancel_event)
+    orchestrator.register_cancel_event(str(session.id), cancel_event, owner_user_id=user.id if user else None)
     try:
         structured_response = orchestrator.generate_diagnostic_response(
             query=query,
@@ -1515,15 +1563,41 @@ def api_toggle_task(request: HttpRequest, message_id: int) -> JsonResponse:
 def api_dtc_dictionary(request: HttpRequest) -> JsonResponse:
     q = request.GET.get("q", "").strip()
     system_filter = request.GET.get("system", "all").strip() or "all"
-    limit = min(500, max(1, int(request.GET.get("limit", "80"))))
+    try:
+        limit = min(500, max(1, int(request.GET.get("limit", "80"))))
+    except (ValueError, TypeError):
+        limit = 80
+    try:
+        offset = max(0, int(request.GET.get("offset", "0")))
+    except (ValueError, TypeError):
+        offset = 0
 
-    items = orchestrator.rag_engine.search_dtc_dictionary(
-        search_term=q,
-        system_filter=system_filter,
-        limit=limit,
-    )
+    if hasattr(orchestrator.rag_engine, "search_dtc_dictionary_paginated"):
+        items, total = orchestrator.rag_engine.search_dtc_dictionary_paginated(
+            query=q,
+            system=system_filter,
+            limit=limit,
+            offset=offset,
+        )
+    else:
+        items = orchestrator.rag_engine.search_dtc_dictionary(
+            search_term=q,
+            system_filter=system_filter,
+            limit=limit,
+        )
+        total = len(items)
+
     systems = orchestrator.rag_engine.get_all_systems()
-    return JsonResponse({"items": items, "systems": systems, "total_catalog": len(orchestrator.rag_engine.dtc_catalog)})
+    return JsonResponse(
+        {
+            "items": items,
+            "systems": systems,
+            "total": total,
+            "total_catalog": len(orchestrator.rag_engine.dtc_catalog),
+            "offset": offset,
+            "limit": limit,
+        }
+    )
 
 
 @require_http_methods(["GET"])
@@ -1541,6 +1615,7 @@ def api_dtc_detail(request: HttpRequest, code: str) -> JsonResponse:
 @require_http_methods(["GET", "POST"])
 def api_system_settings(request: HttpRequest) -> JsonResponse:
     active = SystemSettings.get_active()
+    user = request.user if getattr(request, "user", None) and request.user.is_authenticated else None
 
     if request.method == "POST":
         try:
@@ -1548,35 +1623,93 @@ def api_system_settings(request: HttpRequest) -> JsonResponse:
         except Exception:
             payload = {}
 
-        is_demo_req = bool(
-            (not request.user.is_authenticated)
-            and (payload.get("is_demo") or request.headers.get("X-Demo-Mode") == "1")
-        )
+        explicit_demo = (request.headers.get("X-Demo-Mode") == "1") or bool(payload.get("is_demo"))
+        is_demo_req = explicit_demo or (user is None)
 
+        if user is None and not explicit_demo:
+            return JsonResponse({"error": "Требуется авторизация для изменения настроек"}, status=401)
+
+        if is_demo_req:
+            # В демо-режиме никогда не изменяем SystemSettings или UserMemorySettings в БД
+            demo_enabled = bool(payload.get("cross_dialog_memory_enabled", True))
+            demo_summary = "" if payload.get("clear_global_memory") else str(payload.get("global_memory_summary", ""))
+            hw_telemetry = orchestrator.get_hardware_and_model_telemetry(active)
+            settings_dict = {
+                "llm_backend": active.llm_backend,
+                "airllm_model_id": active.airllm_model_id,
+                "airllm_compression": active.airllm_compression,
+                "gguf_model_rel_path": active.gguf_model_rel_path,
+                "llama_server_url": active.llama_server_url,
+                "vulkan_gpu_layers": active.vulkan_gpu_layers,
+                "context_window_tokens": active.context_window_tokens,
+                "cross_dialog_memory_enabled": demo_enabled,
+                "global_memory_summary": demo_summary,
+                "voice_mode": active.voice_mode,
+                "strict_json_mode": active.strict_json_mode,
+            }
+            return JsonResponse(
+                {
+                    "success": True,
+                    "is_demo": True,
+                    "cross_dialog_memory_enabled": demo_enabled,
+                    "global_memory_summary": demo_summary,
+                    "settings": settings_dict,
+                    "hardware": hw_telemetry,
+                }
+            )
+
+        # Аппаратные настройки (без глобальных полей памяти, которые хранятся строго в UserMemorySettings)
+        hw_changed = False
         if "llm_backend" in payload:
             active.llm_backend = str(payload["llm_backend"])
+            hw_changed = True
         if "airllm_model_id" in payload:
             active.airllm_model_id = str(payload["airllm_model_id"]).strip()
+            hw_changed = True
         if "airllm_compression" in payload:
             active.airllm_compression = str(payload["airllm_compression"])
+            hw_changed = True
         if "gguf_model_rel_path" in payload:
             active.gguf_model_rel_path = str(payload["gguf_model_rel_path"]).strip()
+            hw_changed = True
         if "vulkan_gpu_layers" in payload:
             active.vulkan_gpu_layers = int(payload["vulkan_gpu_layers"])
+            hw_changed = True
         if "context_window_tokens" in payload:
             active.context_window_tokens = max(512, min(65536, int(payload["context_window_tokens"])))
-        if "cross_dialog_memory_enabled" in payload:
-            active.cross_dialog_memory_enabled = bool(payload["cross_dialog_memory_enabled"])
-        if "global_memory_summary" in payload:
-            active.global_memory_summary = str(payload["global_memory_summary"])
+            hw_changed = True
         if "voice_mode" in payload:
             active.voice_mode = str(payload["voice_mode"])
+            hw_changed = True
         if "strict_json_mode" in payload:
             active.strict_json_mode = bool(payload["strict_json_mode"])
-
-        if not is_demo_req:
+            hw_changed = True
+        if hw_changed:
             active.save()
 
+        mem_settings, _ = UserMemorySettings.for_user(user)
+        prev_enabled = bool(mem_settings.cross_dialog_memory_enabled)
+
+        if payload.get("clear_global_memory") or (
+            "global_memory_summary" in payload and str(payload["global_memory_summary"]).strip() == ""
+        ):
+            context_worker_manager.clear_user_global_memory(user.id)
+            mem_settings.refresh_from_db()
+        elif "global_memory_summary" in payload:
+            mem_settings.global_memory_summary = str(payload["global_memory_summary"])
+            mem_settings.save(update_fields=["global_memory_summary", "updated_at"])
+
+        if "cross_dialog_memory_enabled" in payload:
+            new_enabled = bool(payload["cross_dialog_memory_enabled"])
+            if new_enabled != mem_settings.cross_dialog_memory_enabled:
+                mem_settings.cross_dialog_memory_enabled = new_enabled
+                mem_settings.save(update_fields=["cross_dialog_memory_enabled", "updated_at"])
+            if not new_enabled:
+                context_worker_manager.rebuild_user_cross_dialog_memory(user.id, force_strip_if_disabled=True)
+            elif not prev_enabled and not payload.get("clear_global_memory"):
+                context_worker_manager.rebuild_user_cross_dialog_memory(user.id)
+
+    mem_enabled, mem_summary = _get_user_memory_state(user)
     hw_telemetry = orchestrator.get_hardware_and_model_telemetry(active)
     settings_dict = {
         "llm_backend": active.llm_backend,
@@ -1586,16 +1719,16 @@ def api_system_settings(request: HttpRequest) -> JsonResponse:
         "llama_server_url": active.llama_server_url,
         "vulkan_gpu_layers": active.vulkan_gpu_layers,
         "context_window_tokens": active.context_window_tokens,
-        "cross_dialog_memory_enabled": active.cross_dialog_memory_enabled,
-        "global_memory_summary": active.global_memory_summary,
+        "cross_dialog_memory_enabled": mem_enabled,
+        "global_memory_summary": mem_summary,
         "voice_mode": active.voice_mode,
         "strict_json_mode": active.strict_json_mode,
     }
     return JsonResponse(
         {
             "success": True,
-            "cross_dialog_memory_enabled": active.cross_dialog_memory_enabled,
-            "global_memory_summary": active.global_memory_summary,
+            "cross_dialog_memory_enabled": mem_enabled,
+            "global_memory_summary": mem_summary,
             "settings": settings_dict,
             "hardware": hw_telemetry,
         }
@@ -1663,13 +1796,13 @@ def api_delete_messages(request: HttpRequest) -> JsonResponse:
     context_worker_manager.preempt_if_running(str(session.id))
 
     deleted_count = 0
+    new_summary = session.summary
     if delete_all:
         deleted_count = session.messages.count()
         session.messages.all().delete()
-        session.summary = ""
         session.attached_dtc_codes = []
-        session.worker_status = "idle"
-        session.save(update_fields=["summary", "attached_dtc_codes", "worker_status", "updated_at"])
+        session.save(update_fields=["attached_dtc_codes", "updated_at"])
+        new_summary = context_worker_manager.recompute_session_summary_sync(str(session.id))
     elif message_ids:
         qs = session.messages.filter(id__in=message_ids)
         deleted_count = qs.count()
@@ -1677,13 +1810,11 @@ def api_delete_messages(request: HttpRequest) -> JsonResponse:
 
         remaining_count = session.messages.count()
         if remaining_count == 0:
-            session.summary = ""
             session.attached_dtc_codes = []
-            session.worker_status = "idle"
-            session.save(update_fields=["summary", "attached_dtc_codes", "worker_status", "updated_at"])
-        else:
-            # Немедленно запускаем пересчет выжимки контекста по оставшимся сообщениям
-            context_worker_manager.start_background_update(str(session.id))
+            session.save(update_fields=["attached_dtc_codes", "updated_at"])
+        new_summary = context_worker_manager.recompute_session_summary_sync(str(session.id))
+
+    _, global_mem_summary = _get_user_memory_state(session.user if session.user_id else None)
 
     return JsonResponse(
         {
@@ -1691,8 +1822,9 @@ def api_delete_messages(request: HttpRequest) -> JsonResponse:
             "session_id": str(session.id),
             "deleted_count": deleted_count,
             "remaining_count": session.messages.count(),
-            "summary": session.summary,
-            "session_summary": session.summary,
+            "summary": new_summary,
+            "session_summary": new_summary,
+            "global_memory_summary": global_mem_summary,
         }
     )
 
@@ -1712,6 +1844,7 @@ def api_delete_single_message(request: HttpRequest, message_id: int) -> JsonResp
                 "remaining_count": 0,
                 "summary": "",
                 "session_summary": "",
+                "global_memory_summary": "",
             })
         return JsonResponse({"error": "Сообщение не найдено"}, status=404)
 
@@ -1723,12 +1856,10 @@ def api_delete_single_message(request: HttpRequest, message_id: int) -> JsonResp
 
     remaining_count = session.messages.count()
     if remaining_count == 0:
-        session.summary = ""
         session.attached_dtc_codes = []
-        session.worker_status = "idle"
-        session.save(update_fields=["summary", "attached_dtc_codes", "worker_status", "updated_at"])
-    else:
-        context_worker_manager.start_background_update(str(session.id))
+        session.save(update_fields=["attached_dtc_codes", "updated_at"])
+    new_summary = context_worker_manager.recompute_session_summary_sync(str(session.id))
+    _, global_mem_summary = _get_user_memory_state(session.user if session.user_id else None)
 
     return JsonResponse(
         {
@@ -1736,8 +1867,9 @@ def api_delete_single_message(request: HttpRequest, message_id: int) -> JsonResp
             "deleted_id": message_id,
             "session_id": str(session.id),
             "remaining_count": remaining_count,
-            "summary": session.summary,
-            "session_summary": session.summary,
+            "summary": new_summary,
+            "session_summary": new_summary,
+            "global_memory_summary": global_mem_summary,
         }
     )
 
@@ -1857,10 +1989,10 @@ def api_auth_delete_account(request: HttpRequest) -> JsonResponse:
 
     user = request.user
     username = user.username
-    for sess in DialogSession.objects.filter(user=user):
-        context_worker_manager.preempt_if_running(str(sess.id))
+    context_worker_manager.preempt_user_workers(user.id)
     DialogSession.objects.filter(user=user).delete()
     DiagnosticProject.objects.filter(user=user).delete()
+    UserMemorySettings.objects.filter(user=user).delete()
     logout(request)
     user.delete()
     logger.info("Аккаунт пользователя '%s' и все его данные успешно удалены.", username)
@@ -1870,13 +2002,28 @@ def api_auth_delete_account(request: HttpRequest) -> JsonResponse:
 @csrf_exempt
 @require_http_methods(["POST"])
 def api_cancel_generation(request: HttpRequest) -> JsonResponse:
-    """Принудительная отмена активной генерации ответа модели."""
+    """Принудительная отмена активной генерации ответа модели с проверкой владельца."""
     try:
         payload = json.loads(request.body.decode("utf-8") or "{}")
     except Exception:
         payload = {}
+    caller_user_id = request.user.pk if request.user and request.user.is_authenticated else None
     session_id = payload.get("session_id")
-    cancelled = orchestrator.cancel_generation(str(session_id) if session_id else None)
+    if session_id:
+        try:
+            val_uuid = uuid.UUID(str(session_id))
+            sess = DialogSession.objects.filter(pk=val_uuid).first()
+        except (ValueError, TypeError, AttributeError):
+            sess = None
+        if sess is not None and not _can_access_session(request, sess):
+            return JsonResponse({"error": "Доступ к сессии запрещён"}, status=403)
+        cancelled = orchestrator.cancel_generation(
+            str(session_id),
+            owner_user_id=caller_user_id,
+            restrict_to_owner=True,
+        )
+    else:
+        cancelled = orchestrator.cancel_all_for_user(caller_user_id)
     return JsonResponse({
         "status": "cancelled" if cancelled else "no_active_generation",
         "cancelled": True,

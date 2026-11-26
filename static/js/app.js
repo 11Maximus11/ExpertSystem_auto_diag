@@ -60,6 +60,13 @@
     arBgDeviceIdx: 0,
     workerPollTimer: null,
     latestAssistantMessage: null,
+    selectedMessageIds: new Set(),
+    dtcLoadedItems: [],
+    dtcTotal: 0,
+    dtcTotalCatalog: 0,
+    dtcLoading: false,
+    dtcRequestSeq: 0,
+    dtcSearchTimer: null,
     activeProjectId: '',
     activeTag: '',
     demoProjects: [],
@@ -83,6 +90,126 @@
   };
 
   const el = (id) => document.getElementById(id);
+
+  function buildDemoAwareHeaders(extraHeaders = {}) {
+    const headers = Object.assign({}, extraHeaders);
+    if (state.isDemo) {
+      headers['X-Demo-Mode'] = '1';
+    }
+    return headers;
+  }
+
+  function resetInspectorPlaceholder() {
+    const inspectorPane = el('inspectorChecklistContent');
+    if (inspectorPane) {
+      inspectorPane.innerHTML = `
+        <div style="text-align:center; padding: 28px 12px; color: var(--text-muted); font-size: 0.84rem;">
+          Задайте вопрос или укажите код ошибки, чтобы сформировать пошаговый план ремонта и перечень инструмента.
+        </div>
+      `;
+    }
+  }
+
+  function resetClientAccountAndMemoryState(options = {}) {
+    const isAccountDeletion = Boolean(options && options.isAccountDeletion);
+    const keepSessionId = Boolean(options && options.keepSessionId);
+
+    if (Array.isArray(state.stagedFiles)) {
+      state.stagedFiles.forEach((f) => {
+        if (f && f._previewUrl) {
+          try {
+            URL.revokeObjectURL(f._previewUrl);
+          } catch (_) {}
+        }
+      });
+    }
+    if (state.stagedVoicePreviewUrl) {
+      try {
+        URL.revokeObjectURL(state.stagedVoicePreviewUrl);
+      } catch (_) {}
+    }
+
+    const freshDemoId = generateUuidV4();
+    if (!keepSessionId) {
+      state.currentSessionId = freshDemoId;
+    }
+    state.demoProjects = [];
+    state.demoSessions = [
+      {
+        id: freshDemoId,
+        title: 'Демо-диагностика',
+        is_pinned: false,
+        tag: '',
+        project_id: null,
+        vehicle_info: '',
+        summary: '',
+        updated_at: new Date().toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }),
+      },
+    ];
+    state.demoMessagesBySession = {};
+    state.latestAssistantMessage = null;
+    if (state.selectedMessageIds && typeof state.selectedMessageIds.clear === 'function') {
+      state.selectedMessageIds.clear();
+    }
+    state.stagedCodes = [];
+    state.stagedFiles = [];
+    state.stagedCameraShots = [];
+    state.stagedVoiceBlob = null;
+    state.stagedVoiceAudioBuffer = null;
+    state.stagedVoicePreviewUrl = null;
+    state.stagedVoiceDuration = 0;
+    state.stagedVoiceTranscript = '';
+    state.demoSettings = {
+      cross_dialog_memory_enabled: true,
+      global_memory_summary: '',
+    };
+
+    const gta = el('globalSummaryTextarea');
+    if (gta) gta.value = '';
+    const dta = el('dialogSummaryTextarea');
+    if (dta) dta.value = '';
+    const vinp = el('vehicleInfoInput');
+    if (vinp) vinp.value = '';
+
+    document.querySelectorAll('.msg-select-cb').forEach((cb) => {
+      cb.checked = false;
+    });
+    resetInspectorPlaceholder();
+    if (typeof renderStagingBar === 'function') {
+      renderStagingBar();
+    }
+    if (typeof updateSelectionToolbar === 'function') {
+      updateSelectionToolbar();
+    }
+
+    try {
+      sessionStorage.clear();
+    } catch (_) {}
+
+    try {
+      const preservedKeys = new Set(
+        isAccountDeletion
+          ? ['aideal_cookies_accepted']
+          : ['aideal_cookies_accepted', 'aideal_first_login_consent_accepted', 'aideal_last_auth_user']
+      );
+      const keysToRemove = [];
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i);
+        if (!k || preservedKeys.has(k)) continue;
+        if (
+          isAccountDeletion ||
+          k.startsWith('aideal_') ||
+          k === 'active_session_id' ||
+          k === 'auth_session_key'
+        ) {
+          keysToRemove.push(k);
+        }
+      }
+      keysToRemove.forEach((k) => localStorage.removeItem(k));
+    } catch (_) {}
+  }
+
+  window.resetClientAccountAndMemoryState = resetClientAccountAndMemoryState;
 
   function escapeHtml(str) {
     return String(str || '')
@@ -1362,6 +1489,12 @@
     const totalCount = checkboxes.length;
     const checkedBoxes = checkboxes.filter((cb) => cb.checked);
     const checkedCount = checkedBoxes.length;
+    if (state.selectedMessageIds && typeof state.selectedMessageIds.clear === 'function') {
+      state.selectedMessageIds.clear();
+      checkedBoxes.forEach((cb) => {
+        if (cb.dataset.msgId) state.selectedMessageIds.add(String(cb.dataset.msgId));
+      });
+    }
 
     if (checkedCount > 0) {
       toolbar.style.display = 'flex';
@@ -1385,6 +1518,40 @@
     }
   }
 
+  function applyDeletedSummaryAndInspectorState(data) {
+    const hasSessSummary = data && (data.session_summary !== undefined || data.summary !== undefined);
+    const nextSessSummary = data && data.session_summary !== undefined ? data.session_summary : data ? data.summary : undefined;
+    const hasGlobalSummary = data && data.global_memory_summary !== undefined;
+    const nextGlobalSummary = hasGlobalSummary ? data.global_memory_summary : undefined;
+
+    if (hasSessSummary) {
+      const dta = el('dialogSummaryTextarea');
+      if (dta) dta.value = nextSessSummary || '';
+    }
+    if (hasGlobalSummary) {
+      const gta = el('globalSummaryTextarea');
+      if (gta) gta.value = nextGlobalSummary || '';
+    }
+    if (hasSessSummary || hasGlobalSummary) {
+      updateWorkerUi(
+        null,
+        hasSessSummary ? nextSessSummary || '' : null,
+        hasGlobalSummary ? nextGlobalSummary || '' : null,
+        false
+      );
+    }
+
+    const feed = el('chatFeed');
+    const remainingCards = feed ? feed.querySelectorAll('.msg-card:not([data-welcome-placeholder])') : [];
+    if (!remainingCards || remainingCards.length === 0) {
+      state.latestAssistantMessage = null;
+      resetInspectorPlaceholder();
+    }
+    if (!state.isDemo) {
+      setTimeout(pollWorkerStatus, 350);
+    }
+  }
+
   async function deleteSingleMessage(msgId, cardEl) {
     if (!msgId) return;
     const confirmed = await uiConfirm(
@@ -1397,12 +1564,16 @@
 
     if (state.isDemo) {
       const list = state.demoMessagesBySession[state.currentSessionId] || [];
-      state.demoMessagesBySession[state.currentSessionId] = list.filter((m) => String(m.id) !== String(msgId));
+      const nextList = list.filter((m) => String(m.id) !== String(msgId));
+      state.demoMessagesBySession[state.currentSessionId] = nextList;
       cardEl?.remove();
       updateSelectionToolbar();
       const feed = el('chatFeed');
       if (feed && !feed.querySelector('.msg-card:not([data-welcome-placeholder])')) {
         renderEmptyState(feed);
+        const demoSess = state.demoSessions.find((s) => String(s.id) === String(state.currentSessionId));
+        if (demoSess) demoSess.summary = '';
+        applyDeletedSummaryAndInspectorState({ session_summary: '' });
       }
       return;
     }
@@ -1410,7 +1581,7 @@
     try {
       const resp = await fetch(`/api/messages/${msgId}/delete/`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: buildDemoAwareHeaders({ 'Content-Type': 'application/json' }),
       });
       if (resp.ok) {
         const data = await resp.json();
@@ -1422,9 +1593,7 @@
           renderEmptyState(feed);
         }
 
-        if (data.session_summary !== undefined) {
-          updateWorkerUi(null, data.session_summary, null, false);
-        }
+        applyDeletedSummaryAndInspectorState(data);
       } else {
         await uiAlert('Не удалось удалить сообщение из базы данных.', 'Ошибка удаления', 'error');
       }
@@ -1456,6 +1625,9 @@
       const feed = el('chatFeed');
       if (feed && !feed.querySelector('.msg-card:not([data-welcome-placeholder])')) {
         renderEmptyState(feed);
+        const demoSess = state.demoSessions.find((s) => String(s.id) === String(state.currentSessionId));
+        if (demoSess) demoSess.summary = '';
+        applyDeletedSummaryAndInspectorState({ session_summary: '' });
       }
       return;
     }
@@ -1463,13 +1635,13 @@
     try {
       const resp = await fetch('/api/messages/delete/', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: buildDemoAwareHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ session_id: state.currentSessionId, message_ids: ids }),
       });
       if (resp.ok) {
         const data = await resp.json();
         ids.forEach((id) => {
-          document.querySelectorAll(`.msg-card[data-message-id="${id}"]`).forEach((el) => el.remove());
+          document.querySelectorAll(`.msg-card[data-message-id="${id}"]`).forEach((elNode) => elNode.remove());
         });
         updateSelectionToolbar();
 
@@ -1478,9 +1650,7 @@
           renderEmptyState(feed);
         }
 
-        if (data.session_summary !== undefined) {
-          updateWorkerUi(null, data.session_summary, null, false);
-        }
+        applyDeletedSummaryAndInspectorState(data);
       } else {
         await uiAlert('Не удалось удалить выбранные сообщения из базы данных.', 'Ошибка удаления', 'error');
       }
@@ -1501,16 +1671,18 @@
 
     if (state.isDemo) {
       state.demoMessagesBySession[state.currentSessionId] = [];
+      const demoSess = state.demoSessions.find((s) => String(s.id) === String(state.currentSessionId));
+      if (demoSess) demoSess.summary = '';
       const feed = el('chatFeed');
       if (feed) renderEmptyState(feed);
-      updateWorkerUi(null, '', null, false);
+      applyDeletedSummaryAndInspectorState({ session_summary: '' });
       return;
     }
 
     try {
       const resp = await fetch('/api/messages/delete/', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: buildDemoAwareHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ session_id: state.currentSessionId, delete_all: true }),
       });
       if (resp.ok) {
@@ -1519,9 +1691,9 @@
         if (feed) {
           renderEmptyState(feed);
         }
-        if (data.session_summary !== undefined) {
-          updateWorkerUi(null, data.session_summary, null, false);
-        }
+        applyDeletedSummaryAndInspectorState(
+          Object.assign({ session_summary: '' }, data || {})
+        );
       } else {
         await uiAlert('Не удалось очистить историю диалога.', 'Ошибка очистки', 'error');
       }
@@ -1617,6 +1789,12 @@
     if (state.isDemo) {
       const demoSess = state.demoSessions.find((s) => String(s.id) === String(sessionId));
       const messages = state.demoMessagesBySession[sessionId] || [];
+      const vehInput = el('vehicleInfoInput');
+      if (vehInput) vehInput.value = demoSess ? demoSess.vehicle_info || '' : '';
+      const dta = el('dialogSummaryTextarea');
+      if (dta) dta.value = demoSess ? demoSess.summary || '' : '';
+      const gta = el('globalSummaryTextarea');
+      if (gta) gta.value = state.demoSettings.global_memory_summary || '';
       updateWorkerUi('idle', demoSess ? demoSess.summary || '' : '', state.demoSettings.global_memory_summary || '', false);
       renderSessionMessagesToDom(messages, sessionId);
       return;
@@ -1897,6 +2075,7 @@
     try {
       const resp = await fetch('/api/ask/', {
         method: 'POST',
+        headers: buildDemoAwareHeaders(),
         body: formData,
         signal: state.activeAbortController.signal,
       });
@@ -2037,66 +2216,265 @@
   }
 
   // =========================================================================
-  // 5. Словарь кодов ошибок DTC (kb_data.json + VehicleDiagnosticSample.txt)
+  // 5. Словарь кодов ошибок DTC (Пагинация + 12 000+ кодов + OEM / NHTSA)
   // =========================================================================
-  async function loadDtcDictionary() {
+  function normalizeDtcOemEntries(oemRaw) {
+    if (!oemRaw) return [];
+    const entries = [];
+    if (Array.isArray(oemRaw)) {
+      for (let i = 0; i < oemRaw.length && entries.length < 3; i++) {
+        const v = oemRaw[i];
+        if (!v) continue;
+        if (typeof v === 'string') {
+          const trimmed = v.trim();
+          if (trimmed) entries.push({ make: '', text: trimmed });
+        } else if (typeof v === 'object') {
+          const make = String(v.make || v.oem || v.brand || v.manufacturer || '').trim();
+          const text = String(v.description || v.title || v.symptom || v.note || v.text || '').trim();
+          if (make || text) entries.push({ make, text });
+        }
+      }
+    } else if (typeof oemRaw === 'object') {
+      const keys = Object.keys(oemRaw);
+      for (let i = 0; i < keys.length && entries.length < 3; i++) {
+        const k = keys[i];
+        const val = oemRaw[k];
+        const text =
+          typeof val === 'string'
+            ? val.trim()
+            : val && typeof val === 'object'
+            ? String(val.description || val.title || val.symptom || val.text || '').trim()
+            : '';
+        if (k || text) entries.push({ make: k, text });
+      }
+    }
+    return entries;
+  }
+
+  function renderDtcCardHtml(item) {
+    const symptomText = String(item.symptom || item.title || item.description || '').trim();
+    const enTitle = typeof item.en_title === 'string' ? item.en_title.trim() : '';
+    const showEnTitle =
+      enTitle && (item.lang === 'en' || enTitle.toLowerCase() !== symptomText.toLowerCase());
+
+    const enHtml = showEnTitle
+      ? `<div style="font-size:0.73rem; color:var(--text-muted); margin-top:2px;">Оригинал (EN): ${escapeHtml(enTitle)}</div>`
+      : '';
+
+    const solutionText = String(item.solution || '').trim();
+    const solutionHtml = solutionText
+      ? `<div style="font-size:0.76rem; color:var(--text-secondary); margin-top:3px;">Решение: ${escapeHtml(solutionText)}</div>`
+      : '';
+
+    const oemEntries = normalizeDtcOemEntries(item.oem_variants);
+    let oemHtml = '';
+    if (oemEntries.length > 0) {
+      const allShortBadges = oemEntries.every((e) => e.make && !e.text);
+      if (allShortBadges) {
+        oemHtml = `<div class="check-meta-tags" style="margin-top:5px;">${oemEntries
+          .map((e) => `<span class="spec-tag">OEM: ${escapeHtml(e.make)}</span>`)
+          .join('')}</div>`;
+      } else {
+        oemHtml = `<div style="margin-top:5px; display:flex; flex-direction:column; gap:2px;">${oemEntries
+          .map((e) => {
+            const prefix = e.make ? `OEM (${escapeHtml(e.make)}): ` : 'OEM: ';
+            const body = e.text.length > 110 ? e.text.slice(0, 107) + '...' : e.text;
+            return `<div style="font-size:0.72rem; color:var(--text-muted); line-height:1.35;"><strong style="color:var(--text-secondary);">${prefix}</strong>${escapeHtml(body)}</div>`;
+          })
+          .join('')}</div>`;
+      }
+    }
+
+    const metaTags = [];
+    if (item.health_index !== undefined && item.health_index !== null) {
+      metaTags.push(
+        item.has_telemetry
+          ? `<span class="spec-tag">Телеметрия • Health ${escapeHtml(String(item.health_index))}%</span>`
+          : `<span class="spec-tag">Health ${escapeHtml(String(item.health_index))}%</span>`
+      );
+    } else if (item.has_telemetry) {
+      metaTags.push(`<span class="spec-tag">Эталонная телеметрия</span>`);
+    }
+
+    const nhtsa = item.nhtsa_stats && typeof item.nhtsa_stats === 'object' ? item.nhtsa_stats : null;
+    const bulletins = nhtsa ? Number(nhtsa.bulletins || nhtsa.tsb_count || 0) : 0;
+    if (bulletins > 0) {
+      metaTags.push(`<span class="spec-tag">Сервисные бюллетени: ${bulletins}</span>`);
+    }
+
+    return `
+      <div class="dtc-card-item">
+        <div class="dtc-card-top">
+          <span class="dtc-pill">${escapeHtml(item.code)}</span>
+          <span style="font-size:0.73rem; color:var(--text-muted); flex:1;">${escapeHtml(item.system_ru || item.system || '')}</span>
+          <button type="button" class="btn-attach-code" data-attach-dtc="${escapeHtml(item.code)}">+ В запрос</button>
+        </div>
+        <div style="font-size:0.81rem; font-weight:600; color:var(--text-primary);">${escapeHtml(symptomText || item.code)}</div>
+        ${enHtml}
+        ${solutionHtml}
+        ${oemHtml}
+        ${metaTags.length ? `<div class="check-meta-tags" style="margin-top:6px;">${metaTags.join('')}</div>` : ''}
+      </div>
+    `;
+  }
+
+  function bindDtcListInteractions(listContainer) {
+    if (!listContainer || listContainer.dataset.dtcDelegated === '1') return;
+    listContainer.dataset.dtcDelegated = '1';
+    listContainer.addEventListener('click', (e) => {
+      const attachBtn = e.target.closest('[data-attach-dtc]');
+      if (attachBtn) {
+        const code = attachBtn.dataset.attachDtc;
+        if (code && !state.stagedCodes.includes(code)) {
+          state.stagedCodes.push(code);
+          renderStagingBar();
+        }
+        if (window.innerWidth <= 1120) {
+          el('panelInspector')?.classList.remove('mobile-active');
+          document.querySelectorAll('[data-mobile-view]').forEach((b) => {
+            b.classList.toggle('active', b.dataset.mobileView === 'chat');
+          });
+          el('queryInput')?.focus();
+        }
+        return;
+      }
+
+      const loadMoreBtn = e.target.closest('[data-dtc-load-more]');
+      if (loadMoreBtn && !state.dtcLoading) {
+        const nextOffset = state.dtcLoadedItems.length;
+        loadDtcDictionary({ append: true, offset: nextOffset });
+      }
+    });
+  }
+
+  async function loadDtcDictionary({ append = false, offset = 0 } = {}) {
     const searchInput = el('dtcSearchInput');
     const sysSelect = el('dtcSystemSelect');
     const listContainer = el('dtcDictionaryList');
     if (!listContainer) return;
 
+    bindDtcListInteractions(listContainer);
+
     const q = searchInput ? searchInput.value.trim() : '';
     const sys = sysSelect ? sysSelect.value : 'all';
+    const effectiveOffset = append ? Math.max(0, Number(offset) || 0) : 0;
+    const reqId = ++state.dtcRequestSeq;
+    state.dtcLoading = true;
+
+    const existingMoreBtn = listContainer.querySelector('[data-dtc-load-more]');
+    if (append && existingMoreBtn) {
+      existingMoreBtn.disabled = true;
+      existingMoreBtn.textContent = 'Загрузка кодов...';
+    }
 
     try {
-      const resp = await fetch(`/api/dtc/?q=${encodeURIComponent(q)}&system=${encodeURIComponent(sys)}&limit=80`);
-      if (!resp.ok) return;
+      const resp = await fetch(
+        `/api/dtc/?q=${encodeURIComponent(q)}&system=${encodeURIComponent(sys)}&limit=80&offset=${effectiveOffset}`
+      );
+      if (!resp.ok || reqId !== state.dtcRequestSeq) return;
       const data = await resp.json();
-      const items = data.items || [];
+      if (reqId !== state.dtcRequestSeq) return;
 
-      if (items.length === 0) {
+      const items = Array.isArray(data.items) ? data.items : [];
+      const total = typeof data.total === 'number' ? data.total : items.length;
+      const totalCatalog = data.total_catalog || total;
+
+      if (data.total_catalog && sysSelect) {
+        const allOpt = Array.from(sysSelect.options).find((o) => o.value === 'all');
+        if (allOpt) {
+          allOpt.textContent = `Все системы автомобиля (${data.total_catalog} кодов)`;
+        }
+        const dtcTabBtn = document.querySelector('[data-inspector-tab="paneDtc"]');
+        if (dtcTabBtn) {
+          dtcTabBtn.textContent = `Словарь DTC (${data.total_catalog})`;
+        }
+      }
+
+      if (Array.isArray(data.systems) && sysSelect) {
+        const curVal = sysSelect.value;
+        data.systems.forEach((sObj) => {
+          if (!sObj || !sObj.id) return;
+          const optVal = String(sObj.id);
+          let opt = Array.from(sysSelect.options).find((o) => o.value === optVal);
+          const optLabel = `${sObj.name || optVal} (${sObj.count ?? 0})`;
+          if (opt) {
+            opt.textContent = optLabel;
+          } else {
+            opt = document.createElement('option');
+            opt.value = optVal;
+            opt.textContent = optLabel;
+            sysSelect.appendChild(opt);
+          }
+        });
+        sysSelect.value = curVal;
+      }
+
+      if (!append) {
+        state.dtcLoadedItems = items.slice();
+      } else {
+        const existingCodes = new Set(state.dtcLoadedItems.map((x) => x.code));
+        items.forEach((it) => {
+          if (!existingCodes.has(it.code)) {
+            existingCodes.add(it.code);
+            state.dtcLoadedItems.push(it);
+          }
+        });
+      }
+
+      const loadedCount = state.dtcLoadedItems.length;
+      state.dtcTotal = Math.max(total, loadedCount);
+      state.dtcTotalCatalog = totalCatalog;
+
+      if (loadedCount === 0) {
         listContainer.innerHTML = `<div style="padding:16px; color:var(--text-muted); font-size:0.82rem;">Коды по данному фильтру не найдены.</div>`;
         return;
       }
 
-      listContainer.innerHTML = items
-        .map((item) => {
-          const telemetryBadge = item.has_telemetry
-            ? `<span class="spec-tag">Телеметрия • Health ${item.health_index}%</span>`
-            : `<span class="spec-tag">Health ${item.health_index}%</span>`;
-          return `
-            <div class="dtc-card-item">
-              <div class="dtc-card-top">
-                <span class="dtc-pill">${escapeHtml(item.code)}</span>
-                <span style="font-size:0.73rem; color:var(--text-muted); flex:1;">${escapeHtml(item.system_ru)}</span>
-                <button type="button" class="btn-attach-code" data-attach-dtc="${escapeHtml(item.code)}">+ В запрос</button>
-              </div>
-              <div style="font-size:0.81rem; font-weight:600; color:var(--text-primary);">${escapeHtml(item.symptom)}</div>
-              <div style="font-size:0.76rem; color:var(--text-secondary); margin-top:3px;">Решение: ${escapeHtml(item.solution)}</div>
-              <div class="check-meta-tags" style="margin-top:6px;">${telemetryBadge}</div>
-            </div>
-          `;
-        })
-        .join('');
+      const countHeaderHtml = `
+        <div class="dtc-count-header" data-dtc-count-header="1" style="padding:2px 4px 8px 4px; font-size:0.75rem; color:var(--text-muted); display:flex; justify-content:space-between; align-items:center;">
+          <span>Показано ${loadedCount} из ${state.dtcTotal} кодов</span>
+          ${totalCatalog && state.dtcTotal !== totalCatalog ? `<span>Всего в базе: ${totalCatalog}</span>` : ''}
+        </div>
+      `;
 
-      listContainer.querySelectorAll('[data-attach-dtc]').forEach((btn) => {
-        btn.addEventListener('click', () => {
-          const code = btn.dataset.attachDtc;
-          if (code && !state.stagedCodes.includes(code)) {
-            state.stagedCodes.push(code);
-            renderStagingBar();
-          }
-          if (window.innerWidth <= 1120) {
-            el('panelInspector')?.classList.remove('mobile-active');
-            document.querySelectorAll('[data-mobile-view]').forEach((b) => {
-              b.classList.toggle('active', b.dataset.mobileView === 'chat');
-            });
-            el('queryInput')?.focus();
-          }
-        });
-      });
+      const loadMoreHtml =
+        loadedCount < state.dtcTotal
+          ? `<button type="button" class="btn-action-ghost" data-dtc-load-more="1" style="width:100%; margin-top:8px;">Показать ещё коды</button>`
+          : '';
+
+      if (!append) {
+        listContainer.innerHTML =
+          countHeaderHtml + items.map((item) => renderDtcCardHtml(item)).join('') + loadMoreHtml;
+        listContainer.scrollTop = 0;
+      } else {
+        const prevScrollTop = listContainer.scrollTop;
+        listContainer.querySelector('[data-dtc-load-more]')?.remove();
+        const headerEl = listContainer.querySelector('[data-dtc-count-header]');
+        if (headerEl) {
+          headerEl.innerHTML = `
+            <span>Показано ${loadedCount} из ${state.dtcTotal} кодов</span>
+            ${totalCatalog && state.dtcTotal !== totalCatalog ? `<span>Всего в базе: ${totalCatalog}</span>` : ''}
+          `;
+        }
+        listContainer.insertAdjacentHTML(
+          'beforeend',
+          items.map((item) => renderDtcCardHtml(item)).join('') + loadMoreHtml
+        );
+        listContainer.scrollTop = prevScrollTop;
+      }
     } catch (err) {
       console.error('Ошибка загрузки словаря DTC:', err);
+      if (append) {
+        const btn = listContainer.querySelector('[data-dtc-load-more]');
+        if (btn) {
+          btn.disabled = false;
+          btn.textContent = 'Показать ещё коды';
+        }
+      }
+    } finally {
+      if (reqId === state.dtcRequestSeq) {
+        state.dtcLoading = false;
+      }
     }
   }
 
@@ -3380,9 +3758,17 @@
       el('dtcSearchInput')?.focus();
     });
 
-    // Поиск по словарю DTC
-    el('dtcSearchInput')?.addEventListener('input', () => loadDtcDictionary());
-    el('dtcSystemSelect')?.addEventListener('change', () => loadDtcDictionary());
+    // Поиск по словарю DTC (с дебаунсом 180 мс и сбросом пагинации)
+    el('dtcSearchInput')?.addEventListener('input', () => {
+      clearTimeout(state.dtcSearchTimer);
+      state.dtcSearchTimer = setTimeout(() => {
+        loadDtcDictionary({ append: false, offset: 0 });
+      }, 180);
+    });
+    el('dtcSystemSelect')?.addEventListener('change', () => {
+      clearTimeout(state.dtcSearchTimer);
+      loadDtcDictionary({ append: false, offset: 0 });
+    });
 
     // Камера внутри интерфейса
     el('btnOpenCamera')?.addEventListener('click', async () => {
@@ -3493,7 +3879,9 @@
         if (wrap) wrap.style.display = chk && chk.checked ? 'block' : 'none';
       } else {
         try {
-          const resp = await fetch('/api/settings/');
+          const resp = await fetch('/api/settings/', {
+            headers: buildDemoAwareHeaders(),
+          });
           if (resp.ok) {
             const data = await resp.json();
             const s = (data && data.settings) ? data.settings : data;
@@ -3539,7 +3927,7 @@
       try {
         const resp = await fetch('/api/settings/', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: buildDemoAwareHeaders({ 'Content-Type': 'application/json' }),
           body: JSON.stringify({
             cross_dialog_memory_enabled: chkVal,
             global_memory_summary: summaryVal,
@@ -3563,22 +3951,38 @@
         'Очистить память'
       );
       if (!confirmed) return;
+
+      const gta = el('globalSummaryTextarea');
+      if (gta) gta.value = '';
+      const dta = el('dialogSummaryTextarea');
+      if (dta) dta.value = '';
+
       if (state.isDemo) {
         state.demoSettings.global_memory_summary = '';
-        const gta = el('globalSummaryTextarea');
-        if (gta) gta.value = '';
+        if (Array.isArray(state.demoSessions)) {
+          state.demoSessions.forEach((s) => {
+            s.summary = '';
+          });
+        }
+        updateWorkerUi('idle', '', '', false);
         return;
       }
       try {
         const resp = await fetch('/api/settings/', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: buildDemoAwareHeaders({ 'Content-Type': 'application/json' }),
           body: JSON.stringify({
             global_memory_summary: '',
+            clear_global_memory: true,
           }),
         });
         if (resp.ok) {
-          const gta = el('globalSummaryTextarea');
+          if (gta) gta.value = '';
+          if (dta) dta.value = '';
+          updateWorkerUi('idle', '', '', false);
+          if (state.currentSessionId) {
+            await loadSession(state.currentSessionId);
+          }
           if (gta) gta.value = '';
         }
       } catch (err) {
@@ -3812,9 +4216,10 @@
         const speedEl = el('obdValSpeed');
         if (speedEl) speedEl.textContent = `${pids.speed} км/ч`;
       }
-      if (pids.temp !== undefined) {
+      const coolantTempVal = pids.coolantTemp !== undefined ? pids.coolantTemp : pids.temp;
+      if (coolantTempVal !== undefined) {
         const tempEl = el('obdValTemp');
-        if (tempEl) tempEl.textContent = `${pids.temp} °C`;
+        if (tempEl) tempEl.textContent = `${coolantTempVal} °C`;
       }
       if (pids.throttle !== undefined) {
         const thrEl = el('obdValThrottle');
@@ -3862,7 +4267,7 @@
           codes.forEach((c) => {
             if (!state.stagedCodes.includes(c)) state.stagedCodes.push(c);
           });
-          renderStagedBar();
+          renderStagingBar();
           uiAlert(`Считано ${codes.length} кодов неисправностей. Они добавлены в диагностическую сессию.`, 'Сканер OBD-II', 'info');
         }
       });
@@ -3912,10 +4317,11 @@
       try {
         const vin = await window.OBD2Client.readVin();
         if (vin) {
-          const vInput = el('vehicleInput');
+          const vInput = el('vehicleInfoInput');
           if (vInput) {
             vInput.value = (vInput.value ? `${vInput.value} | VIN: ` : 'VIN: ') + vin;
             state.vehicleInfo = vInput.value;
+            vInput.dispatchEvent(new Event('change'));
           }
           uiAlert(`Определен VIN номер автомобиля: ${vin}`, 'VIN распознан', 'info');
         } else {
@@ -4048,8 +4454,10 @@
           return;
         }
 
+        resetClientAccountAndMemoryState();
         localStorage.setItem('aideal_first_login_consent_accepted', '1');
         localStorage.setItem('aideal_cookies_accepted', '1');
+        localStorage.setItem('aideal_last_auth_user', data.username || username);
         const cookieBannerEl = el('cookieBanner');
         if (cookieBannerEl) cookieBannerEl.style.display = 'none';
         window.location.reload();
@@ -4068,10 +4476,12 @@
       if (!confirmed) return;
       try {
         await fetch('/api/auth/logout/', { method: 'POST' });
-        window.location.reload();
-      } catch (_) {
-        window.location.reload();
-      }
+      } catch (_) {}
+      resetClientAccountAndMemoryState();
+      try {
+        localStorage.setItem('aideal_last_auth_user', '__guest__');
+      } catch (_) {}
+      window.location.reload();
     });
 
     btnDeleteAccount?.addEventListener('click', async () => {
@@ -4088,6 +4498,10 @@
           headers: { 'Content-Type': 'application/json' },
         });
         if (resp.ok) {
+          resetClientAccountAndMemoryState({ isAccountDeletion: true });
+          try {
+            localStorage.setItem('aideal_last_auth_user', '__guest__');
+          } catch (_) {}
           window.location.reload();
         } else {
           const data = await resp.json();
@@ -4579,9 +4993,31 @@
       },
       { passive: true }
     );
+
+    try {
+      const currentAuthUser =
+        document.body.dataset.isAuthenticated === 'true'
+          ? document.body.dataset.username || ''
+          : '__guest__';
+      const prevAuthUser = localStorage.getItem('aideal_last_auth_user');
+      if (prevAuthUser !== currentAuthUser) {
+        const hasValidServerSession =
+          isAuthInitial && Boolean(rawInitialSession) && !rawInitialSession.startsWith('demo-');
+        resetClientAccountAndMemoryState({ keepSessionId: hasValidServerSession });
+        localStorage.setItem('aideal_last_auth_user', currentAuthUser);
+      } else if (state.isDemo) {
+        const gta = el('globalSummaryTextarea');
+        if (gta) gta.value = state.demoSettings.global_memory_summary || '';
+        const dta = el('dialogSummaryTextarea');
+        if (dta) dta.value = '';
+        const vinp = el('vehicleInfoInput');
+        if (vinp) vinp.value = '';
+      }
+    } catch (_) {}
+
     initEvents();
     refreshSidebarProjects();
     loadSession(state.currentSessionId);
-    loadDtcDictionary();
+    loadDtcDictionary({ append: false, offset: 0 });
   });
 })();

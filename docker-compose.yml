@@ -29,7 +29,7 @@ services:
       - AIRLLM_MODEL_ID=${AIRLLM_MODEL_ID:-google/gemma-4-12B-it-qat-w4a16-ct}
       - AIRLLM_COMPRESSION=${AIRLLM_COMPRESSION:-4bit}
       - HF_HOME=/app/models/.hf_cache
-      - HF_TOKEN=${HF_TOKEN:-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}
+      - HF_TOKEN=${HF_TOKEN:-}
       - RAG_USE_NEURAL=${RAG_USE_NEURAL:-1}
       - RAG_DEVICE=${RAG_DEVICE:-cpu}
       - RAG_INCLUDE_EXTERNAL=${RAG_INCLUDE_EXTERNAL:-1}

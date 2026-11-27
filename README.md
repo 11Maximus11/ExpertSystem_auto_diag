@@ -320,7 +320,7 @@
 
 ## 8. Быстрый старт, развертывание, сборка APK и отладка в VS Code
 
-> **Примечание по весам моделей:** Веса нейросетей не хранятся в Git. При первом запуске `run_dev.ps1` или `prepare_airllm_model.py` автоматически скачиваются `google/gemma-4-12B-it-qat-w4a16-ct` (~7.54 ГБ, нарезка на 52 шарда) и RAG-модели (`paraphrase-multilingual-MiniLM-L12-v2`, `mmarco-mMiniLMv2-L12-H384-v1`). Публичный read-only токен `HF_TOKEN` уже встроен по умолчанию в `prepare_airllm_model.py`, `Dockerfile` и `docker-compose.yml` (при желании переопределяется через `$env:HF_TOKEN`).
+> **Примечание по весам моделей:** Веса нейросетей не хранятся в Git. При первом запуске `run_dev.ps1` или `prepare_airllm_model.py` автоматически скачиваются открытые модели `google/gemma-4-12B-it-qat-w4a16-ct` (~7.54 ГБ, нарезка на 52 шарда) и RAG-модели (`paraphrase-multilingual-MiniLM-L12-v2`, `mmarco-mMiniLMv2-L12-H384-v1`) — токен не обязателен. При желании для повышенных лимитов скачивания с Hugging Face передайте свой токен через `$env:HF_TOKEN` (в публичный Git-код токены добавлять нельзя — HF автоматически их отзывает).
 
 ### 8.1. Запуск сервера на Windows (PowerShell) и Linux (Bash)
 
@@ -371,7 +371,7 @@ docker run -d --name aideal-auto --gpus all --ulimit memlock=-1:-1 --shm-size=2g
 > - `--gpus all` и `NVIDIA_DRIVER_CAPABILITIES=compute,utility,graphics` пробрасывают NVIDIA GPU в контейнер для `W4A16Linear` (`int4pack` TensorCore), `CUDA-prefetch` и `AutoTuner`. Кнопка **Run** в графическом интерфейсе Docker Desktop не передаёт `--gpus all` — используйте команду выше или `docker compose up -d`. Для работы без GPU (CPU fallback) просто удалите флаг `--gpus all`.
 > - `--ulimit memlock=-1:-1` и `--shm-size=2g` снимают ограничение Linux на page-locked память (`pin_memory()`) для быстрого PCIe DMA стриминга слоёв AirLLM.
 > - Тома `aideal_models` (`/app/models`) и `aideal_db` (`/app/db_data`) сохраняют 52 шарда Gemma 4 12B, кэш BERT RAG (`HF_HOME=/app/models/.hf_cache`), профиль `autotune_profile.json` и SQLite БД (`DJANGO_DB_PATH=/app/db_data/db.sqlite3`). При первом запуске на пустых томах `docker/entrypoint.sh` автоматически скачает/нарежет модель и скопирует чистую БД `db_clean.sqlite3` (демо-пользователи `admin` и `mechanic`), а веб-интерфейс будет доступен на `http://127.0.0.1:8000/`.
-> - В образ `msgcg/aideal-auto:latest` уже встроен публичный read-only `HF_TOKEN` для стабильного скачивания моделей с Hugging Face Hub без лишних ограничений (при необходимости переопределяется флагом `-e HF_TOKEN=<ваш_токен>`).
+> - Все используемые модели (`google/gemma-4-12B-it-qat-w4a16-ct` и BERT RAG) открытые и скачиваются без токена. При необходимости повышенных лимитов Hugging Face Hub передайте свой токен через `-e HF_TOKEN=<ваш_токен>` в `docker run` или через локальный `.env` в `docker compose` (он исключён из Git и образа).
 > - В Windows PowerShell для подключения уже скачанной локальной папки `.\models` замените `-v aideal_models:/app/models` на `-v "${PWD}\models:/app/models"`.
 
 **Запуск из клонированного репозитория в 1 команду (Docker Compose):**

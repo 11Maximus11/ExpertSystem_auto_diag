@@ -55,7 +55,8 @@ RUN mkdir -p /app/models /app/db_data /app/staticfiles && \
     sed -i 's/\r$//' /app/docker/entrypoint.sh /app/run_dev.sh && \
     chmod +x /app/docker/entrypoint.sh /app/run_dev.sh
 
-ENV HF_TOKEN=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
+ARG HF_TOKEN=""
+ENV HF_TOKEN=${HF_TOKEN}
 
 EXPOSE 8000
 

@@ -24,12 +24,7 @@ from safetensors.torch import save_file
 
 BASE_DIR = Path(__file__).resolve().parent
 MODEL_REPO_ID = os.environ.get("AIRLLM_MODEL_ID", "google/gemma-4-12B-it-qat-w4a16-ct")
-DEFAULT_HF_TOKEN = (
-    os.environ.get("HF_TOKEN")
-    or os.environ.get("HUGGING_FACE_HUB_TOKEN")
-    or "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"
-)
-os.environ.setdefault("HF_TOKEN", DEFAULT_HF_TOKEN)
+DEFAULT_HF_TOKEN = os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN") or None
 LOCAL_MODEL_DIR = BASE_DIR / "models" / "gemma-4-12B-it"
 SHARDS_BASE_DIR = BASE_DIR / "models" / "airllm_shards"
 SPLITTED_DIR = SHARDS_BASE_DIR / "splitted_model"
@@ -141,12 +136,24 @@ def download_and_split_model(
     existing_safetensors = sorted(p for p in local_model_dir.glob("*.safetensors") if p.is_file())
     if not existing_safetensors or not (local_model_dir / "config.json").exists():
         print(f"[AirLLM Prepare] Скачивание модели {repo_id} в {local_model_dir}...")
-        snapshot_download(
-            repo_id=repo_id,
-            local_dir=str(local_model_dir),
-            token=DEFAULT_HF_TOKEN,
-            max_workers=2,
-        )
+        try:
+            snapshot_download(
+                repo_id=repo_id,
+                local_dir=str(local_model_dir),
+                token=DEFAULT_HF_TOKEN,
+                max_workers=2,
+            )
+        except Exception as dl_exc:
+            if DEFAULT_HF_TOKEN:
+                print(f"[AirLLM Prepare] Повторное скачивание без токена (токен отклонен/истек: {dl_exc})...")
+                snapshot_download(
+                    repo_id=repo_id,
+                    local_dir=str(local_model_dir),
+                    token=False,
+                    max_workers=2,
+                )
+            else:
+                raise
     else:
         print(f"[AirLLM Prepare] Найдены локальные файлы весов {repo_id} в {local_model_dir}, переход к нарезке шардов...")
     _sanitize_local_config(local_model_dir)

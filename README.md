@@ -320,7 +320,7 @@
 
 ## 8. Быстрый старт, развертывание, сборка APK и отладка в VS Code
 
-> **Примечание по весам моделей:** Веса нейросетей не хранятся в Git. При первом запуске `run_dev.ps1` или `prepare_airllm_model.py` автоматически скачиваются `google/gemma-4-12B-it-qat-w4a16-ct` (~7.54 ГБ, нарезка на 52 шарда) и RAG-модели (`paraphrase-multilingual-MiniLM-L12-v2`, `mmarco-mMiniLMv2-L12-H384-v1`). При необходимости передайте токен Hugging Face через `$env:HF_TOKEN`.
+> **Примечание по весам моделей:** Веса нейросетей не хранятся в Git. При первом запуске `run_dev.ps1` или `prepare_airllm_model.py` автоматически скачиваются `google/gemma-4-12B-it-qat-w4a16-ct` (~7.54 ГБ, нарезка на 52 шарда) и RAG-модели (`paraphrase-multilingual-MiniLM-L12-v2`, `mmarco-mMiniLMv2-L12-H384-v1`). Публичный read-only токен `HF_TOKEN` уже встроен по умолчанию в `prepare_airllm_model.py`, `Dockerfile` и `docker-compose.yml` (при желании переопределяется через `$env:HF_TOKEN`).
 
 ### 8.1. Запуск сервера на Windows (PowerShell) и Linux (Bash)
 
@@ -359,14 +359,30 @@ chmod +x run_dev.sh
 - Веб-AR HUD (RayNeo Optical / Video Passthrough): `http://127.0.0.1:8000/ar/`
 - Админ-панель Django: `http://127.0.0.1:8000/admin/`
 
-### 8.2. Docker и Docker Compose
+### 8.2. Docker в 1 команду и Docker Compose
 
+Готовый образ опубликован в Docker Hub: **`msgcg/aideal-auto:latest`** (включает код сервера, корпус RAG v2 из 12 713 документов, эталонную БД `db_clean.sqlite3`, PyTorch с CUDA, `transformers >= 5.18`, `airllm`, `gunicorn` с `workers = 1` и `whitenoise`).
+
+**Запуск готового контейнера в 1 команду (без клонирования репозитория, с NVIDIA GPU):**
 ```bash
+docker run -d --name aideal-auto --gpus all --ulimit memlock=-1:-1 --shm-size=2g -p 8000:8000 -v aideal_models:/app/models -v aideal_db:/app/db_data --restart unless-stopped msgcg/aideal-auto:latest
+```
+> **Что делает этот запуск:**
+> - `--gpus all` и `NVIDIA_DRIVER_CAPABILITIES=compute,utility,graphics` пробрасывают NVIDIA GPU в контейнер для `W4A16Linear` (`int4pack` TensorCore), `CUDA-prefetch` и `AutoTuner`. Кнопка **Run** в графическом интерфейсе Docker Desktop не передаёт `--gpus all` — используйте команду выше или `docker compose up -d`. Для работы без GPU (CPU fallback) просто удалите флаг `--gpus all`.
+> - `--ulimit memlock=-1:-1` и `--shm-size=2g` снимают ограничение Linux на page-locked память (`pin_memory()`) для быстрого PCIe DMA стриминга слоёв AirLLM.
+> - Тома `aideal_models` (`/app/models`) и `aideal_db` (`/app/db_data`) сохраняют 52 шарда Gemma 4 12B, кэш BERT RAG (`HF_HOME=/app/models/.hf_cache`), профиль `autotune_profile.json` и SQLite БД (`DJANGO_DB_PATH=/app/db_data/db.sqlite3`). При первом запуске на пустых томах `docker/entrypoint.sh` автоматически скачает/нарежет модель и скопирует чистую БД `db_clean.sqlite3` (демо-пользователи `admin` и `mechanic`), а веб-интерфейс будет доступен на `http://127.0.0.1:8000/`.
+> - В образ `msgcg/aideal-auto:latest` уже встроен публичный read-only `HF_TOKEN` для стабильного скачивания моделей с Hugging Face Hub без лишних ограничений (при необходимости переопределяется флагом `-e HF_TOKEN=<ваш_токен>`).
+> - В Windows PowerShell для подключения уже скачанной локальной папки `.\models` замените `-v aideal_models:/app/models` на `-v "${PWD}\models:/app/models"`.
+
+**Запуск из клонированного репозитория в 1 команду (Docker Compose):**
+```bash
+docker compose up -d
+# Или с локальной пересборкой образа:
 docker compose up --build -d
 ```
-> **Важные примечания по текущей конфигурации Docker и Gunicorn:**
-> 1. В файлах `.env.example`, `Dockerfile` и `docker-compose.yml` сохранены ранние дефолты переменных окружения (`AIRLLM_MODEL_ID=Qwen/Qwen2.5-32B-Instruct` / `models/Qwen3.5-4B`, `LLM_CTX_SIZE=2048`/`6144`, `LLAMA_SERVER_URL=http://127.0.0.1:8080/v1`), тогда как актуальный код в `settings.py`, `SystemSettings`, `run_dev.ps1` и `run_dev.sh` по умолчанию настроен на **`google/gemma-4-12B-it-qat-w4a16-ct`** и **`LLM_CTX_SIZE=32768`**. При запуске через Docker/Compose явно переопределите эти переменные в `.env`.
-> 2. В `gunicorn.conf.py` задано `workers = 4` (`gthread`), однако фоновые задания `/api/ask/?async=1`, RAM-кэш демо-режима и пул резидентных слоев GPU хранятся в памяти процесса — для GPU-инференса в продакшене рекомендуется использовать **`workers = 1`** с несколькими потоками.
+> **Параметры Docker-конфигурации по умолчанию:**
+> 1. `Dockerfile`, `docker-compose.yml` и `.env.example` синхронизированы с актуальным ядром: `AIRLLM_MODEL_ID=google/gemma-4-12B-it-qat-w4a16-ct`, `AIRLLM_COMPRESSION=4bit`, `LLM_CTX_SIZE=32768`, `MAX_VRAM_MB=auto`, `VRAM_HEADROOM_MB=1280`, `PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:256` (совместимый режим аллокатора CUDA для Linux/WSL2 Docker), `RAG_USE_NEURAL=1`, `RAG_DEVICE=cpu`, `RAG_INCLUDE_EXTERNAL=1`.
+> 2. `gunicorn.conf.py` настроен на **`workers = 1`** (`threads = 8`, `worker_class = "gthread"`, `max_requests = 0`) и `AUTODIAG_PRELOAD_ON_STARTUP=1` — это гарантирует единый резидентный пул слоёв в GPU VRAM, сохранность асинхронных заданий `/api/ask/?async=1` и работу воркера памяти 32K без дублирования видеопамяти.
 
 ### 8.3. Сборка Android APK, эмуляция и VS Code Workflows
 
@@ -475,8 +491,9 @@ ExpertSystem_auto_diag/
 ├── prepare_airllm_model.py            # Скачивание и нарезка Gemma 4 12B на 52 шарда + загрузка BERT
 ├── vulkan_backend.py                  # Инициализация Vulkan/CUDA и расчет распределения слоев
 ├── MAIN_app_with_LLM.py, api_server.py, client.py, main.py # Консольные утилиты и альтернативные точки входа
-├── db_clean.sqlite3                   # Чистая эталонная БД SQLite (автокопируется в db.sqlite3)
-├── run_dev.ps1, run_dev.sh, Dockerfile, docker-compose.yml, gunicorn.conf.py, requirements.txt
+├── db_clean.sqlite3                   # Чистая эталонная БД SQLite (автокопируется в db.sqlite3 / /app/db_data)
+├── docker/entrypoint.sh               # Entrypoint контейнера: проверка GPU/шардов, collectstatic, миграции
+├── run_dev.ps1, run_dev.sh, Dockerfile, docker-compose.yml, .env.example, gunicorn.conf.py, requirements.txt
 └── .vscode/                           # Задачи, профили отладки F5 и скрипты эмулятора Pixel
 ```
 

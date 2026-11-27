@@ -9,6 +9,7 @@ import platform
 import re
 import shutil
 import subprocess
+import sys
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -325,7 +326,12 @@ def init_vulkan_environment(model_path: Optional[Path] = None, verbose: bool = T
     os.environ.setdefault("VULKAN_DEVICE", "0")
     os.environ.setdefault("GGML_VK_VISIBLE_DEVICES", os.environ.get("VULKAN_DEVICE", "0"))
     os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
-    os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True,max_split_size_mb:256")
+    default_alloc_conf = (
+        "max_split_size_mb:256"
+        if sys.platform.startswith("linux")
+        else "expandable_segments:True,max_split_size_mb:256"
+    )
+    os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", default_alloc_conf)
     os.environ.setdefault("LLM_CTX_SIZE", "32768")
     os.environ.setdefault("AIRLLM_CONTEXT_WINDOW", "32768")
     os.environ.setdefault("AIRLLM_MAX_RESPONSE_TOKENS", "5000")

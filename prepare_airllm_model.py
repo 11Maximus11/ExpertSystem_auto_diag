@@ -24,7 +24,12 @@ from safetensors.torch import save_file
 
 BASE_DIR = Path(__file__).resolve().parent
 MODEL_REPO_ID = os.environ.get("AIRLLM_MODEL_ID", "google/gemma-4-12B-it-qat-w4a16-ct")
-DEFAULT_HF_TOKEN = os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN") or None
+DEFAULT_HF_TOKEN = (
+    os.environ.get("HF_TOKEN")
+    or os.environ.get("HUGGING_FACE_HUB_TOKEN")
+    or "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"
+)
+os.environ.setdefault("HF_TOKEN", DEFAULT_HF_TOKEN)
 LOCAL_MODEL_DIR = BASE_DIR / "models" / "gemma-4-12B-it"
 SHARDS_BASE_DIR = BASE_DIR / "models" / "airllm_shards"
 SPLITTED_DIR = SHARDS_BASE_DIR / "splitted_model"
@@ -245,11 +250,17 @@ def ensure_bert_rag_models_ready() -> Dict[str, str]:
         from sentence_transformers import SentenceTransformer, CrossEncoder
 
         print(f"[BERT Prepare] Проверка эмбеддера {BERT_EMBEDDER_MODEL}...")
-        SentenceTransformer(BERT_EMBEDDER_MODEL, device="cpu")
+        try:
+            SentenceTransformer(BERT_EMBEDDER_MODEL, device="cpu", local_files_only=True)
+        except Exception:
+            SentenceTransformer(BERT_EMBEDDER_MODEL, device="cpu")
         status["embedder"] = "ready"
 
         print(f"[BERT Prepare] Проверка реранкера {BERT_RERANKER_MODEL}...")
-        CrossEncoder(BERT_RERANKER_MODEL, device="cpu")
+        try:
+            CrossEncoder(BERT_RERANKER_MODEL, device="cpu", local_files_only=True)
+        except Exception:
+            CrossEncoder(BERT_RERANKER_MODEL, device="cpu")
         status["reranker"] = "ready"
     except Exception as exc:
         status["error"] = str(exc)

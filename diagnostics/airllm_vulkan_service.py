@@ -419,8 +419,15 @@ def _create_adaptive_airllm_model(
 
                 # Безопасный запас VRAM под динамический KV-кэш, DMA-стриминг и WDDM (по умолчанию 1152 МБ)
                 min_safety_headroom_mb = int(os.environ.get("VRAM_HEADROOM_MB", "1152"))
-                target_gpu_layers_env = os.environ.get("VULKAN_GPU_LAYERS") or os.environ.get("AIRLLM_GPU_LAYERS")
-                max_target_layers = int(target_gpu_layers_env) if target_gpu_layers_env else 48
+                target_gpu_layers_env = (os.environ.get("VULKAN_GPU_LAYERS") or os.environ.get("AIRLLM_GPU_LAYERS") or "").strip()
+                max_target_layers = 48
+                if target_gpu_layers_env and target_gpu_layers_env.lower() != "auto":
+                    try:
+                        parsed_layers = int(target_gpu_layers_env)
+                        if parsed_layers >= 0:
+                            max_target_layers = min(48, parsed_layers)
+                    except ValueError:
+                        pass
 
                 free_init_b, total_init_b = torch.cuda.mem_get_info(0)
                 logger.info(
@@ -471,7 +478,9 @@ def _create_adaptive_airllm_model(
                 if not torch.cuda.is_available():
                     logger.error(
                         "[AirLLM Gemma 4] КРИТИЧЕСКОЕ ПРЕДУПРЕЖДЕНИЕ: torch.cuda.is_available() == False! "
-                        "PyTorch запущен в режиме CPU. Для использования видеокарты RTX 4060 установите PyTorch с поддержкой CUDA: "
+                        "PyTorch запущен в режиме CPU. При запуске в Docker обязательно передайте '--gpus all' "
+                        "(кнопка Run в Docker Desktop GUI не пробрасывает GPU автоматически). "
+                        "Для локального запуска установите PyTorch с CUDA: "
                         "pip install --force-reinstall torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu126"
                     )
                 else:
@@ -529,7 +538,11 @@ def _create_adaptive_airllm_model(
                                     wp_u8 = wp_gpu.view(torch.uint8)
                                     swapped = ((wp_u8 & 0x0F) << 4) | (wp_u8 >> 4)
                                     p4_gpu = torch._convert_weight_to_int4pack(swapped, 2)
-                                    p4_cpu = p4_gpu.to("cpu").contiguous().pin_memory()
+                                    p4_cpu = p4_gpu.to("cpu").contiguous()
+                                    try:
+                                        p4_cpu = p4_cpu.pin_memory()
+                                    except Exception:
+                                        pass
                                     del wp_gpu, wp_u8, swapped, p4_gpu
 
                                     sz_cpu = torch.zeros(
@@ -538,7 +551,11 @@ def _create_adaptive_airllm_model(
                                         device="cpu",
                                     )
                                     sz_cpu[:, :, 0] = ws_val.detach().to(dtype=torch.bfloat16, device="cpu").T
-                                    sz_cpu = sz_cpu.contiguous().pin_memory()
+                                    sz_cpu = sz_cpu.contiguous()
+                                    try:
+                                        sz_cpu = sz_cpu.pin_memory()
+                                    except Exception:
+                                        pass
 
                                 submod.weight_packed = None
                                 submod.weight_scale = None
@@ -717,8 +734,13 @@ def _create_adaptive_airllm_model(
                         and submod._int4_weight is not None
                         and submod._int4_scales_zeros is not None
                     ):
-                        p4_cpu = submod._int4_weight.detach().to("cpu").contiguous().pin_memory()
-                        sz_cpu = submod._int4_scales_zeros.detach().to("cpu").contiguous().pin_memory()
+                        p4_cpu = submod._int4_weight.detach().to("cpu").contiguous()
+                        sz_cpu = submod._int4_scales_zeros.detach().to("cpu").contiguous()
+                        try:
+                            p4_cpu = p4_cpu.pin_memory()
+                            sz_cpu = sz_cpu.pin_memory()
+                        except Exception:
+                            pass
                         submod._buffers["_int4_weight"] = None
                         submod._buffers["_int4_scales_zeros"] = None
                         buf_bindings.append((submod, "_int4_weight", p4_cpu))
@@ -726,7 +748,11 @@ def _create_adaptive_airllm_model(
                     for attr, param in list(submod._parameters.items()):
                         if param is None or param.device.type == "meta":
                             continue
-                        cpu_t = param.detach().to("cpu").contiguous().pin_memory()
+                        cpu_t = param.detach().to("cpu").contiguous()
+                        try:
+                            cpu_t = cpu_t.pin_memory()
+                        except Exception:
+                            pass
                         meta_p = torch.nn.Parameter(
                             torch.empty(cpu_t.shape, dtype=cpu_t.dtype, device="meta"),
                             requires_grad=False,

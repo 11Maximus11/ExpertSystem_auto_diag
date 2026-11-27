@@ -4,6 +4,7 @@
 Поддерживаются Windows, Linux и Docker, ускорение Vulkan и послойный инференс AirLLM Google Gemma 4 12B.
 """
 
+import importlib.util
 import os
 from pathlib import Path
 from dotenv import load_dotenv
@@ -33,6 +34,10 @@ INSTALLED_APPS = [
 MIDDLEWARE = [
     "autodiag_project.cors_middleware.CorsMiddleware",
     "django.middleware.security.SecurityMiddleware",
+]
+if importlib.util.find_spec("whitenoise") is not None:
+    MIDDLEWARE.append("whitenoise.middleware.WhiteNoiseMiddleware")
+MIDDLEWARE += [
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
@@ -66,13 +71,14 @@ TEMPLATES = [
 WSGI_APPLICATION = "autodiag_project.wsgi.application"
 ASGI_APPLICATION = "autodiag_project.asgi.application"
 
-# База данных SQLite (относительный путь)
+# База данных SQLite (относительный путь или DJANGO_DB_PATH для Docker-тома)
 # При первом развёртывании автоматически копируется эталонная чистая БД db_clean.sqlite3
-DEFAULT_DB_PATH = BASE_DIR / "db.sqlite3"
+DEFAULT_DB_PATH = Path(os.environ.get("DJANGO_DB_PATH") or str(BASE_DIR / "db.sqlite3"))
 CLEAN_DB_PATH = BASE_DIR / "db_clean.sqlite3"
 if not DEFAULT_DB_PATH.exists() and CLEAN_DB_PATH.exists():
     import shutil
     try:
+        DEFAULT_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(CLEAN_DB_PATH, DEFAULT_DB_PATH)
     except Exception:
         pass

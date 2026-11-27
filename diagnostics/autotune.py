@@ -490,7 +490,8 @@ def run_startup_calibration(
                 break
 
         # Если есть запас VRAM (>= 650 МБ) и не все 48 слоёв на GPU — пробуем поднять по +2 слоя до пика tok/s
-        explicit_env_layers = os.environ.get("VULKAN_GPU_LAYERS") or os.environ.get("AIRLLM_GPU_LAYERS")
+        explicit_env_raw = (os.environ.get("VULKAN_GPU_LAYERS") or os.environ.get("AIRLLM_GPU_LAYERS") or "").strip()
+        explicit_env_layers = bool(explicit_env_raw and explicit_env_raw.lower() != "auto" and not explicit_env_raw.startswith("-"))
         if not explicit_env_layers and best_layers < 48 and best_free_mb >= 650:
             for _step in range(6):
                 if best_layers >= 48:

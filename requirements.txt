@@ -1,8 +1,10 @@
 --index-url https://download.pytorch.org/whl/cu126
 --extra-index-url https://pypi.org/simple
 
-# Веб-фреймворк Django и асинхронный сервер
+# Веб-фреймворк Django и продакшен-сервер
 django>=5.1
+gunicorn>=23.0
+whitenoise>=6.8
 fastapi>=0.115
 uvicorn>=0.30
 pydantic>=2.9
@@ -16,7 +18,7 @@ python-dotenv>=1.0
 torch>=2.5.0
 torchvision>=0.20.0
 torchaudio>=2.5.0
-transformers>=4.50.0
+transformers>=5.18.0
 accelerate>=1.2.0
 bitsandbytes>=0.45.0
 airllm>=4.0.0

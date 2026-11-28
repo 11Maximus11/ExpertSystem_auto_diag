@@ -1,0 +1,17 @@
+# Файлы, исключённые из отправки на платформу le.codes
+.git
+.git/
+.gitignore
+.claude/
+.vscode/
+logs/
+dist/
+screenshot.png
+shots/
+tests/.artifacts/
+design/comments/
+package-lock.json
+android/
+ios/
+desktop/
+*.log

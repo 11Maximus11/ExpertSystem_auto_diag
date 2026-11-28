@@ -1,0 +1,26 @@
+{
+  "name": "aideal-auto",
+  "version": "1.0.0",
+  "description": "Автономное мобильное приложение интеллектуальной автодиагностики ИИдеал Авто на платформе le.codes",
+  "type": "module",
+  "scripts": {
+    "dev": "lecodes dev",
+    "web": "lecodes dev --web",
+    "desktop": "lecodes dev --desktop",
+    "test": "lecodes test",
+    "compile": "lecodes compile -o dist/app.js",
+    "build:web": "lecodes web build -o dist/web",
+    "push": "lecodes push",
+    "publish": "lecodes publish"
+  },
+  "keywords": [
+    "lecodes",
+    "automotive",
+    "diagnostics",
+    "obd2",
+    "rag",
+    "ar-hud",
+    "3d"
+  ],
+  "license": "GPL-3.0"
+}

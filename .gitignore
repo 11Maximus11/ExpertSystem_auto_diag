@@ -1,38 +1,15 @@
-# Логи и временные файлы
-/diagnostics_history.log
-*.log
-
-# Локальные бинарники и модели
-/llama/bin/
-/llama/*.exe
-/llama/*.dll
-/llama/*.so
-models/
-!models/.gitkeep
-
-# Профиль автоматической калибровки GPU/AirLLM (генерируется индивидуально на каждом устройстве)
-autotune_profile.json
-**/autotune_profile.json
-
-# Виртуальные окружения Python
-.venv/
-venv/
-ENV/
-env/
-__pycache__/
-*.py[cod]
-*$py.class
-
-# Django и база данных (рабочая БД db.sqlite3 исключена, чистая эталонная копия db_clean.sqlite3 включена)
-db.sqlite3
-db.sqlite3-journal
-*.sqlite3
-!db_clean.sqlite3
-/media/
-/staticfiles/
+# LeCodes & Node.js
+.lecodes/
+node_modules/
+dist/
+tests/.artifacts/
+screenshot.png
+shots/
 .env
 
-# IDE и системные файлы
+# Логи и временные файлы
+logs/
+*.log
 .DS_Store
 Thumbs.db
 *.swp

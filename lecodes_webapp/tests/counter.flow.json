@@ -1,8 +1,0 @@
-{
-  "name": "counter",
-  "steps": [
-    { "expect": { "screen": "home", "text": "Taps: 0" } },
-    { "tap": "tap", "expect": { "text": "Taps: 1" } },
-    { "tap": "tap", "expect": { "text": "Taps: 2" } }
-  ]
-}

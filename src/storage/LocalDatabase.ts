@@ -22,20 +22,19 @@ const KEY_SESSIONS = "aideal_db_sessions_v2";
 const KEY_SETTINGS = "aideal_db_settings_v2";
 const KEY_ACTIVE_SESSION = "aideal_db_active_session_v2";
 const KEY_MSG_PREFIX = "aideal_db_msgs_v2_";
-const SECURE_BYOK_KEY = "aideal_byok_api_key";
 
 export function createWelcomeMessage(): ChatMessageItem {
   return {
     id: "msg-welcome",
     role: "assistant",
     content:
-      "Здравствуйте! Я автономная экспертная система автодиагностики «ИИдеал Авто».\n\n" +
-      "Вся база из 12 141 кода OBD-II, гибридный RAG-поиск и история ваших ремонтов хранятся прямо на устройстве. " +
-      "Опишите симптом, сделайте фото узла, запишите звук двигателя или прикрепите данные сканера OBD-II.",
+      "Здравствуйте! Я интеллектуальная система автодиагностики «ИИдеал Авто».\n\n" +
+      "Локальный Hybrid RAG-индекс по 12 141 коду OBD-II и история ремонтов хранятся прямо на устройстве, а глубокий синтез, распознавание фото (Чат / AR / VR) и голосовых сообщений (ГС) выполняет встроенный ИИ платформы le.codes.\n" +
+      "Опишите симптом, запишите ГС, сделайте фото узла или подключите сканер OBD-II.",
     timestamp: formatTimeRu(),
     diagnosticType: "diagnosis",
     summaryTitle: "Интеллектуальный стенд автодиагностики",
-    engineSource: "local_rag",
+    engineSource: "lecodes_ai",
     followupSuggestions: [
       "Двигатель троит на холостых, мигает Check Engine, ошибка P0300",
       "Жёсткие пинки АКПП при переключении с 1 на 2 передачу, код P0796",
@@ -80,9 +79,6 @@ const DEFAULT_SETTINGS: LocalSettingsInfo = {
   theme_mode: "dark",
   cross_dialog_memory_enabled: true,
   global_memory_summary: "",
-  llm_mode: "lecodes_ai",
-  byok_base_url: "https://foundation-models.api.cloud.ru/v1",
-  byok_model: "GigaChat/GigaChat-2-Max",
   local_warning_ack: false,
   last_backup_at: ""
 };
@@ -108,35 +104,25 @@ export class LocalDatabase {
 
   public getSettings(): LocalSettingsInfo {
     const stored = this.readJson<Partial<LocalSettingsInfo>>(KEY_SETTINGS, {});
-    return { ...DEFAULT_SETTINGS, ...stored };
+    return {
+      theme_mode: stored.theme_mode === "light" ? "light" : "dark",
+      cross_dialog_memory_enabled:
+        typeof stored.cross_dialog_memory_enabled === "boolean"
+          ? stored.cross_dialog_memory_enabled
+          : DEFAULT_SETTINGS.cross_dialog_memory_enabled,
+      global_memory_summary: String(stored.global_memory_summary || ""),
+      local_warning_ack: Boolean(stored.local_warning_ack),
+      last_backup_at: String(stored.last_backup_at || "")
+    };
   }
 
   public saveSettings(patch: Partial<LocalSettingsInfo>): LocalSettingsInfo {
-    const next = { ...this.getSettings(), ...patch };
+    const next: LocalSettingsInfo = {
+      ...this.getSettings(),
+      ...patch
+    };
     this.writeJson(KEY_SETTINGS, next);
     return next;
-  }
-
-  public async getByokApiKey(): Promise<string> {
-    try {
-      if (typeof secureStorage !== "undefined") {
-        return (await secureStorage.get(SECURE_BYOK_KEY)) || "";
-      }
-    } catch (_) {}
-    return localStorage.getItem(SECURE_BYOK_KEY) || "";
-  }
-
-  public async setByokApiKey(key: string): Promise<void> {
-    const clean = (key || "").trim();
-    try {
-      if (typeof secureStorage !== "undefined") {
-        if (clean) await secureStorage.set(SECURE_BYOK_KEY, clean);
-        else await secureStorage.remove(SECURE_BYOK_KEY);
-        return;
-      }
-    } catch (_) {}
-    if (clean) localStorage.setItem(SECURE_BYOK_KEY, clean);
-    else localStorage.removeItem(SECURE_BYOK_KEY);
   }
 
   public getProjects(): ProjectItem[] {

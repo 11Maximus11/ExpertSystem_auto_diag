@@ -41,12 +41,22 @@ const switchTab = (tabId: (typeof TAB_KEYS)[number]) => {
 };
 
 // 3. Глобальный двухрежимный AR / VR HUD оверлей
+let tabBeforeAr: number | null = null;
 const arHudModal = createArHudOverlay({
   getSensors: () => appState.obdStateSignal.value,
-  onClose: () => {},
+  onClose: () => {
+    if (tabBeforeAr !== null) {
+      appState.activeTabSignal.value = tabBeforeAr;
+      tabBeforeAr = null;
+    }
+  },
 });
 
 const openGlobalAr = (mode: "optical" | "vr" = "optical") => {
+  if (tabBeforeAr === null) {
+    tabBeforeAr = appState.activeTabSignal.value >= 0 ? appState.activeTabSignal.value : 0;
+  }
+  appState.activeTabSignal.value = -1;
   if (arHudModal && typeof arHudModal.openWithMode === "function") {
     arHudModal.openWithMode(mode);
   } else if (arHudModal && typeof arHudModal.show === "function") {
@@ -136,6 +146,33 @@ tabs = UITabs({
     screen: settingsScreen,
   },
 });
+
+tabs.onSelect((_id: string, index: number) => {
+  if (appState.activeTabSignal.value !== index) {
+    appState.activeTabSignal.value = index;
+  }
+});
+
+try {
+  tabs.pager?.onSelect?.((index: number) => {
+    if (tabBeforeAr === null && appState.activeTabSignal.value !== index) {
+      appState.activeTabSignal.value = index;
+    }
+  });
+} catch {}
+
+// Страховочная синхронизация активной вкладки для Web Player / кликов по системному таб-бару
+setInterval(() => {
+  if (tabBeforeAr !== null || !tabs) return;
+  const pagerIdx = typeof tabs.pager?.index === "number" ? tabs.pager.index : -1;
+  const tabIdx = TAB_KEYS.indexOf(tabs.tab as (typeof TAB_KEYS)[number]);
+  const curIdx = tabIdx >= 0 ? tabIdx : pagerIdx;
+  if (curIdx >= 0 && appState.activeTabSignal.value !== curIdx) {
+    appState.activeTabSignal.value = curIdx;
+  } else if (pagerIdx >= 0 && appState.activeTabSignal.value !== pagerIdx) {
+    appState.activeTabSignal.value = pagerIdx;
+  }
+}, 100);
 
 effect(() => {
   const idx = appState.activeTabSignal.value;

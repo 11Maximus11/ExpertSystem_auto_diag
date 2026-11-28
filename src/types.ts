@@ -141,7 +141,7 @@ export interface ChatMessageItem {
   timestamp: string;
   diagnosticType?: "diagnosis" | "followup" | "visual_inspection" | "general";
   summaryTitle?: string;
-  engineSource?: "lecodes_ai" | "byok_custom" | "local_rag";
+  engineSource?: "lecodes_ai" | "local_rag";
   faults?: ChatFaultItem[];
   dtcCodes?: string[];
   tasks?: ChatRepairTask[];
@@ -176,15 +176,10 @@ export interface DiagnosticSessionItem {
   message_count: number;
 }
 
-export type LlmProviderMode = "lecodes_ai" | "byok_openai" | "byok_gigachat" | "local_only";
-
 export interface LocalSettingsInfo {
   theme_mode: "dark" | "light";
   cross_dialog_memory_enabled: boolean;
   global_memory_summary: string;
-  llm_mode: LlmProviderMode;
-  byok_base_url: string;
-  byok_model: string;
   local_warning_ack: boolean;
   last_backup_at: string;
 }

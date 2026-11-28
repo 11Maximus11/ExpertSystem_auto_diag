@@ -144,8 +144,7 @@ export function createObdScannerScreen(callbacks?: ObdScannerCallbacks): any {
         UIRow(
           PrimaryButton(
             "Демо ЭБУ",
-            () => void connectAdapter("demo"),
-            "lucide:play"
+            () => void connectAdapter("demo")
           ).named("obd-btn-demo"),
           SecondaryButton(
             "BLE",
@@ -305,8 +304,7 @@ export function createObdScannerScreen(callbacks?: ObdScannerCallbacks): any {
             () => {
               attachObdSnapshotToStaging();
               callbacks?.onAttachToAi?.();
-            },
-            "lucide:send"
+            }
           ).named("obd-btn-send-ai"),
 
         ).style({ flexWrap: "wrap", gap: 8, width: "100%", marginTop: 4 })

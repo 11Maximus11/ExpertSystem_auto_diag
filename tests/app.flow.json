@@ -23,6 +23,17 @@
       "tap": "P0300"
     },
     {
+      "tap": "diag-btn-photo",
+      "pick": {
+        "name": "engine_check.png",
+        "width": 320,
+        "height": 240
+      },
+      "expect": {
+        "text": "engine_check.png"
+      }
+    },
+    {
       "type": "diag-query-input",
       "text": "Двигатель троит на холодную",
       "expect": {
@@ -32,7 +43,7 @@
     {
       "tap": "diag-btn-send",
       "expect": {
-        "text": "Локальный RAG"
+        "text": "Резерв RAG"
       },
       "timeout": 12000,
       "screenshot": "diag_result.png"

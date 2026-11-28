@@ -6,6 +6,8 @@ import { externalDisplayBridge } from "../ar/ExternalDisplayBridge";
 import {
   appState,
   askExpertHandler,
+  attachPhotoFileToStaging,
+  attachVoiceOutcomeToStaging,
   createNewSession,
   createWelcomeMessage,
   reloadSessionsFromDb,
@@ -16,7 +18,8 @@ import {
 } from "../state/appState";
 import { localDb } from "../storage/LocalDatabase";
 import type { ChatMessageItem, ParsedDocInfo, StagedItem, ThemeMode } from "../types";
-import { formatDateTimeRu } from "../utils/polyfills";
+import { formatDateTimeRu, formatTimeRu } from "../utils/polyfills";
+import { UnifiedVoiceSession } from "../utils/VoiceCapture";
 
 // =========================================================================
 // ТЕМА И ЦВЕТОВАЯ СИСТЕМА
@@ -391,12 +394,9 @@ export function AppHeader(options: AppHeaderOptions): any {
   const brandTitle = options.title || "ИИДЕАЛ АВТО";
 
   const statusText = () => {
-    if (appState.isGeneratingSignal.value) return "Анализ RAG + ИИ...";
-    const mode = appState.settingsSignal.value.llm_mode;
+    if (appState.isGeneratingSignal.value) return "LeCodes AI + RAG...";
     const obd = appState.obdConnectedSignal.value ? "ELM327" : "Автономно";
-    const aiLabel =
-      mode === "lecodes_ai" ? "LeCodes AI" : mode === "local_only" ? "RAG Оффлайн" : "BYOK AI";
-    return `${aiLabel} • ${obd}`;
+    return `LeCodes AI + RAG • ${obd}`;
   };
 
   const statusDotColor = () => {
@@ -1513,11 +1513,9 @@ export function MessageCard(msg: ChatMessageItem, callbacks?: MessageCardCallbac
 
   const engineBadge =
     msg.engineSource === "lecodes_ai"
-      ? "LeCodes AI"
-      : msg.engineSource === "byok_custom"
-      ? "BYOK AI"
+      ? "LeCodes AI + RAG"
       : msg.engineSource === "local_rag"
-      ? "Локальный RAG"
+      ? "Резерв RAG"
       : "";
 
   const headerControls: any[] = [
@@ -1596,6 +1594,9 @@ export function MessageCard(msg: ChatMessageItem, callbacks?: MessageCardCallbac
   }
 
   if (msg.attachments && msg.attachments.length > 0) {
+    let activeAudioPlayer: any = null;
+    const playingAudioIdSignal = signal<string>("");
+
     const attNodes = msg.attachments.map((att) => {
       if (att.type === "photo" && att.file) {
         return UIButton(
@@ -1609,10 +1610,59 @@ export function MessageCard(msg: ChatMessageItem, callbacks?: MessageCardCallbac
           .style({ borderRadius: 8, overflow: "hidden" })
           .onClick(() => openImageLightboxModal(att.file, att.label));
       }
+      if (att.type === "audio") {
+        return UIButton(
+          UIRow(
+            LucideIcon(
+              att.file ? "lucide:volume-2" : "lucide:mic",
+              12,
+              () => (playingAudioIdSignal.value === att.id ? THEME.statusOk : "#ec4899")
+            ),
+            UIText(() =>
+              playingAudioIdSignal.value === att.id
+                ? "Пауза ГС"
+                : att.transcript
+                ? `ГС: ${att.transcript.slice(0, 32)}`
+                : att.label
+            ).style({
+              color: () => THEME.textPrimary,
+              fontSize: 10,
+              fontWeight: "600",
+            })
+          ).style({ alignItems: "center", gap: 4 })
+        )
+          .style({
+            backgroundColor: () => THEME.bgElevated,
+            borderWidth: 1,
+            borderColor: "#ec4899",
+            borderRadius: 8,
+            paddingHorizontal: 8,
+            paddingVertical: 4,
+          })
+          .onClick(() => {
+            if (!att.file) {
+              if (att.transcript) toast(`ГС: ${att.transcript}`);
+              return;
+            }
+            try {
+              if (playingAudioIdSignal.value === att.id && activeAudioPlayer) {
+                activeAudioPlayer.stop();
+                playingAudioIdSignal.value = "";
+              } else {
+                activeAudioPlayer?.stop?.();
+                activeAudioPlayer = new AudioPlayer(att.file);
+                playingAudioIdSignal.value = att.id;
+                activeAudioPlayer.play();
+              }
+            } catch {
+              toast("Воспроизведение аудио недоступно на данном устройстве");
+            }
+          });
+      }
       return UIButton(
         UIRow(
           LucideIcon(
-            att.type === "audio" ? "lucide:mic" : att.type === "obd" ? "lucide:gauge" : "lucide:file-text",
+            att.type === "obd" ? "lucide:gauge" : "lucide:file-text",
             12,
             () => THEME.accentCyan
           ),
@@ -2016,11 +2066,11 @@ export function createArHudOverlay(options: {
     }));
 
   const tickSignal = signal(0);
+  const torchOnSignal = signal<boolean>(false);
   let sensorInterval: any = null;
   let motionStarted = false;
   let activeCamNode: any = null;
-  let activeSpeech: any = null;
-  let activeRecorder: any = null;
+  const arVoiceSession = new UnifiedVoiceSession();
   let modalRef: any = null;
   let camWinNode: any = null;
   let aiWinNode: any = null;
@@ -2219,17 +2269,12 @@ export function createArHudOverlay(options: {
       } catch (_) {}
       motionStarted = false;
     }
-    if (activeSpeech) {
-      try {
-        activeSpeech.abort();
-      } catch (_) {}
-      activeSpeech = null;
+    if (arVoiceSession.isActive()) {
+      arVoiceSession.abort();
     }
-    if (activeRecorder) {
-      try {
-        activeRecorder.cancel();
-      } catch (_) {}
-      activeRecorder = null;
+    if (torchOnSignal.value && typeof Torch !== "undefined" && Torch.supported) {
+      void Torch.set(false).catch(() => {});
+      torchOnSignal.value = false;
     }
     isListeningArSignal.value = false;
     externalDisplayBridge.setListening(false);
@@ -2283,17 +2328,27 @@ export function createArHudOverlay(options: {
     mountCameraForCurrentMode();
   };
 
+  const ensureVisorPhotoStagedIfNeeded = () => {
+    const visorFile = externalDisplayBridge.customPhotoFileSignal.value;
+    if (visorFile && !appState.stagedItemsSignal.value.some((it) => it.type === "photo")) {
+      attachPhotoFileToStaging(
+        visorFile,
+        externalDisplayBridge.customPhotoNameSignal.value || "AR/VR фото узла"
+      );
+    }
+  };
+
   const captureArPhotoToAi = async () => {
     try {
       let file: File | null = null;
-      let labelPrefix = "AR снимок";
+      let labelPrefix = arModeSignal.value === "vr" ? "VR снимок" : "AR снимок";
 
-      // 1. Если в визире выбрано фото узла из галереи — отправляем именно его
+      // 1. Если в визире уже выбрано фото узла из галереи — отправляем именно его
       if (externalDisplayBridge.customPhotoFileSignal.value) {
         file = externalDisplayBridge.customPhotoFileSignal.value;
-        labelPrefix = externalDisplayBridge.customPhotoNameSignal.value || "AR фото узла";
+        labelPrefix = externalDisplayBridge.customPhotoNameSignal.value || `${labelPrefix} (галерея)`;
       } else if (externalDisplayBridge.connectedSignal.value && !activeCamNode) {
-        // 2. Если активен внешний AR-дисплей (очки / 2-й экран) — захватываем кадр напрямую с его камеры
+        // 2. Внешний AR-дисплей (очки / 2-й экран)
         arStatusSignal.value = "Захват кадра с внешнего AR-дисплея...";
         externalDisplayBridge.setStatus(arStatusSignal.value);
         const cap = await externalDisplayBridge.capturePhoto();
@@ -2304,12 +2359,8 @@ export function createArHudOverlay(options: {
           return;
         }
         file = cap.file;
-      } else {
-        // 3. Локальная камера на телефоне
-        if (!UICameraNode.supported) {
-          toast("Модуль камеры не поддерживается — выберите фото из галереи");
-          return;
-        }
+      } else if (UICameraNode.supported) {
+        // 3. Локальная живая камера телефона (работает и в AR-окне, и в полноэкранном VR-режиме)
         if (!activeCamNode) {
           mountCameraForCurrentMode();
           toast("Камера инициализируется, повторите через секунду");
@@ -2317,6 +2368,19 @@ export function createArHudOverlay(options: {
         }
         arStatusSignal.value = "Захват кадра узла...";
         file = await activeCamNode.takePhoto();
+      } else {
+        // 4. Web-эмулятор / Desktop без живой камеры: сразу открываем выбор фото из галереи и отправляем в онлайн ИИ
+        const picked = await openFilePicker({ multiple: false, accept: "image/*" });
+        const pickedFile = Array.isArray(picked) ? picked[0] : picked;
+        if (!pickedFile) {
+          arStatusSignal.value = "Выбор фото отменён";
+          return;
+        }
+        file = pickedFile;
+        labelPrefix = pickedFile.name || labelPrefix;
+        externalDisplayBridge.customPhotoFileSignal.value = file;
+        externalDisplayBridge.customPhotoNameSignal.value = labelPrefix;
+        mountCameraForCurrentMode();
       }
 
       if (!file) {
@@ -2325,21 +2389,10 @@ export function createArHudOverlay(options: {
         return;
       }
 
-      const item: StagedItem = {
-        id: "ar-photo-" + Date.now(),
-        type: "photo",
-        label: `${labelPrefix} (${new Date().toLocaleTimeString("ru-RU", {
-          hour: "2-digit",
-          minute: "2-digit"
-        })})`,
-        meta: file?.size ? `${Math.max(1, Math.round(file.size / 1024))} КБ` : "JPEG AR",
-        data: file,
-        file,
-        mimeType: "image/jpeg"
-      };
-      appState.stagedItemsSignal.value = [...appState.stagedItemsSignal.value, item];
-      arStatusSignal.value = "Кадр передан нейросети...";
+      attachPhotoFileToStaging(file, `${labelPrefix} (${formatTimeRu(Date.now())})`);
+      arStatusSignal.value = "Кадр передан в онлайн LeCodes AI...";
       externalDisplayBridge.setStatus(arStatusSignal.value);
+
       const typedArQuery = (
         remoteInput?.value ||
         remoteQuerySignal?.value ||
@@ -2353,98 +2406,88 @@ export function createArHudOverlay(options: {
         if (arQuickInput) arQuickInput.value = "";
         arQuerySignal.value = "";
       }
-      if (true) {
-        await askExpertHandler(typedArQuery || "Осмотри этот узел автомобиля и подскажи возможную неисправность");
-        arStatusSignal.value = "Вердикт ИИ обновлён в AR";
-        externalDisplayBridge.setStatus(arStatusSignal.value);
-      } else {
-        toast("Кадр добавлен в чат");
-      }
+
+      await askExpertHandler(
+        typedArQuery ||
+          `Осмотри снимок из режима ${
+            arModeSignal.value === "vr" ? "VR" : "AR HUD"
+          } и назови вероятную неисправность.`
+      );
+      arStatusSignal.value = "Вердикт LeCodes AI обновлён в AR/VR";
+      externalDisplayBridge.setStatus(arStatusSignal.value);
     } catch (err: any) {
       arStatusSignal.value = `Ошибка снимка: ${err?.message || err}`;
       externalDisplayBridge.setStatus(arStatusSignal.value);
     }
   };
 
+  const submitVoiceOutcomeFromAr = async (out: any) => {
+    if (!out) return;
+    attachVoiceOutcomeToStaging(
+      out,
+      arModeSignal.value === "vr" ? "ГС VR" : "ГС AR"
+    );
+    ensureVisorPhotoStagedIfNeeded();
+    const q = (
+      out.transcript ||
+      remoteInput?.value ||
+      arQuickInput?.value ||
+      "Проанализируй голосовое сообщение (ГС) и акустику узла из AR/VR режима"
+    ).trim();
+    arStatusSignal.value = "Отправка ГС и контекста в онлайн LeCodes AI...";
+    externalDisplayBridge.setStatus(arStatusSignal.value);
+    await askExpertHandler(q);
+    arStatusSignal.value = "Ответ LeCodes AI получен";
+    externalDisplayBridge.setStatus(arStatusSignal.value);
+  };
+
   const handleArVoiceToggle = async () => {
-    if (isListeningArSignal.value) {
-      try {
-        activeSpeech?.stop();
-      } catch (_) {}
-      if (activeRecorder) {
-        try {
-          const rec = await activeRecorder.stop();
-          isListeningArSignal.value = false;
-          if (rec?.file) {
-            const sec = Math.max(1, Math.round((rec.duration || 1000) / 1000));
-            const itemId = "ar-audio-" + Date.now();
-            appState.stagedItemsSignal.value = [
-              ...appState.stagedItemsSignal.value,
-              {
-                id: itemId,
-                type: "audio",
-                label: `Голос AR (${sec}с)`,
-                file: rec.file,
-                data: rec.file,
-                mimeType: rec.mimeType || "audio/mp4",
-                duration: sec
-              }
-            ];
-            arStatusSignal.value = "Отправка голосового в ИИ...";
-            await askExpertHandler("Голосовой запрос из AR HUD");
-            arStatusSignal.value = "Ответ ИИ обновлён";
-          }
-        } catch (_) {}
-      }
+    if (isListeningArSignal.value || arVoiceSession.isActive()) {
       isListeningArSignal.value = false;
+      const outcome = await arVoiceSession.stop();
+      if (outcome && (outcome.transcript || outcome.file || outcome.acoustic)) {
+        await submitVoiceOutcomeFromAr(outcome);
+      } else {
+        arStatusSignal.value = "Речь не распознана";
+        externalDisplayBridge.setStatus(arStatusSignal.value);
+      }
       return;
     }
 
-    if (AudioRecorder.supported) {
-      try {
-        const rec = new AudioRecorder();
-        activeRecorder = rec;
-        isListeningArSignal.value = true;
-        arStatusSignal.value = "Запись речи (нажмите ещё раз чтобы отправить)...";
-        await rec.start({ maxDuration: 30000 });
-        return;
-      } catch (err: any) {
-        isListeningArSignal.value = false;
-        arStatusSignal.value = `Микрофон: ${err?.message || err}`;
-      }
-    }
+    isListeningArSignal.value = true;
+    arStatusSignal.value = "Слушаю ГС для онлайн ИИ...";
+    externalDisplayBridge.setStatus(arStatusSignal.value);
 
-    if (SpeechRecognizer.supported) {
-      try {
-        const sp = new SpeechRecognizer();
-        activeSpeech = sp;
-        let finalText = "";
-        isListeningArSignal.value = true;
-        arStatusSignal.value = "Говорите запрос для ИИ...";
-        sp.addEventListener("result", (r: any) => {
-          finalText = r.transcript || finalText;
-          arStatusSignal.value = `Распознано: ${finalText}`;
-        });
-        sp.addEventListener("end", async () => {
-          isListeningArSignal.value = false;
-          if (finalText.trim()) {
-            await askExpertHandler(finalText.trim());
-            arStatusSignal.value = "Ответ ИИ получен в AR";
-          } else {
-            arStatusSignal.value = "Речь не распознана";
-          }
-        });
-        sp.addEventListener("error", (_code: any, msg: string) => {
-          isListeningArSignal.value = false;
-          arStatusSignal.value = `Голос: ${msg}`;
-        });
-        await sp.start({ language: "ru-RU", continuous: false, interimResults: true });
-        return;
-      } catch (_) {
+    const started = await arVoiceSession.startSpeechFirst({
+      onInterimText: (txt) => {
+        arStatusSignal.value = `ГС: ${txt}`;
+        externalDisplayBridge.setStatus(arStatusSignal.value);
+        if (arQuickInput) arQuickInput.value = txt;
+        arQuerySignal.value = txt;
+      },
+      onStatus: (st) => {
+        arStatusSignal.value = st;
+        externalDisplayBridge.setStatus(st);
+      },
+      onAutoCompleted: async (outcome) => {
         isListeningArSignal.value = false;
-      }
+        if (outcome.transcript || outcome.file || outcome.acoustic) {
+          await submitVoiceOutcomeFromAr(outcome);
+        } else {
+          arStatusSignal.value = "Речь не распознана";
+        }
+      },
+      onError: (msg) => {
+        isListeningArSignal.value = false;
+        arStatusSignal.value = `Голос: ${msg}`;
+        externalDisplayBridge.setStatus(arStatusSignal.value);
+      },
+    });
+
+    if (!started) {
+      isListeningArSignal.value = false;
+      toast("Микрофон / распознавание речи недоступно");
     }
-    toast("Микрофон / распознавание речи недоступно");
   };
 
   // Быстрый выбор или создание диалога прямо из верхней AR-панели (как на сайте)
@@ -2747,6 +2790,56 @@ export function createArHudOverlay(options: {
               await activeCamNode.setFacingMode(cameraFacingSignal.value).catch(() => {});
             } else {
               mountCameraForCurrentMode();
+            }
+          }),
+
+        UIButton(
+          UIRow(
+            LucideIcon("lucide:image", 13, "#38bdf8"),
+            UIText("Фото").style({ color: "#38bdf8", fontSize: 11, fontWeight: "600" })
+          ).style({ alignItems: "center", gap: 4 })
+        )
+          .style({
+            backgroundColor: "rgba(56, 189, 248, 0.14)",
+            borderWidth: 1,
+            borderColor: "rgba(56, 189, 248, 0.42)",
+            paddingHorizontal: 9,
+            paddingVertical: 5,
+            borderRadius: 8,
+            display: () => (arModeSignal.value === "vr" ? "flex" : "none")
+          })
+          .onClick(() => {
+            void pickVisorPhotoFromGallery();
+          }),
+
+        UIButton(
+          UIRow(
+            LucideIcon("lucide:flashlight", 13, () => (torchOnSignal.value ? "#facc15" : "#cbd5e1")),
+            UIText(() => (torchOnSignal.value ? "Свет ВКЛ" : "Фонарь")).style({
+              color: () => (torchOnSignal.value ? "#fde047" : "#cbd5e1"),
+              fontSize: 11,
+              fontWeight: "600"
+            })
+          ).style({ alignItems: "center", gap: 4 })
+        )
+          .style({
+            backgroundColor: () =>
+              torchOnSignal.value ? "rgba(250, 204, 21, 0.2)" : "rgba(255, 255, 255, 0.08)",
+            borderWidth: 1,
+            borderColor: () =>
+              torchOnSignal.value ? "#facc15" : "rgba(148, 163, 184, 0.28)",
+            paddingHorizontal: 9,
+            paddingVertical: 5,
+            borderRadius: 8,
+            display: () => (typeof Torch !== "undefined" && Torch.supported ? "flex" : "none")
+          })
+          .onClick(async () => {
+            try {
+              const st = await Torch.toggle();
+              torchOnSignal.value = st.on;
+              arStatusSignal.value = st.on ? "Подсветка моторного отсека ВКЛ" : "Подсветка ВЫКЛ";
+            } catch {
+              toast("Вспышка недоступна пока активна камера");
             }
           }),
 
@@ -3084,17 +3177,18 @@ export function createArHudOverlay(options: {
     });
 
   const handleArQuickSend = async () => {
+    ensureVisorPhotoStagedIfNeeded();
     const q = (arQuickInput.value || arQuerySignal.value || "").trim();
     const hasStaged = (appState.stagedItemsSignal.value || []).length > 0;
     if (!q && !hasStaged) {
-      toast("Введите вопрос в AR или сфотографируйте узел");
+      toast("Введите вопрос в AR/VR или сфотографируйте / надиктуйте ГС");
       return;
     }
     arQuickInput.value = "";
     arQuerySignal.value = "";
-    arStatusSignal.value = "ИИ формирует диагностику...";
-    await askExpertHandler(q || undefined);
-    arStatusSignal.value = "Ответ ИИ готов в AR";
+    arStatusSignal.value = "Отправка в онлайн LeCodes AI...";
+    await askExpertHandler(q || "");
+    arStatusSignal.value = "Ответ LeCodes AI готов в AR/VR";
   };
 
   aiWinNode = UIColumn(
@@ -3445,17 +3539,18 @@ export function createArHudOverlay(options: {
     });
 
   const handleRemoteSend = async () => {
+    ensureVisorPhotoStagedIfNeeded();
     const q = (remoteInput.value || remoteQuerySignal.value || "").trim();
     if (!q && (appState.stagedItemsSignal.value || []).length === 0) {
-      toast("Введите вопрос или нажмите «Сфоткать в ИИ»");
+      toast("Введите вопрос, запишите ГС или нажмите «Сфоткать в ИИ»");
       return;
     }
     remoteInput.value = "";
     remoteQuerySignal.value = "";
-    arStatusSignal.value = "ИИ формирует диагностику...";
+    arStatusSignal.value = "Отправка в онлайн LeCodes AI...";
     externalDisplayBridge.setStatus(arStatusSignal.value);
-    await askExpertHandler(q || undefined);
-    arStatusSignal.value = "Ответ ИИ обновлён на AR-дисплее";
+    await askExpertHandler(q || "");
+    arStatusSignal.value = "Ответ LeCodes AI обновлён на AR-дисплее";
     externalDisplayBridge.setStatus(arStatusSignal.value);
   };
 

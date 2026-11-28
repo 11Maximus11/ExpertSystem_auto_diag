@@ -33,6 +33,8 @@ export interface ServerDiagnoseTextInput {
   crossMemoryText: string;
   recentTurnsText: string;
   documentExcerpt: string;
+  voiceTranscript: string;
+  voiceFileMeta: string;
   acousticSummary: string;
 }
 
@@ -66,50 +68,59 @@ export interface ServerParsedDocumentResult {
 }
 
 const SYSTEM_PROMPT_DIAGNOSTICS = [
-  "Ты — «ИИдеал Авто», профессиональный российский автодиагност-эксперт и инженер OBD-2 (стандарт SAE J2012 / ISO 15031, отечественные и зарубежные ЭБУ).",
+  "Ты — «ИИдеал Авто», профессиональный российский автодиагност-эксперт и инженер OBD-II (стандарт SAE J2012 / ISO 15031).",
+  "Архитектура: локальный Hybrid RAG на устройстве (12 141 код DTC) подает тебе точный технический контекст, а ты как главная онлайн-LLM платформы le.codes синтезируешь экспертный ответ.",
   "Отвечай строго на русском языке, кратко, технически точно, без выдуманных фактов и без воды.",
-  "Всегда опирайся на переданный контекст локальной базы знаний (Hybrid RAG по 12 141 коду DTC), живую телеметрию OBD-2 и приложенные документы/фото/акустику.",
-  "Если уверенность в причине невысока или недостаточно замеров, прямо укажи это и предложи конкретные шаги проверки (мультиметр, дымогенератор, давление топлива, осциллограмма, манометр).",
-  "При обнаружении критических неисправностей (перегрев > 108 °C, давление масла, тормоза, ABS, подушки безопасности, просадка АКБ < 11.4 В, высокий HV-разряд гибрида) ставь severity = 'critical' и четкое предупреждение в safetyWarning.",
-  "Заполни все поля JSON-схемы строго по сути: summary (структурированный вердикт с разделителями абзацев), causes (3–5 вероятных причин от самой частой к редкой), checklistSteps (4–6 проверяемых шагов ремонта/диагностики), dtcCodesMentioned (упомянутые коды формата P0300 и т.п.), affectedSystem (одна главная подсистема).",
+  "Учитывай ВСЕ источники: текст запроса, расшифровку голосового сообщения (ГС), параметры акустики двигателя, живую телеметрию OBD-II, приложенные документы/логи и память прошлых диалогов.",
+  "Если уверенность в причине невысока или недостаточно замеров, прямо укажи это и предложи конкретные шаги проверки (мультиметр, дымогенератор, давление топлива, манометр, проверка масс).",
+  "При критических неисправностях (перегрев > 103 °C, давление масла, тормоза/ABS, просадка АКБ < 11.4 В, высокий HV-разряд гибрида) ставь severity = 'critical' и четкое предупреждение в safetyWarning.",
+  "Заполни все поля JSON-схемы: summary, causes (3–5 причин), checklistSteps (4–6 проверяемых шагов ремонта), dtcCodesMentioned, affectedSystem.",
 ].join("\n");
 
 const SYSTEM_PROMPT_VISION = [
   SYSTEM_PROMPT_DIAGNOSTICS,
-  "Дополнительно ты анализируешь приложенное фото от автовладельца или диагноста.",
-  "Внимательно рассмотри индикаторы приборной панели (Check Engine, ABS, ESP, АКБ, масло, температура), потеки антифриза/масла/тормозной жидкости, состояние ремней, шлангов, клемм АКБ, свечей зажигания, тормозных дисков, разъемов проводки или экран стороннего сканера.",
-  "Сопоставь визуальные признаки на фото с кодами DTC и телеметрией автомобиля.",
+  "ДОПОЛНИТЕЛЬНАЯ ЗАДАЧА (МУЛЬТИМОДАЛЬНЫЙ VISION АНАЛИЗ ИЗ ЧАТА / AR / VR КАМЕРЫ):",
+  "К запросу приложено от 1 до 5 фотографий от автовладельца (или снимки с визира AR-очков / VR-режима / галереи).",
+  "Внимательно рассмотри индикаторы приборной панели (Check Engine, ABS, ESP, АКБ, давление масла, температура ОЖ), подтеки антифриза/масла, трещины ремней и патрубков, окисление клемм и разъемов, нагар на свечах, износ колодок/дисков или экран сканера.",
+  "Сопоставь визуальные признаки с голосовым сообщением (ГС), кодами DTC из локального RAG и телеметрией OBD-II.",
 ].join("\n");
 
 const SYSTEM_PROMPT_MEMORY = [
   "Сожми историю автодиагностической сессии в емкую техническую сводку (до 700 символов) на русском языке.",
-  "Сохрани только факты: автомобиль, подтвержденные коды DTC, ключевые отклонения телеметрии, уже выполненные проверки, исключенные гипотезы и актуальный статус проблемы.",
-  "Не придумывай новые данные.",
+  "Сохрани только факты: автомобиль, подтвержденные коды DTC, отклонения телеметрии, выполненные проверки, результаты осмотра фото/ГС и текущий статус.",
 ].join("\n");
 
 function buildDiagnosticUserPrompt(req: ServerDiagnoseTextInput): string {
   const parts: string[] = [];
   parts.push("=== ЗАПРОС ВОДИТЕЛЯ / ДИАГНОСТА ===");
-  parts.push(req.query.trim() || "Проведи комплексную диагностику по текущим данным.");
+  parts.push(req.query.trim() || "Проведи комплексную диагностику по приложенным данным.");
 
   if (req.vehicleSummary.trim()) {
     parts.push("\n=== ПАРАМЕТРЫ АВТОМОБИЛЯ ===");
     parts.push(req.vehicleSummary.trim());
   }
+  if (req.voiceTranscript.trim() || req.voiceFileMeta.trim() || req.acousticSummary.trim()) {
+    parts.push("\n=== ГОЛОСОВОЕ СООБЩЕНИЕ (ГС) И АКУСТИКА ===");
+    if (req.voiceTranscript.trim()) {
+      parts.push(`Расшифровка речи (ГС): «${req.voiceTranscript.trim()}»`);
+    }
+    if (req.voiceFileMeta.trim()) {
+      parts.push(`Аудиозапись ГС: ${req.voiceFileMeta.trim()}`);
+    }
+    if (req.acousticSummary.trim()) {
+      parts.push(req.acousticSummary.trim());
+    }
+  }
   if (req.obdSnapshotText.trim()) {
-    parts.push("\n=== ЖИВЫЕ ДАННЫЕ OBD-2 / ЭБУ ===");
+    parts.push("\n=== ЖИВЫЕ ДАННЫЕ OBD-II / ЭБУ ===");
     parts.push(req.obdSnapshotText.trim());
   }
-  if (req.acousticSummary.trim()) {
-    parts.push("\n=== АКУСТИЧЕСКИЙ АНАЛИЗ ДВИГАТЕЛЯ И РЕЧЬ ===");
-    parts.push(req.acousticSummary.trim());
-  }
   if (req.documentExcerpt.trim()) {
-    parts.push("\n=== ВЫДЕРЖКА ИЗ ЗАГРУЖЕННОГО ДОКУМЕНТА / ЛОГА ===");
+    parts.push("\n=== ВЫДЕРЖКА ИЗ ДОКУМЕНТА / ЛОГА ===");
     parts.push(req.documentExcerpt.trim().slice(0, 6000));
   }
   if (req.ragContextText.trim()) {
-    parts.push("\n=== КОНТЕКСТ ИЗ БАЗЫ ЗНАНИЙ (HYBRID RAG, 12 141 КОД DTC) ===");
+    parts.push("\n=== КОНТЕКСТ ЛОКАЛЬНОГО HYBRID RAG (БАЗА 12 141 КОД DTC) ===");
     parts.push(req.ragContextText.trim().slice(0, 7000));
   }
   if (req.sessionMemorySummary.trim()) {
@@ -117,7 +128,7 @@ function buildDiagnosticUserPrompt(req: ServerDiagnoseTextInput): string {
     parts.push(req.sessionMemorySummary.trim().slice(0, 1200));
   }
   if (req.crossMemoryText.trim()) {
-    parts.push("\n=== ИСТОРИЯ ПРЕДЫДУЩИХ СЕССИЙ ПО ЭТОМУ АВТО ===");
+    parts.push("\n=== ИСТОРИЯ ПРЕДЫДУЩИХ СЕССИЙ ПО АВТО ===");
     parts.push(req.crossMemoryText.trim().slice(0, 1500));
   }
   if (req.recentTurnsText.trim()) {
@@ -129,7 +140,7 @@ function buildDiagnosticUserPrompt(req: ServerDiagnoseTextInput): string {
 }
 
 function clampConfidence(val: number): number {
-  if (!Number.isFinite(val)) return 70;
+  if (!Number.isFinite(val)) return 72;
   return Math.max(5, Math.min(99, Math.round(val)));
 }
 
@@ -147,8 +158,13 @@ function sanitizePayload(raw: LlmDiagnosticPayload): LlmDiagnosticPayload {
   return {
     summary: String(raw.summary || "").trim() || "Анализ выполнен на основе доступных параметров.",
     confidencePercent: clampConfidence(raw.confidencePercent),
-    severity: raw.severity === "critical" || raw.severity === "warning" || raw.severity === "info" ? raw.severity : "warning",
-    causes: Array.isArray(raw.causes) ? raw.causes.map((s) => String(s || "").trim()).filter(Boolean).slice(0, 6) : [],
+    severity:
+      raw.severity === "critical" || raw.severity === "warning" || raw.severity === "info"
+        ? raw.severity
+        : "warning",
+    causes: Array.isArray(raw.causes)
+      ? raw.causes.map((s) => String(s || "").trim()).filter(Boolean).slice(0, 6)
+      : [],
     checklistSteps: Array.isArray(raw.checklistSteps)
       ? raw.checklistSteps.map((s) => String(s || "").trim()).filter(Boolean).slice(0, 8)
       : [],
@@ -184,7 +200,14 @@ function mapAiErrorResult(err: unknown): ServerDiagnoseResult {
 }
 
 export async function diagnoseText(req: ServerDiagnoseTextInput): Promise<ServerDiagnoseResult> {
-  if (!req || (!req.query.trim() && !req.obdSnapshotText.trim() && !req.documentExcerpt.trim())) {
+  if (
+    !req ||
+    (!req.query.trim() &&
+      !req.obdSnapshotText.trim() &&
+      !req.documentExcerpt.trim() &&
+      !req.voiceTranscript.trim() &&
+      !req.acousticSummary.trim())
+  ) {
     return {
       ok: false,
       errorCode: "invalid",
@@ -214,34 +237,49 @@ export async function diagnoseText(req: ServerDiagnoseTextInput): Promise<Server
   }
 }
 
-export async function diagnoseWithPhoto(
+export async function diagnoseWithPhotos(
   req: ServerDiagnoseTextInput,
-  photo: File
+  photos: File[]
 ): Promise<ServerDiagnoseResult> {
-  if (!photo || photo.size <= 0) {
+  const candidateFiles = Array.isArray(photos) ? photos.filter((f) => f && f.size > 0) : [];
+  if (candidateFiles.length === 0) {
     return diagnoseText(req);
   }
+
+  // Respect platform AI limits: up to 5 images and <= 6 MB combined
+  const accepted: File[] = [];
+  let totalBytes = 0;
   const maxBytes = 6 * 1024 * 1024;
-  if (photo.size > maxBytes) {
+  for (const f of candidateFiles.slice(0, 5)) {
+    if (totalBytes + f.size <= maxBytes) {
+      accepted.push(f);
+      totalBytes += f.size;
+    }
+  }
+
+  if (accepted.length === 0) {
     return {
       ok: false,
       errorCode: "invalid",
-      errorMessage: "Изображение превышает лимит 6 МБ. Уменьшите разрешение или обрежьте фото.",
+      errorMessage: "Изображения превышают суммарный лимит 6 МБ для онлайн ИИ.",
       data: null,
       usageInput: 0,
       usageOutput: 0,
     };
   }
 
+  const basePrompt = buildDiagnosticUserPrompt({
+    ...req,
+    query:
+      req.query.trim() ||
+      "Проанализируй приложенные фотографии узлов / приборной панели автомобиля.",
+  });
+
   try {
-    const basePrompt = buildDiagnosticUserPrompt({
-      ...req,
-      query: req.query.trim() || "Проанализируй это фото приборной панели / подкапотного пространства / узла автомобиля.",
-    });
     const reply = await ai.send<LlmDiagnosticPayload>({
       system: SYSTEM_PROMPT_VISION,
       text: basePrompt,
-      images: [photo],
+      images: accepted,
       maxTokens: 1800,
     });
     return {
@@ -253,8 +291,46 @@ export async function diagnoseWithPhoto(
       usageOutput: reply.usage.output,
     };
   } catch (err) {
+    // На локальном Windows/CLI стенде `lecodes dev` может отсутствовать нативный sharp-декодер,
+    // из-за чего мультимодальный вызов с `images` возвращает AiError("unavailable").
+    // В облаке le.codes и релизной сборке выполняется Vision выше; здесь честно переключаемся
+    // на текстовую онлайн-LLM le.codes с описанием вложенных файлов, чтобы онлайн ИИ не отключался.
+    if (err instanceof AiError && (err.code === "unavailable" || err.code === "invalid")) {
+      try {
+        const photoListDesc = accepted
+          .map(
+            (f, idx) =>
+              `#${idx + 1}: ${f.name || "photo.jpg"} (${Math.max(1, Math.round(f.size / 1024))} КБ)`
+          )
+          .join(", ");
+        const textReply = await ai.send<LlmDiagnosticPayload>({
+          system: SYSTEM_PROMPT_DIAGNOSTICS,
+          text:
+            basePrompt +
+            `\n\n[Прикрепленные фото: ${photoListDesc}. Текущий локальный узел обработки не смог декодировать кадры для Vision-канала; честно предупреди об этом в ответе и выполни онлайн-анализ по симптомам, ГС, OBD-2 и локальному RAG.]`,
+          maxTokens: 1800,
+        });
+        return {
+          ok: true,
+          errorCode: "",
+          errorMessage: "",
+          data: sanitizePayload(textReply.data),
+          usageInput: textReply.usage.input,
+          usageOutput: textReply.usage.output,
+        };
+      } catch (innerErr) {
+        return mapAiErrorResult(innerErr);
+      }
+    }
     return mapAiErrorResult(err);
   }
+}
+
+export async function diagnoseWithPhoto(
+  req: ServerDiagnoseTextInput,
+  photo: File
+): Promise<ServerDiagnoseResult> {
+  return diagnoseWithPhotos(req, photo ? [photo] : []);
 }
 
 export async function summarizeContext(req: {
@@ -356,7 +432,6 @@ function extractPdfStringsFromBytes(bytes: Uint8Array): string {
   const raw = decodeBytesLatin1(bytes);
   const chunks: string[] = [];
 
-  // Extract parenthesized literal PDF text strings in content streams
   const literalRegex = /\(([^()\\]{2,320}(?:\\.[^()\\]*)*)\)\s*(?:Tj|'|")/g;
   let match: RegExpExecArray | null;
   while ((match = literalRegex.exec(raw)) !== null) {
@@ -374,7 +449,6 @@ function extractPdfStringsFromBytes(bytes: Uint8Array): string {
     if (chunks.length > 2500) break;
   }
 
-  // Fallback: collect readable lines (e.g. uncompressed PDF metadata/DTC tables)
   if (chunks.length < 15) {
     const textLines = raw
       .split(/[\r\n]+/)
@@ -471,7 +545,9 @@ export async function parseUploadedDocument(doc: File): Promise<ServerParsedDocu
   }
 
   const lowerName = fileName.toLowerCase();
-  const isPdf = lowerName.endsWith(".pdf") || (buf.length >= 4 && buf[0] === 0x25 && buf[1] === 0x50 && buf[2] === 0x44 && buf[3] === 0x46);
+  const isPdf =
+    lowerName.endsWith(".pdf") ||
+    (buf.length >= 4 && buf[0] === 0x25 && buf[1] === 0x50 && buf[2] === 0x44 && buf[3] === 0x46);
 
   let rawText = "";
   let isBinaryFallback = false;
@@ -482,11 +558,10 @@ export async function parseUploadedDocument(doc: File): Promise<ServerParsedDocu
       isBinaryFallback = true;
       rawText =
         `[PDF-файл «${fileName}» (${Math.round(sizeBytes / 1024)} КБ) содержит сжатый поток или сканированное изображение. ` +
-        "Для анализа скана/фото отчета прикрепите снимок экрана через кнопку Фото/Камера.]";
+        "Для анализа скана/фото отчета прикрепите снимок через кнопку Фото/Камера.]";
     }
   } else {
     const decoded = decodeBytesUtf8(buf);
-    // Count replacement/control characters to detect unsupported binary files (e.g. compressed ZIP/DOCX/XLSX without unzip)
     let suspicious = 0;
     const sampleLen = Math.min(decoded.length, 2000);
     for (let i = 0; i < sampleLen; i++) {
@@ -497,7 +572,6 @@ export async function parseUploadedDocument(doc: File): Promise<ServerParsedDocu
     }
     if (sampleLen > 40 && suspicious / sampleLen > 0.12) {
       isBinaryFallback = true;
-      // Pull readable ASCII + UTF-8 fragments so any embedded DTCs/VINs are still rescued
       rawText = decoded
         .replace(/[^\x20-\x7E\u0400-\u04FF\n]+/g, " ")
         .replace(/\s+/g, " ")

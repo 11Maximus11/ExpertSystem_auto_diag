@@ -308,6 +308,7 @@ export function createDtcDictionaryScreen(callbacks?: DtcDictionaryCallbacks): a
       fontSize: 13,
       placeholder: "Поиск кода (P0300) или симптома (троит, перегрев)...",
       placeholderColor: () => THEME.inputPlaceholder,
+      display: () => (appState.activeTabSignal.value === 1 ? "flex" : "none"),
     })
     .onChange((val: string) => {
       searchQuerySignal.value = val;
@@ -370,14 +371,10 @@ export function createDtcDictionaryScreen(callbacks?: DtcDictionaryCallbacks): a
             ]
           : []),
         UIRow(
-          PrimaryButton(
-            "В ИИ-диагност",
-            () => {
-              stageDtcCodes([item.code]);
-              callbacks?.onSelectCode?.(item.code);
-            },
-            "lucide:send"
-          )
+          PrimaryButton("В ИИ-диагност", () => {
+            stageDtcCodes([item.code]);
+            callbacks?.onSelectCode?.(item.code);
+          })
         ).style({ justifyContent: "flex-end", width: "100%", marginTop: 4 })
       ).style({
         backgroundColor: () => THEME.bgSurface,
@@ -399,7 +396,10 @@ export function createDtcDictionaryScreen(callbacks?: DtcDictionaryCallbacks): a
 
   const dtcSearchPane = UIColumn(
     UIRow(
-      searchInput,
+      UIRow(() => (appState.activeTabSignal.value === 1 ? [searchInput] : [])).style({
+        flex: 1,
+        height: 38,
+      }),
       UIButton(LucideIcon("lucide:x", 16, () => THEME.textMuted))
         .style({
           width: 36,

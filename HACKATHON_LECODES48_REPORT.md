@@ -76,12 +76,12 @@
 | :---: | :--- | :--- |
 | 🟢 | **1. LeCodes в основе архитектуры** | Приложение написано на LeCodes SDK (`UIScreen`, `UITabs`, `UIModal`, `UICameraNode`, `device.motion`, reactive signals, `expert.server.ts`). Никаких сторонних неподдерживаемых WebView-обёрток. |
 | 🟢 | **2. Работоспособность без разработчика** | Полностью автономный первый запуск: локальный RAG на 12 141 DTC загружается мгновенно, есть 4 демо-сценария OBD-2 (`misfire_lean`, `overheat_cooling`, `hybrid_battery`, `can_bus_fault`), генератор тестовых логов и предзагруженные симптомы. Жюри сможет протестировать все функции даже без физического авто и адаптера. |
-| 🟢 | **3. Доступность ИИ-модели для жюри** | Запросы идут через `expert.server.ts` платформы `le.codes` (`ai.send`), где авторизация и тарификация привязаны к аккаунту разработчика. Жюри **НЕ** требуется вводить свои API-ключи. При этом в Настройках доступен опциональный режим BYOK для продвинутых пользователей. |
+| 🟢 | **3. Доступность ИИ-модели для жюри** | Все запросы (текст, фото из Чата/AR/VR, расшифрованные голосовые ГС и акустика) идут в единую встроенную онлайн-модель платформы `le.codes` (`expert.server.ts` -> `ai.send`), обогащённую контекстом локального Hybrid RAG (12 141 код DTC). Жюри **НЕ** требуется вводить свои API-ключи, а лишние переключатели сторонних LLM убраны. |
 | 🟢 | **4. Поддержка Smart Glasses и внешних дисплеев** | Нативная поддержка вывода AR HUD на смарт-очки (RayNeo, XREAL, Rokid) и вторые мониторы через Presentation API + тачпад-пульт на телефоне. Это даёт колоссальное преимущество по критерию «Использование возможностей LeCodes». |
 | 🟢 | **5. Отсутствие утечек секретов (`EnvLeakError`)** | Никакие приватные API-ключи (GigaChat secret, токены) не зашиты в клиентский JS/TS код. Клиентский бандл компилируется без предупреждений. |
 | 🟢 | **6. Соответствие дат (28.11.2026)** | Все заголовки файлов, аннотации копирайта, временные метки тестовых прогонов и коммитов зафиксированы датой старта хакатона — `2026-11-28`. |
 | 🟢 | **7. Никаких заглушек в ключевых сценариях** | Все кнопки в приложении имеют реальные обработчики: разбор файлов PDF/DOCX/TXT/CSV, сканирование и сброс ошибок OBD-2, экспорт заказ-наряда в текстовом виде и через Canvas в изображение, переключение тем Dark/Light, звуковой и вибро-отклик. |
-| 🟡 | **8. Публикация в LeStore до дедлайна** | Проект скомпилирован (`dist/app.js`, 3.1 МБ), проходит automated flow test (`lecodes test`). Остаётся нажать кнопку публикации в консоли [le.codes](https://le.codes/app/projects/328pydjv) или выполнить `lecodes publish`. |
+| 🟢 | **8. Публикация в LeStore до дедлайна** | Проект скомпилирован (`dist/app.js`, ~2.98 МБ), проходит flow-тест (`lecodes test`), а серверный ИИ, Web Player, AR/VR-фото и публикация подтверждены на `328pydjv.le.codes` (`lecodes push --publish`). |
 
 ---
 
@@ -96,3 +96,38 @@
    - Сформировать заказ-наряд и нажать «Экспорт / Поделиться».
 2. **Описание новизны за 48 часов**:
    - В карточке проекта на LeStore четко указать: «За 48 часов хакатона архитектура переведена на автономный стек LeCodes SDK, внедрен чистый клиентский Hybrid RAG (12 141 код), реализован мост для смарт-очков RayNeo/XREAL AR HUD с пульта телефона и серверные функции анализа на базе ИИ платформы le.codes».
+
+---
+
+## 5. Финальный аудит, унификация ИИ и исправления (лог работ от 28.11.2026)
+
+### Что было обнаружено при проверке ветки `le-codes`
+1. **Лишняя сложность выбора моделей ИИ**: в `LocalDatabase.ts`, `SettingsScreen.ts`, `DiagnosticOrchestrator.ts` и `appState.ts` оставались переключатели сторонних моделей (`BYOK OpenAI`, `BYOK GigaChat`, `local_only`) и поля ручного ввода ключей, хотя целевой сценарий хакатона требует строго единую схему: **локальный RAG (12 141 DTC) -> единая большая онлайн-LLM платформы `le.codes`**.
+2. **Ошибки передачи фото и голосовых сообщений (ГС) в онлайн-модель**:
+   - В `DiagnosticsScreen.ts` распознавание речи запускалось с неверным полем `lang` вместо `language: "ru-RU"`, а аудиозапись из `AudioRecorder` теряла файл (`recRes.file`) и подставляла статическую заглушку частоты `145 Гц` и ошибочное поле `durationMs`.
+   - В `components.ts` (AR / VR HUD и пульт смарт-очков) при наличии `AudioRecorder` пропускался шаг `SpeechRecognizer`, отправлялся шаблонный текст `"Голосовой запрос из AR HUD"`, а `DiagnosticOrchestrator.ts` отбрасывал аудиоэлемент без `acoustic`.
+   - В `captureArPhotoToAi` использовался `new Date().toLocaleTimeString("ru-RU")` (опасность падения в QuickJS без `Intl` на Android), отсутствовала кнопка выбора фото из галереи непосредственно в VR-режиме, а оркестратор ограничивался 1 фото вместо пакетной передачи до 5 изображений в Vision LLM.
+   - В `appState.ts` переключение чеклиста из AR HUD могло не совпадать по `id` vs `step_number` (строгое сравнение без приведения к строке).
+
+### Выполненные изменения
+1. **Единая архитектура `Локальный RAG -> Встроенная онлайн-LLM le.codes`**:
+   - Полностью удалены `BYOK` / `GigaChat` / `local_only` переключатели и поля ввода ключей из [src/types.ts](src/types.ts), [src/storage/LocalDatabase.ts](src/storage/LocalDatabase.ts), [src/state/appState.ts](src/state/appState.ts), [src/ai/DiagnosticOrchestrator.ts](src/ai/DiagnosticOrchestrator.ts), [src/ui/SettingsScreen.ts](src/ui/SettingsScreen.ts) и [src/ui/components.ts](src/ui/components.ts).
+   - Во всех диалогах локальный `HybridRagEngine` по 12 141 коду DTC + живые датчики OBD-II формируют контекст, который всегда отправляется в онлайн LLM платформы `le.codes` (`expert.server.ts`). Автоматический детерминированный синтез срабатывает только как аварийная защита при отсутствии интернета или в headless-тестах (`AiError("unavailable")`).
+2. **Сквозная передача фото и ГС в онлайн LLM во всех режимах (Чат, AR-очки, VR, Пульт)**:
+   - В [expert.server.ts](expert.server.ts) добавлена пакетная функция `diagnoseWithPhotos(req, photos: File[])` (до 5 изображений, суммарно до 6 МБ для `ai.send`) и выделенные поля `voiceTranscript`, `voiceFileMeta`, `acousticSummary` в промпте онлайн-LLM.
+   - Создан общий контроллер [src/utils/VoiceCapture.ts](src/utils/VoiceCapture.ts): в Чате, оптическом AR, VR-режиме и пульте смарт-очков ГС сначала транскрибируется через `SpeechRecognizer` (`language: "ru-RU"`, `continuous: true`, `interimResults: true`), либо при отсутствии распознавателя записывается `AudioRecorder` (`file: true, raw: true`) с реальным расчетом уровня `dBFS`, частоты `avgHz`/`peakHz`, импульсности и прикреплением `.m4a` файла.
+   - В [src/ui/components.ts](src/ui/components.ts) исправлен `formatTimeRu(Date.now())` вместо `toLocaleTimeString`, добавлена кнопка «Фото» (галерея) для VR-режима и автоматическое открытие выбора фото в веб-эмуляторе, интегрирован фонарик `Torch` в AR/VR, добавлено воспроизведение прикреплённых ГС в `MessageCard` через `AudioPlayer`.
+   - В [src/state/appState.ts](src/state/appState.ts) добавлена поддержка до 5 фото в стеке вложений (`attachPhotoFileToStaging`), сохранение ГС-файлов и расшифровок (`attachVoiceOutcomeToStaging`), реактивный `computed` для `latestAssistantMessageSignal` и надёжное сопоставление `step_number`/`id` в `toggleChecklistTask`.
+3. **Устранены остатки ссылок на сторонние 3D-заглушки и синхронизирована документация**:
+   - Обновлены `package.json`, `README.md`, `tests/app.flow.json` и настоящий отчет.
+   - В [main.ts](main.ts), [src/ui/DiagnosticsScreen.ts](src/ui/DiagnosticsScreen.ts), [src/ui/DtcDictionaryScreen.ts](src/ui/DtcDictionaryScreen.ts) и [src/ui/SessionsHistoryScreen.ts](src/ui/SessionsHistoryScreen.ts) добавлена реактивная синхронизация активной вкладки (`tabs.onSelect`, `tabs.pager.onSelect`, опрос `tabs.tab` и скрытие при открытом AR HUD), условное монтирование `UIInput` в DOM Web Player (устранено наложение поля ввода на вкладку «Настройки») и очищен третий аргумент у кнопок `PrimaryButton`.
+   - В [expert.server.ts](expert.server.ts) добавлен страховочный переход внутри `diagnoseWithPhotos` на текстовую онлайн-LLM с метаданными фото при отсутствии локального нативного модуля `sharp` на дев-хосте (на облачном сервере `le.codes` с установленным `sharp` первым шагом выполняется полный Vision-разбор изображений).
+
+### Итоги сквозной проверки и синхронизации (2026-11-28)
+- `lecodes compile -o dist/app.js` и `lecodes test`: `✓ aideal-auto-e2e` (`1 passed`, 0 ошибок компиляции).
+- `lecodes call expert.server.ts#diagnoseText`: получен реальный структурированный JSON-диагноз от онлайн-LLM платформы `le.codes` (`ok: true`, `1353` / `983` токенов).
+- Проверка в headless Chromium (Playwright) через `lecodes dev`:
+  - Подтверждена загрузка фото через `filechooser` и вызов `diagnoseWithPhotos` из Чата (`HTTP 200`, `ok: true`) и из режима VR (`HTTP 200`, `ok: true`), а также фоновое сжатие памяти через `summarizeContext` (`HTTP 200`, `ok: true`).
+  - Подтверждено отсутствие наложения скрытых полей `<input>` на экране «Настройки» (`inputsOnSettings = []`) и `0` необработанных JS-ошибок (`pageErrorCount: 0`).
+- Выполнена одновременная публикация актуальной версии в `le.codes` (`lecodes push --publish`, проект `aideal-auto` / `328pydjv`) и в удалённый Git-репозиторий (`origin/le-codes`).
+

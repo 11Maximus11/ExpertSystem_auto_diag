@@ -5,11 +5,11 @@
 import {
   appState,
   askExpertHandler,
-  attachAcousticMetricsToStaging,
   attachDocumentFileToStaging,
   attachObdSnapshotToStaging,
   attachPhotoFileToStaging,
   attachTextLogToStaging,
+  attachVoiceOutcomeToStaging,
   createNewSession,
   removeStagedItem,
   stageDtcCodes,
@@ -18,7 +18,8 @@ import {
   updateVehicleInfo,
 } from "../state/appState";
 import { localDb } from "../storage/LocalDatabase";
-import type { AcousticAnalysisMetrics, ChatMessageItem } from "../types";
+import type { ChatMessageItem } from "../types";
+import { UnifiedVoiceSession } from "../utils/VoiceCapture";
 import {
   AppHeader,
   DtcChip,
@@ -49,8 +50,7 @@ export interface DiagnosticsScreenCallbacks {
 export function createDiagnosticsScreen(callbacks?: DiagnosticsScreenCallbacks): any {
   const inputSignal = signal<string>("");
   const isRecordingVoiceSignal = signal<boolean>(false);
-  let activeRecorder: any = null;
-  let activeSpeech: any = null;
+  const voiceSession = new UnifiedVoiceSession();
 
   const queryInput = UIInput()
     .named("diag-query-input")
@@ -66,17 +66,31 @@ export function createDiagnosticsScreen(callbacks?: DiagnosticsScreenCallbacks):
       paddingHorizontal: 12,
       paddingVertical: 8,
       fontSize: 13,
-      placeholder: "Опишите симптомы, код ошибки или задайте вопрос...",
+      placeholder: "Симптомы, код DTC или ГС...",
       placeholderColor: () => THEME.inputPlaceholder,
+      display: () => (appState.activeTabSignal.value === 0 ? "flex" : "none"),
     })
     .onChange((val: string) => {
       inputSignal.value = val;
     });
 
+  effect(() => {
+    const active = appState.activeTabSignal.value;
+    if (active !== 0) {
+      try {
+        queryInput.blur();
+      } catch {}
+    } else if (queryInput.value !== inputSignal.value) {
+      queryInput.value = inputSignal.value;
+    }
+  });
+
   const submitQuery = async (overrideText?: string) => {
-    const textToSend = (overrideText !== undefined ? overrideText : queryInput.value || inputSignal.value).trim();
+    const textToSend = (
+      overrideText !== undefined ? overrideText : queryInput.value || inputSignal.value
+    ).trim();
     if (!textToSend && appState.stagedItemsSignal.value.length === 0) {
-      toast("Введите симптомы или прикрепите код DTC / фото / лог");
+      toast("Введите симптомы или прикрепите код DTC / фото / ГС / лог");
       return;
     }
     if (overrideText === undefined) {
@@ -86,17 +100,23 @@ export function createDiagnosticsScreen(callbacks?: DiagnosticsScreenCallbacks):
     await askExpertHandler(textToSend);
   };
 
-  // Фото / Камера через нативный выбор файла (безопасно работает на iOS, Android, Web и Desktop)
+  // Фото / Камера — прикрепляет от 1 до 5 снимков в онлайн Vision LLM
   const handlePickPhoto = async () => {
     try {
-      const files = await openFilePicker({
+      const picked = await openFilePicker({
         accept: "image/*",
-        multiple: false,
+        multiple: true,
       });
-      const picked = Array.isArray(files) ? files[0] : files;
-      if (picked) {
-        attachPhotoFileToStaging(picked, "Фото узла");
-        toast(`Фото «${picked.name}» прикреплено`);
+      const list = Array.isArray(picked) ? picked : picked ? [picked] : [];
+      if (list.length > 0) {
+        for (const f of list.slice(0, 5)) {
+          attachPhotoFileToStaging(f, "Фото узла");
+        }
+        toast(
+          list.length === 1
+            ? `Фото «${list[0].name}» прикреплено для онлайн ИИ`
+            : `Прикреплено фото: ${Math.min(5, list.length)} шт.`
+        );
       }
     } catch {
       toast("Выбор фото отменён");
@@ -118,7 +138,8 @@ export function createDiagnosticsScreen(callbacks?: DiagnosticsScreenCallbacks):
     } catch {
       openTextPromptModal({
         title: "Вставить лог сканера / текст",
-        placeholder: "Вставьте текст отчета ELM327, коды P0300/P0171 или параметры Live Data...",
+        placeholder:
+          "Вставьте текст отчета ELM327, коды P0300/P0171 или параметры Live Data...",
         confirmLabel: "Прикрепить лог",
         multiline: true,
         onConfirm: (rawText) => {
@@ -131,77 +152,104 @@ export function createDiagnosticsScreen(callbacks?: DiagnosticsScreenCallbacks):
     }
   };
 
-  // Голосовой ввод и акустический анализ ДВС
+  // Голосовой ввод (ГС в онлайн LLM) с автоматической расшифровкой речи + реальной акустикой
+  const finalizeVoiceOutcome = (outcome: any) => {
+    if (!outcome) return;
+    if (outcome.transcript) {
+      const merged = [inputSignal.value.trim(), outcome.transcript].filter(Boolean).join(" ").trim();
+      queryInput.value = merged;
+      inputSignal.value = merged;
+    }
+    attachVoiceOutcomeToStaging(outcome, "ГС");
+    toast(
+      outcome.transcript
+        ? "ГС расшифровано и прикреплено для онлайн ИИ"
+        : "Аудиозапись ГС и акустика прикреплены для онлайн ИИ"
+    );
+  };
+
   const handleToggleVoice = async () => {
-    if (isRecordingVoiceSignal.value) {
+    if (isRecordingVoiceSignal.value || voiceSession.isActive()) {
       isRecordingVoiceSignal.value = false;
-      try {
-        if (activeSpeech && typeof activeSpeech.stop === "function") activeSpeech.stop();
-      } catch {}
-      try {
-        if (activeRecorder && typeof activeRecorder.stop === "function") {
-          const recRes = await activeRecorder.stop();
-          const metrics: AcousticAnalysisMetrics = {
-            durationSec: Math.max(1.2, (recRes?.durationMs || 2500) / 1000),
-            avgHz: 145,
-            peakHz: 420,
-            clarity: 0.78,
-            peakDb: -18,
-            noteLabel: "D3",
-            acousticHint: "Запись звука работы узла прикреплена к диагностике",
-          };
-          attachAcousticMetricsToStaging(metrics, inputSignal.value || undefined);
-        }
-      } catch {}
-      activeRecorder = null;
-      activeSpeech = null;
+      const outcome = await voiceSession.stop();
+      finalizeVoiceOutcome(outcome);
       return;
     }
 
-    let startedAny = false;
     isRecordingVoiceSignal.value = true;
-    appState.statusNoteSignal.value = "Запись речи / звука ДВС...";
+    appState.statusNoteSignal.value = "Запись ГС (речь для онлайн ИИ)...";
 
-    try {
-      if (typeof SpeechRecognizer !== "undefined" && SpeechRecognizer.supported) {
-        activeSpeech = new SpeechRecognizer();
-        activeSpeech.addEventListener("result", (res: any) => {
-          const txt = String(res?.transcript || res?.text || "").trim();
-          if (txt) {
-            queryInput.value = txt;
-            inputSignal.value = txt;
-          }
-        });
-        activeSpeech.addEventListener("end", () => {
-          isRecordingVoiceSignal.value = false;
-        });
-        await activeSpeech.start({ lang: "ru-RU" });
-        startedAny = true;
-      }
-    } catch {}
+    const started = await voiceSession.startSpeechFirst({
+      onInterimText: (txt) => {
+        queryInput.value = txt;
+        inputSignal.value = txt;
+      },
+      onStatus: (st) => {
+        appState.statusNoteSignal.value = st;
+      },
+      onAutoCompleted: (outcome) => {
+        isRecordingVoiceSignal.value = false;
+        finalizeVoiceOutcome(outcome);
+      },
+      onError: (reason) => {
+        isRecordingVoiceSignal.value = false;
+        toast(`Голос: ${reason}`);
+      },
+    });
 
-    try {
-      if (typeof AudioRecorder !== "undefined") {
-        activeRecorder = new AudioRecorder();
-        await activeRecorder.start();
-        startedAny = true;
-      }
-    } catch {}
-
-    if (!startedAny) {
+    if (!started) {
       isRecordingVoiceSignal.value = false;
       openTextPromptModal({
-        title: "Голосовая заметка / описание звука",
-        placeholder: "Например: металлический стук на холодную в районе ГБЦ, ~1200 об/мин",
-        confirmLabel: "Добавить к запросу",
+        title: "Голосовая заметка / описание звука (ГС)",
+        placeholder:
+          "Например: металлический стук на холодную в районе ГБЦ, ~1200 об/мин",
+        confirmLabel: "Добавить ГС к запросу",
         onConfirm: (txt) => {
           if (txt.trim()) {
             const nextVal = (inputSignal.value ? `${inputSignal.value} ` : "") + txt.trim();
             queryInput.value = nextVal;
             inputSignal.value = nextVal;
+            attachVoiceOutcomeToStaging(
+              {
+                transcript: txt.trim(),
+                durationSec: 2,
+                source: "speech",
+              },
+              "ГС"
+            );
           }
         },
       });
+    }
+  };
+
+  // Отдельная запись звука двигателя через AudioRecorder (.m4a + измерение Гц/дБ)
+  const handleRecordEngineAudio = async () => {
+    if (voiceSession.isActive()) {
+      isRecordingVoiceSignal.value = false;
+      const out = await voiceSession.stop();
+      finalizeVoiceOutcome(out);
+      return;
+    }
+    isRecordingVoiceSignal.value = true;
+    const ok = await voiceSession.startRecorderOnly({
+      onStatus: (st) => {
+        appState.statusNoteSignal.value = st;
+      },
+      onAutoCompleted: (out) => {
+        isRecordingVoiceSignal.value = false;
+        finalizeVoiceOutcome(out);
+      },
+      onError: (err) => {
+        isRecordingVoiceSignal.value = false;
+        toast(err);
+      },
+    });
+    if (ok) {
+      toast("Идет запись звука ДВС (нажмите микрофон или Звук ДВС для остановки)");
+    } else {
+      isRecordingVoiceSignal.value = false;
+      toast("Микрофон AudioRecorder недоступен на этом устройстве");
     }
   };
 
@@ -220,6 +268,11 @@ export function createDiagnosticsScreen(callbacks?: DiagnosticsScreenCallbacks):
           toast("Телеметрия OBD-2 прикреплена");
         },
         "lucide:gauge"
+      ),
+      SecondaryButton(
+        "Звук ДВС",
+        () => void handleRecordEngineAudio(),
+        "lucide:mic"
       )
     ).style({ gap: 6, alignItems: "center", paddingHorizontal: 12 })
   ).style({ scrollDirection: "horizontal", width: "100%", height: 36, marginBottom: 4 });
@@ -290,6 +343,17 @@ export function createDiagnosticsScreen(callbacks?: DiagnosticsScreenCallbacks):
       width: "100%",
     });
 
+  // Автоматическая прокрутка ленты к новому сообщению или ответу ИИ
+  effect(() => {
+    void appState.messagesSignal.value;
+    void appState.isGeneratingSignal.value;
+    setTimeout(() => {
+      try {
+        scrollFeed.scrollToEnd(false);
+      } catch {}
+    }, 30);
+  });
+
   // Нижняя панель ввода
   const inputComposer = UIColumn(
     StagingBar(
@@ -348,12 +412,15 @@ export function createDiagnosticsScreen(callbacks?: DiagnosticsScreenCallbacks):
         })
         .onClick(() => void handleToggleVoice()),
 
-      queryInput,
+      UIRow(() => (appState.activeTabSignal.value === 0 ? [queryInput] : [])).style({
+        flex: 1,
+        minHeight: 40,
+      }),
 
       PrimaryButton(
         () => (appState.isGeneratingSignal.value ? "..." : "Анализ"),
         () => void submitQuery(),
-        "lucide:send"
+        appState.isGeneratingSignal
       ).named("diag-btn-send")
     ).style({
       width: "100%",

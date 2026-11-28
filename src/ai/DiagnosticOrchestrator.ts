@@ -1,10 +1,10 @@
-// ИИдеал Авто — Multi-Engine Diagnostic Orchestrator (LeCodes AI + Hybrid RAG + BYOK) (2026-11-28)
+// ИИдеал Авто — Hybrid Diagnostic Orchestrator (Local RAG + Built-in LeCodes AI) (2026-11-28)
 // Copyright (C) 2026 ИИдеал Авто (LeCodes48 Edition)
 // Licensed under the GNU General Public License v3.0 (GPL-3.0).
 
 import {
   diagnoseText,
-  diagnoseWithPhoto,
+  diagnoseWithPhotos,
   summarizeContext,
   type AffectedSubsystem,
   type LlmDiagnosticPayload,
@@ -41,7 +41,7 @@ export interface DiagnosticOutcome {
   message: ChatMessageItem;
   affectedSystem: AffectedSubsystem;
   systemScores: Record<SystemKey, number>;
-  engineUsed: "lecodes_ai" | "byok_custom" | "local_rag";
+  engineUsed: "lecodes_ai" | "local_rag";
   noticeText: string;
 }
 
@@ -64,10 +64,10 @@ function formatObdSnapshot(obdConnected: boolean, s: OBDLiveSensors): string {
 function formatAcousticSummary(ac: AcousticAnalysisMetrics | undefined): string {
   if (!ac || ac.durationSec <= 0) return "";
   return [
-    `Длительность записи: ${ac.durationSec.toFixed(1)} с`,
-    `Основная частота: ${Math.round(ac.avgHz)} Гц (пик ${Math.round(ac.peakHz)} Гц), уверенность тона: ${Math.round(ac.clarity * 100)}%`,
+    `Длительность записи звука: ${ac.durationSec.toFixed(1)} с`,
+    `Основная частота: ${Math.round(ac.avgHz)} Гц (пик ${Math.round(ac.peakHz)} Гц), ясность тона: ${Math.round(ac.clarity * 100)}%`,
     `Пик громкости: ${ac.peakDb.toFixed(0)} dBFS${ac.noteLabel ? `, тон ${ac.noteLabel}` : ""}`,
-    `Первичная акустическая оценка: ${ac.acousticHint}`,
+    `Акустическая оценка: ${ac.acousticHint}`,
   ].join("\n");
 }
 
@@ -104,151 +104,6 @@ function formatPayloadAsMarkdown(payload: LlmDiagnosticPayload): string {
     parts.push(`Уточняющий вопрос: ${payload.followUpQuestion}`);
   }
   return parts.join("\n\n");
-}
-
-async function callByokOpenAiCompatible(
-  req: ServerDiagnoseTextInput
-): Promise<ServerDiagnoseResult> {
-  const settings = localDb.getSettings();
-  const apiKey = await localDb.getByokApiKey();
-  const endpoint = (settings.byok_base_url || "").trim();
-  const modelName = (settings.byok_model || "gpt-4o-mini").trim();
-
-  if (!endpoint || !apiKey) {
-    return {
-      ok: false,
-      errorCode: "invalid",
-      errorMessage: "BYOK API-ключ или Endpoint не настроен в Настройках.",
-      data: null,
-      usageInput: 0,
-      usageOutput: 0,
-    };
-  }
-
-  const systemPrompt =
-    "Ты «ИИдеал Авто» — автодиагност-эксперт. Отвечай строго в JSON с полями: " +
-    'summary (string), confidencePercent (number 10-99), severity ("critical"|"warning"|"info"), ' +
-    "causes (string[]), checklistSteps (string[]), safetyWarning (string), " +
-    'affectedSystem ("engine"|"transmission"|"brakes"|"cooling"|"electrical"|"suspension"|"battery"|"general"), ' +
-    "dtcCodesMentioned (string[]), followUpQuestion (string).";
-
-  const userPrompt = [
-    req.query,
-    req.vehicleSummary ? `Авто: ${req.vehicleSummary}` : "",
-    req.obdSnapshotText ? `OBD-2:\n${req.obdSnapshotText}` : "",
-    req.ragContextText ? `RAG:\n${req.ragContextText}` : "",
-    req.documentExcerpt ? `Документ:\n${req.documentExcerpt.slice(0, 4000)}` : "",
-  ]
-    .filter(Boolean)
-    .join("\n\n");
-
-  try {
-    const res = await fetch(endpoint, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({
-        model: modelName,
-        temperature: 0.2,
-        max_tokens: 1400,
-        messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user", content: userPrompt },
-        ],
-      }),
-      timeout: 25000,
-    });
-
-    if (res.status < 200 || res.status >= 300) {
-      return {
-        ok: false,
-        errorCode: "unavailable",
-        errorMessage: `BYOK HTTP ${res.status}`,
-        data: null,
-        usageInput: 0,
-        usageOutput: 0,
-      };
-    }
-
-    const body = res.json<{
-      choices?: { message?: { content?: string } }[];
-    }>();
-    const rawContent = String(body?.choices?.[0]?.message?.content || "").trim();
-    if (!rawContent) {
-      return {
-        ok: false,
-        errorCode: "incomplete",
-        errorMessage: "Пустой ответ от BYOK модели.",
-        data: null,
-        usageInput: 0,
-        usageOutput: 0,
-      };
-    }
-
-    const jsonMatch = rawContent.match(/\{[\s\S]*\}/);
-    if (jsonMatch) {
-      try {
-        const parsed = JSON.parse(jsonMatch[0]) as Partial<LlmDiagnosticPayload>;
-        return {
-          ok: true,
-          errorCode: "",
-          errorMessage: "",
-          data: {
-            summary: String(parsed.summary || rawContent),
-            confidencePercent: Number(parsed.confidencePercent || 78),
-            severity:
-              parsed.severity === "critical" || parsed.severity === "info"
-                ? parsed.severity
-                : "warning",
-            causes: Array.isArray(parsed.causes) ? parsed.causes.map(String) : [],
-            checklistSteps: Array.isArray(parsed.checklistSteps)
-              ? parsed.checklistSteps.map(String)
-              : [],
-            safetyWarning: String(parsed.safetyWarning || ""),
-            affectedSystem: parsed.affectedSystem || "general",
-            dtcCodesMentioned: Array.isArray(parsed.dtcCodesMentioned)
-              ? parsed.dtcCodesMentioned.map((c) => String(c).toUpperCase())
-              : [],
-            followUpQuestion: String(parsed.followUpQuestion || ""),
-          },
-          usageInput: 0,
-          usageOutput: 0,
-        };
-      } catch {
-        // Fallback below
-      }
-    }
-
-    return {
-      ok: true,
-      errorCode: "",
-      errorMessage: "",
-      data: {
-        summary: rawContent,
-        confidencePercent: 75,
-        severity: "warning",
-        causes: [],
-        checklistSteps: [],
-        safetyWarning: "",
-        affectedSystem: "general",
-        dtcCodesMentioned: [],
-        followUpQuestion: "",
-      },
-      usageInput: 0,
-      usageOutput: 0,
-    };
-  } catch (err) {
-    return {
-      ok: false,
-      errorCode: "unavailable",
-      errorMessage: err instanceof Error ? err.message : String(err),
-      data: null,
-      usageInput: 0,
-      usageOutput: 0,
-    };
-  }
 }
 
 function mapSystemKeyToSubsystem(sys?: SystemKey): AffectedSubsystem {
@@ -377,38 +232,56 @@ function buildDefaultInventory(subsystem: AffectedSubsystem): ChatInventoryItem[
 
 export class DiagnosticOrchestrator {
   async runDiagnosis(params: DiagnosticRequestParams): Promise<DiagnosticOutcome> {
-    const settings = localDb.getSettings();
-    const mode = settings.llm_mode;
-
-    const allCodes = Array.from(
-      new Set([
-        ...params.explicitCodes,
-        ...(params.obdConnected ? params.sensors.dtcList : []),
-      ])
-    );
-
-    const rag = hybridRag.retrieveForDiagnosis(
-      params.query,
-      allCodes,
-      params.obdConnected ? params.sensors : undefined,
-      6
-    );
-
     const docParts: string[] = [];
-    let photoFile: File | null = null;
+    const photoFiles: File[] = [];
+    const voiceTranscripts: string[] = [];
+    const voiceMetaParts: string[] = [];
     let acoustic: AcousticAnalysisMetrics | undefined;
 
     for (const item of params.stagedItems) {
       if (item.type === "photo" && item.file) {
-        photoFile = item.file;
+        if (photoFiles.length < 5) {
+          photoFiles.push(item.file);
+        }
       } else if (item.type === "file" && item.parsedDoc) {
         docParts.push(
           `Файл ${item.parsedDoc.filename}${item.parsedDoc.key_metrics.length ? ` [${item.parsedDoc.key_metrics.join("; ")}]` : ""}:\n${item.parsedDoc.llm_ready_text}`
         );
-      } else if (item.type === "audio" && item.acoustic) {
-        acoustic = item.acoustic;
+      } else if (item.type === "audio") {
+        if (item.transcript && item.transcript.trim()) {
+          voiceTranscripts.push(item.transcript.trim());
+        }
+        if (item.acoustic) {
+          acoustic = item.acoustic;
+        }
+        if (item.file || item.duration || item.meta) {
+          const kb = item.file?.size ? `${Math.max(1, Math.round(item.file.size / 1024))} КБ` : "";
+          const sec = item.duration ? `${item.duration} с` : acoustic ? `${acoustic.durationSec.toFixed(1)} с` : "";
+          voiceMetaParts.push(
+            [item.label, item.mimeType || "audio", sec, kb, item.meta].filter(Boolean).join(" • ")
+          );
+        }
       }
     }
+
+    const combinedVoiceTranscript = voiceTranscripts.join(" ");
+    const effectiveRagQuery = [params.query, combinedVoiceTranscript].filter(Boolean).join(" ");
+
+    const allCodes = Array.from(
+      new Set([
+        ...params.explicitCodes,
+        ...hybridRag.extractDtcCodes(effectiveRagQuery),
+        ...(params.obdConnected ? params.sensors.dtcList : []),
+      ])
+    );
+
+    // 1. Локальный Hybrid RAG всегда формирует контекст по 12 141 кодам DTC на устройстве
+    const rag = hybridRag.retrieveForDiagnosis(
+      effectiveRagQuery,
+      allCodes,
+      params.obdConnected ? params.sensors : undefined,
+      6
+    );
 
     const sessions = localDb.getSessions();
     const activeSess = sessions.find((s) => s.id === params.sessionId);
@@ -431,39 +304,33 @@ export class DiagnosticOrchestrator {
       crossMemoryText,
       recentTurnsText: recentTurns,
       documentExcerpt: docParts.join("\n\n"),
+      voiceTranscript: combinedVoiceTranscript,
+      voiceFileMeta: voiceMetaParts.join(" | "),
       acousticSummary: formatAcousticSummary(acoustic),
     };
 
+    // 2. Единая главная онлайн-LLM платформы le.codes (с Vision для фото и контекстом ГС/RAG)
     let serverRes: ServerDiagnoseResult | null = null;
-    let engineSource: "lecodes_ai" | "byok_custom" | "local_rag" = "local_rag";
+    let engineSource: "lecodes_ai" | "local_rag" = "local_rag";
     let noticeText = "";
 
-    if (mode === "lecodes_ai") {
-      try {
-        serverRes = photoFile
-          ? await diagnoseWithPhoto(reqPayload, photoFile)
+    try {
+      serverRes =
+        photoFiles.length > 0
+          ? await diagnoseWithPhotos(reqPayload, photoFiles)
           : await diagnoseText(reqPayload);
-        if (serverRes.ok && serverRes.data) {
-          engineSource = "lecodes_ai";
-        } else if (serverRes.errorCode === "credits" || serverRes.errorCode === "budget") {
-          noticeText = "Кредиты LeCodes AI исчерпаны — активирован локальный RAG-эксперт.";
-        } else if (serverRes.errorCode === "busy" || serverRes.errorCode === "limit") {
-          noticeText = "Очередь LeCodes AI занята — применен локальный RAG-эксперт.";
-        } else {
-          noticeText = "Оффлайн / без облака — применен локальный RAG по 12 141 коду DTC.";
-        }
-      } catch {
-        noticeText = "Нет связи с облаком LeCodes AI — применен локальный RAG-эксперт.";
-      }
-    } else if (mode === "byok_openai" || mode === "byok_gigachat") {
-      serverRes = await callByokOpenAiCompatible(reqPayload);
+
       if (serverRes.ok && serverRes.data) {
-        engineSource = "byok_custom";
+        engineSource = "lecodes_ai";
+      } else if (serverRes.errorCode === "credits" || serverRes.errorCode === "budget") {
+        noticeText = "Кредиты LeCodes AI исчерпаны — активирован резервный локальный RAG.";
+      } else if (serverRes.errorCode === "busy" || serverRes.errorCode === "limit") {
+        noticeText = "Очередь LeCodes AI занята — использован резервный локальный RAG.";
       } else {
-        noticeText = `BYOK (${serverRes.errorMessage || serverRes.errorCode}) — откат на локальный RAG.`;
+        noticeText = "Оффлайн / без облака — применен резервный локальный RAG по 12 141 коду.";
       }
-    } else {
-      noticeText = "Локальный оффлайн-режим (токены = 0).";
+    } catch {
+      noticeText = "Нет связи с облаком LeCodes AI — применен резервный локальный RAG.";
     }
 
     const msgId = `msg-${generateUuidV4()}`;
@@ -492,7 +359,7 @@ export class DiagnosticOrchestrator {
         role: "assistant",
         content: formatPayloadAsMarkdown(payload),
         timestamp,
-        diagnosticType: photoFile ? "visual_inspection" : "diagnosis",
+        diagnosticType: photoFiles.length > 0 ? "visual_inspection" : "diagnosis",
         summaryTitle:
           detectedCodes.length > 0
             ? `Заключение ИИ (${detectedCodes.slice(0, 3).join(", ")})`
@@ -505,7 +372,7 @@ export class DiagnosticOrchestrator {
         telemetryNotes: rag.telemetryNotes,
         recommendations: payload.causes,
         followupSuggestions: payload.followUpQuestion
-          ? [payload.followUpQuestion, "Покажи схему проверки датчика", "Пересчитай риски для 3D-модели"]
+          ? [payload.followUpQuestion, "Покажи пошаговую проверку датчика", "Оцени риск дальнейшего движения"]
           : ["Как проверить мультиметром?", "Можно ли ехать своим ходом?"],
         vehicle: params.vehicleInfo,
       };
@@ -519,9 +386,9 @@ export class DiagnosticOrchestrator {
       };
     }
 
-    // Pure offline deterministic synthesis via HybridRagEngine
+    // 3. Автоматический оффлайн-резерв (Hybrid RAG + правила телеметрии), когда облако недоступно
     const verdict = hybridRag.buildDeterministicVerdict({
-      query: params.query,
+      query: effectiveRagQuery || params.query,
       rag,
       vehicleInfo: params.vehicleInfo,
       acoustic,
@@ -536,7 +403,7 @@ export class DiagnosticOrchestrator {
       role: "assistant",
       content: verdict.answer,
       timestamp,
-      diagnosticType: photoFile ? "visual_inspection" : "diagnosis",
+      diagnosticType: photoFiles.length > 0 ? "visual_inspection" : "diagnosis",
       summaryTitle: verdict.summaryTitle,
       engineSource: "local_rag",
       faults: verdict.faults,
@@ -572,21 +439,18 @@ export class DiagnosticOrchestrator {
       .map((m) => `${m.role === "user" ? "Водитель" : "Эксперт"}: ${m.content.slice(0, 280)}`)
       .join("\n");
 
-    const mode = localDb.getSettings().llm_mode;
-    if (mode === "lecodes_ai") {
-      try {
-        const res = await summarizeContext({
-          prevSummary,
-          recentTurnsText: recentText,
-          vehicleSummary: vehicleInfo || "Авто",
-        });
-        if (res.ok && res.summary) {
-          localDb.updateSession(sessionId, { summary: res.summary });
-          return;
-        }
-      } catch {
-        // Fallback below
+    try {
+      const res = await summarizeContext({
+        prevSummary,
+        recentTurnsText: recentText,
+        vehicleSummary: vehicleInfo || "Авто",
+      });
+      if (res.ok && res.summary) {
+        localDb.updateSession(sessionId, { summary: res.summary });
+        return;
       }
+    } catch {
+      // Fallback silently to local compression below
     }
 
     const codes = Array.from(new Set(messages.flatMap((m) => m.dtcCodes || []))).slice(0, 8);

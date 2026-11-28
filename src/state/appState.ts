@@ -13,7 +13,6 @@ import type {
   ChatMessageItem,
   DemoEcuScenarioId,
   DiagnosticSessionItem,
-  LlmProviderMode,
   LocalSettingsInfo,
   OBDConnectionStatus,
   OBDLiveSensors,
@@ -23,6 +22,7 @@ import type {
 } from "../types";
 import { analyzeRawTextDocument, parseDocumentFile } from "../utils/DocumentParser";
 import { formatTimeRu, generateUuidV4 } from "../utils/polyfills";
+import type { VoiceCaptureOutcome } from "../utils/VoiceCapture";
 
 export const DEFAULT_SENSORS: OBDLiveSensors = {
   rpm: 0,
@@ -56,7 +56,6 @@ export const appState = {
   // Vehicle & Settings (100% Local, No Account/Login Required)
   vehicleSignal: signal<string>(""),
   settingsSignal: signal<LocalSettingsInfo>(localDb.getSettings()),
-  hasByokKeySignal: signal<boolean>(false),
 
   // Helper aliases for AR and external display bridges
   get isAskingSignal() {
@@ -65,11 +64,13 @@ export const appState = {
   get obdStateSignal() {
     return this.obdSensorsSignal;
   },
-  get latestAssistantMessageSignal() {
-    const msgs = this.messagesSignal.value || [];
-    const latest = [...msgs].reverse().find((m) => m.role === "assistant");
-    return signal<ChatMessageItem | null>(latest || null);
-  },
+  latestAssistantMessageSignal: computed<ChatMessageItem | null>(() => {
+    const msgs = appState.messagesSignal.value || [];
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      if (msgs[i].role === "assistant") return msgs[i];
+    }
+    return null;
+  }),
   obdConnectedSignal: signal<boolean>(false),
   obdStatusSignal: signal<OBDConnectionStatus>("disconnected"),
   obdStatusMessageSignal: signal<string>("Адаптер не подключен"),
@@ -117,12 +118,9 @@ export function bootstrapAppState(): void {
   // 1. Warm up local Hybrid RAG index (12,141 DTC codes)
   appState.ragCatalogCountSignal.value = hybridRag.getCatalogCount();
 
-  // 2. Load local settings & check secureStorage BYOK flag
+  // 2. Load local settings
   const settings = localDb.getSettings();
   appState.settingsSignal.value = settings;
-  void localDb.getByokApiKey().then((key) => {
-    appState.hasByokKeySignal.value = Boolean(key && key.trim().length > 0);
-  });
 
   // 3. Load local projects & sessions
   reloadSessionsFromDb();
@@ -242,16 +240,22 @@ export function attachObdSnapshotToStaging(): void {
 
 export function attachPhotoFileToStaging(file: File, labelHint: string = "Фото узла"): void {
   if (!file) return;
-  const existing = [...appState.stagedItemsSignal.value].filter((it) => it.type !== "photo");
-  existing.push({
-    id: `staged-photo-${Date.now()}`,
+  const current = [...appState.stagedItemsSignal.value];
+  const existingPhotos = current.filter((it) => it.type === "photo");
+  const others = current.filter((it) => it.type !== "photo");
+  // Keep up to 5 photos (AI_MAX_IMAGES limit)
+  const keptPhotos = existingPhotos.slice(-4);
+  keptPhotos.push({
+    id: `staged-photo-${Date.now()}-${Math.round(Math.random() * 999)}`,
     type: "photo",
     label: file.name || labelHint,
     meta: `${Math.max(1, Math.round((file.size || 1024) / 1024))} КБ • Vision`,
     file,
+    data: file,
+    mimeType: "image/jpeg",
   });
-  appState.stagedItemsSignal.value = existing;
-  appState.statusNoteSignal.value = `Фото «${file.name || labelHint}» прикреплено`;
+  appState.stagedItemsSignal.value = [...others, ...keptPhotos];
+  appState.statusNoteSignal.value = `Фото «${file.name || labelHint}» прикреплено (${keptPhotos.length}/5)`;
 }
 
 export async function attachDocumentFileToStaging(file: File): Promise<void> {
@@ -292,20 +296,59 @@ export function attachTextLogToStaging(title: string, rawText: string): void {
   appState.statusNoteSignal.value = `Лог «${parsed.filename}» прикреплен`;
 }
 
-export function attachAcousticMetricsToStaging(metrics: AcousticAnalysisMetrics, transcriptText?: string): void {
-  appState.acousticSignal.value = metrics;
-  const existing = [...appState.stagedItemsSignal.value].filter((it) => it.type !== "audio");
+export function attachVoiceOutcomeToStaging(
+  outcome: VoiceCaptureOutcome,
+  labelPrefix: string = "ГС"
+): void {
+  if (outcome.acoustic) {
+    appState.acousticSignal.value = outcome.acoustic;
+  }
+  const hasSpeech = Boolean(outcome.transcript && outcome.transcript.trim().length > 0);
+  const label = hasSpeech
+    ? `${labelPrefix} (${outcome.durationSec.toFixed(1)}с): ${outcome.transcript.slice(0, 26)}`
+    : outcome.acoustic && outcome.acoustic.avgHz > 0
+    ? `${labelPrefix} ДВС: ${Math.round(outcome.acoustic.avgHz)} Гц (${outcome.durationSec.toFixed(1)}с)`
+    : `${labelPrefix} запись (${outcome.durationSec.toFixed(1)}с)`;
+
+  const metaParts: string[] = [];
+  if (hasSpeech) metaParts.push("Речь распознана для ИИ");
+  if (outcome.acoustic?.acousticHint) metaParts.push(outcome.acoustic.acousticHint);
+  if (outcome.file?.size) metaParts.push(`${Math.max(1, Math.round(outcome.file.size / 1024))} КБ`);
+
+  const existing = [...appState.stagedItemsSignal.value];
   existing.push({
     id: `staged-audio-${Date.now()}`,
     type: "audio",
-    label: `Звук ДВС: ${Math.round(metrics.avgHz)} Гц (${metrics.durationSec.toFixed(1)} с)`,
-    meta: metrics.acousticHint,
-    duration: Math.round(metrics.durationSec * 1000),
-    transcript: transcriptText,
-    acoustic: metrics,
+    label,
+    meta: metaParts.join(" • ") || "Голосовое сообщение",
+    file: outcome.file,
+    data: outcome.file,
+    mimeType: outcome.mimeType || "audio/mp4",
+    duration: Math.round(outcome.durationSec),
+    transcript: outcome.transcript,
+    acoustic: outcome.acoustic,
   });
   appState.stagedItemsSignal.value = existing;
-  appState.statusNoteSignal.value = "Акустический профиль ДВС прикреплен";
+  appState.statusNoteSignal.value = "Голосовое сообщение прикреплено к запросу ИИ";
+}
+
+export function attachAcousticMetricsToStaging(
+  metrics: AcousticAnalysisMetrics,
+  transcriptText?: string,
+  audioFile?: File,
+  mimeType?: string
+): void {
+  attachVoiceOutcomeToStaging(
+    {
+      transcript: transcriptText || "",
+      file: audioFile,
+      mimeType,
+      durationSec: metrics.durationSec,
+      acoustic: metrics,
+      source: "recorder",
+    },
+    "Звук ДВС"
+  );
 }
 
 export function removeStagedItem(id: string): void {
@@ -328,6 +371,7 @@ export async function askExpertHandler(rawQuery: string): Promise<void> {
 
   const explicitCodes: string[] = [];
   let hasPhoto = false;
+  const voiceTranscripts: string[] = [];
   for (const item of staged) {
     if (item.type === "dtc" && typeof item.data === "string") {
       explicitCodes.push(item.data);
@@ -337,17 +381,20 @@ export async function askExpertHandler(rawQuery: string): Promise<void> {
       }
     } else if (item.type === "photo") {
       hasPhoto = true;
+    } else if (item.type === "audio" && item.transcript?.trim()) {
+      voiceTranscripts.push(item.transcript.trim());
     }
   }
 
-  for (const c of hybridRag.extractDtcCodes(trimmed)) {
+  for (const c of hybridRag.extractDtcCodes(`${trimmed} ${voiceTranscripts.join(" ")}`)) {
     if (!explicitCodes.includes(c)) explicitCodes.push(c);
   }
 
   const displayQuery =
     trimmed ||
+    voiceTranscripts.join(" ") ||
     (hasPhoto
-      ? "Проанализируй приложенное фото узла или приборной панели."
+      ? "Проанализируй приложенные фотографии узла / приборной панели автомобиля."
       : explicitCodes.length > 0
       ? `Выполни диагностику кодов: ${explicitCodes.join(", ")}`
       : "Проведи диагностику по приложенным данным.");
@@ -415,10 +462,8 @@ export async function askExpertHandler(rawQuery: string): Promise<void> {
     } else {
       appState.statusNoteSignal.value =
         outcome.engineUsed === "lecodes_ai"
-          ? "Вердикт готов (LeCodes AI + RAG)"
-          : outcome.engineUsed === "byok_custom"
-          ? "Вердикт готов (BYOK AI + RAG)"
-          : "Вердикт готов (Локальный RAG)";
+          ? "Вердикт готов (LeCodes AI + Локальный RAG)"
+          : "Вердикт готов (Резервный Локальный RAG)";
     }
 
     reloadSessionsFromDb();
@@ -441,12 +486,15 @@ export async function askExpertHandler(rawQuery: string): Promise<void> {
 export function toggleChecklistTask(messageId: string, taskId: string | number): void {
   const sessionId = appState.currentSessionIdSignal.value;
   if (!sessionId) return;
+  const targetStr = String(taskId);
   const updated = appState.messagesSignal.value.map((m) => {
     if (m.id !== messageId || !m.tasks) return m;
     return {
       ...m,
       tasks: m.tasks.map((t) =>
-        t.id === taskId ? { ...t, done: !t.done } : t
+        String(t.id) === targetStr || String(t.step_number) === targetStr
+          ? { ...t, done: !t.done }
+          : t
       ),
     };
   });
@@ -489,10 +537,6 @@ export function updateSettingsPatch(patch: Partial<LocalSettingsInfo>): void {
   appState.settingsSignal.value = next;
 }
 
-export function setLlmMode(mode: LlmProviderMode): void {
-  updateSettingsPatch({ llm_mode: mode });
-}
-
 export function updateVehicleInfo(vehicle: string): void {
   const clean = vehicle.trim();
   appState.vehicleSignal.value = clean;
@@ -500,20 +544,5 @@ export function updateVehicleInfo(vehicle: string): void {
   if (sid) {
     localDb.updateSession(sid, { vehicle_info: clean });
     reloadSessionsFromDb();
-  }
-}
-
-export async function saveByokCredentials(
-  baseUrl: string,
-  modelName: string,
-  apiKey: string
-): Promise<void> {
-  updateSettingsPatch({
-    byok_base_url: baseUrl.trim(),
-    byok_model: modelName.trim(),
-  });
-  if (apiKey.trim()) {
-    await localDb.setByokApiKey(apiKey.trim());
-    appState.hasByokKeySignal.value = true;
   }
 }

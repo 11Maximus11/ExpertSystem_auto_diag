@@ -51,6 +51,7 @@ export function createSessionsHistoryScreen(callbacks?: SessionsHistoryCallbacks
       fontSize: 13,
       placeholder: "Поиск по названию, авто или тегу...",
       placeholderColor: () => THEME.inputPlaceholder,
+      display: () => (appState.activeTabSignal.value === 3 ? "flex" : "none"),
     })
     .onChange((val: string) => {
       filterQuerySignal.value = val;
@@ -238,8 +239,7 @@ export function createSessionsHistoryScreen(callbacks?: SessionsHistoryCallbacks
             () => {
               selectSession(s.id);
               callbacks?.onOpenSession?.(s.id);
-            },
-            "lucide:message-square"
+            }
           ),
           UIButton(
             LucideIcon("lucide:pin", 14, () =>
@@ -330,8 +330,7 @@ export function createSessionsHistoryScreen(callbacks?: SessionsHistoryCallbacks
               filterProjectIdSignal.value !== "all" ? filterProjectIdSignal.value : null;
             const sid = createNewSession("Новая диагностика", proj);
             callbacks?.onOpenSession?.(sid);
-          },
-          "lucide:plus"
+          }
         ).named("sessions-btn-new"),
         SecondaryButton(
           "Проект",
@@ -358,7 +357,10 @@ export function createSessionsHistoryScreen(callbacks?: SessionsHistoryCallbacks
         )
       ).style({ flexWrap: "wrap", gap: 6, width: "100%" }),
 
-      searchInput,
+      UIRow(() => (appState.activeTabSignal.value === 3 ? [searchInput] : [])).style({
+        width: "100%",
+        height: 38,
+      }),
 
       // Проекты
       UIColumn(

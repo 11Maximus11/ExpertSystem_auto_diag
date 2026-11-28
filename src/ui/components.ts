@@ -104,6 +104,7 @@ export function LucideIcon(name: string, size: number = 16, color: any = () => T
     case "lucide:file-text": iconAsset = assetIcon("lucide:file-text"); break;
     case "lucide:folder-plus": iconAsset = assetIcon("lucide:folder-plus"); break;
     case "lucide:message-square-plus": iconAsset = assetIcon("lucide:message-square-plus"); break;
+    case "lucide:edit-3":
     case "lucide:pencil": iconAsset = assetIcon("lucide:pencil"); break;
     case "lucide:tag": iconAsset = assetIcon("lucide:tag"); break;
     case "lucide:zap": iconAsset = assetIcon("lucide:zap"); break;
@@ -112,7 +113,8 @@ export function LucideIcon(name: string, size: number = 16, color: any = () => T
     case "lucide:switch-camera": iconAsset = assetIcon("lucide:switch-camera"); break;
     case "lucide:sparkles": iconAsset = assetIcon("lucide:sparkles"); break;
     case "lucide:database": iconAsset = assetIcon("lucide:database"); break;
-    case "lucide:alert-triangle": iconAsset = assetIcon("lucide:alert-triangle"); break;
+    case "lucide:triangle-alert":
+    case "lucide:alert-triangle": iconAsset = assetIcon("lucide:triangle-alert"); break;
     case "lucide:book-open": iconAsset = assetIcon("lucide:book-open"); break;
     case "lucide:bot": iconAsset = assetIcon("lucide:bot"); break;
     case "lucide:eye": iconAsset = assetIcon("lucide:eye"); break;

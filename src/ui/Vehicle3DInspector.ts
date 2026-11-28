@@ -322,14 +322,14 @@ export function openVehicle3DInspector(
     intensity: 1400,
     color: "#38bdf8",
     range: 12,
-    position: [-2.6, 2.2, 2.5],
   });
+  rimLight.position = [-2.6, 2.2, 2.5];
   const warmFill = Light.point({
     intensity: 900,
     color: "#f97316",
     range: 10,
-    position: [2.5, 1.4, -2.0],
   });
+  warmFill.position = [2.5, 1.4, -2.0];
   scene.add(sun, rimLight, warmFill);
 
   // Garage Bay Floor & Safety Perimeter
@@ -662,7 +662,6 @@ export function openVehicle3DInspector(
         })
     ).style({ width: "100%", alignItems: "center", gap: 8 })
   ).style({
-    position: "absolute",
     top: 12,
     left: 12,
     right: 12,
@@ -800,7 +799,6 @@ export function openVehicle3DInspector(
       ).style({ width: "100%", alignItems: "center", gap: 10 })
     ).style({ width: "100%", gap: 8 })
   ).style({
-    position: "absolute",
     bottom: 14,
     left: 12,
     right: 12,

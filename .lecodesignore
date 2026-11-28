@@ -2,6 +2,12 @@
 .git
 .git/
 .gitignore
+.venv
+.venv/
+models/
+__pycache__/
+*.sqlite3
+*.pyc
 .claude/
 .vscode/
 logs/

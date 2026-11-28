@@ -1,0 +1,100 @@
+{
+  "name": "aideal-auto-e2e",
+  "width": 440,
+  "height": 880,
+  "steps": [
+    {
+      "expect": {
+        "text": "Локальное хранение на устройстве"
+      }
+    },
+    {
+      "tap": "Я понимаю, что данные удалятся"
+    },
+    {
+      "tap": "Продолжить в ИИдеал Авто",
+      "expect": {
+        "screen": "diag",
+        "text": "Интеллектуальный стенд автодиагностики"
+      },
+      "screenshot": "diag_home.png"
+    },
+    {
+      "tap": "P0300"
+    },
+    {
+      "type": "diag-query-input",
+      "text": "Двигатель троит на холодную",
+      "expect": {
+        "text": "P0300"
+      }
+    },
+    {
+      "tap": "diag-btn-send",
+      "expect": {
+        "text": "Локальный RAG"
+      },
+      "timeout": 12000,
+      "screenshot": "diag_result.png"
+    },
+    {
+      "tap": "Чеклист",
+      "expect": {
+        "screen": "dtc"
+      }
+    },
+    {
+      "tap": "dtc-tab-catalog"
+    },
+    {
+      "type": "dtc-search-input",
+      "text": "P0171",
+      "expect": {
+        "text": "P0171"
+      },
+      "screenshot": "dtc_catalog.png"
+    },
+    {
+      "tap": "OBD-2",
+      "expect": {
+        "screen": "obd"
+      }
+    },
+    {
+      "tap": "obd-btn-demo",
+      "expect": {
+        "text": "ONLINE"
+      },
+      "screenshot": "obd_online.png"
+    },
+    {
+      "tap": "Сессии",
+      "expect": {
+        "screen": "sessions",
+        "text": "ПРОЕКТЫ И АВТОМОБИЛИ"
+      },
+      "screenshot": "sessions.png"
+    },
+    {
+      "tap": "Настройки",
+      "expect": {
+        "screen": "settings",
+        "text": "ДВИЖОК ИИ-ДИАГНОСТИКИ"
+      },
+      "screenshot": "settings_dark.png"
+    },
+    {
+      "tap": "settings-btn-theme",
+      "expect": {
+        "text": "Светлая"
+      },
+      "screenshot": "settings_light.png"
+    },
+    {
+      "tap": "settings-btn-theme",
+      "expect": {
+        "text": "Тёмная"
+      }
+    }
+  ]
+}

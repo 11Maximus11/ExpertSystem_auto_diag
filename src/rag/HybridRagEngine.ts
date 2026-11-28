@@ -239,8 +239,8 @@ export class HybridRagEngine {
     if (this.initialized) return;
     this.initialized = true;
 
-    const t1 = asset("./src/rag/kb_tier1.json") as unknown as Tier1Bundle;
-    const ext = asset("./src/rag/kb_external.json") as unknown as ExtBundle;
+    const t1 = asset("./kb_tier1.json") as unknown as Tier1Bundle;
+    const ext = asset("./kb_external.json") as unknown as ExtBundle;
 
     this.telemetryStats = t1.telemetry_stats || {};
     this.defaultSymptoms = t1.default_symptoms || {};

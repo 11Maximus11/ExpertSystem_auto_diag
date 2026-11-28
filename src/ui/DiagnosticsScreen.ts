@@ -39,7 +39,7 @@ import {
 
 export interface DiagnosticsScreenCallbacks {
   onOpenAr?: () => void;
-  onOpen3d?: () => void;
+
   onOpenSettings?: () => void;
   onOpenObd?: () => void;
   onOpenDtc?: () => void;
@@ -262,7 +262,7 @@ export function createDiagnosticsScreen(callbacks?: DiagnosticsScreenCallbacks):
           });
         },
         onOpenAr: callbacks?.onOpenAr,
-        onOpen3d: callbacks?.onOpen3d,
+
         onStageDtc: (code) => stageDtcCodes([code]),
       })
     );
@@ -374,7 +374,7 @@ export function createDiagnosticsScreen(callbacks?: DiagnosticsScreenCallbacks):
     AppHeader({
       title: "ИИДЕАЛ АВТО",
       onOpenAr: callbacks?.onOpenAr,
-      onOpen3d: callbacks?.onOpen3d,
+
       onOpenSettings: callbacks?.onOpenSettings,
       onResetChat: () => {
         createNewSession("Новая диагностика");

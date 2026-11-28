@@ -4,11 +4,10 @@
 
 import "./src/utils/polyfills";
 
+import { externalDisplayBridge } from "./src/ar/ExternalDisplayBridge";
 import {
   appState,
-  askExpertHandler,
   bootstrapAppState,
-  stageDtcCodes,
 } from "./src/state/appState";
 import {
   createArHudOverlay,
@@ -21,9 +20,11 @@ import { createDtcDictionaryScreen } from "./src/ui/DtcDictionaryScreen";
 import { createObdScannerScreen } from "./src/ui/ObdScannerScreen";
 import { createSessionsHistoryScreen } from "./src/ui/SessionsHistoryScreen";
 import { createSettingsScreen } from "./src/ui/SettingsScreen";
-import { openVehicle3DInspector } from "./src/ui/Vehicle3DInspector";
 
-// 1. Инициализация локальной базы знаний (12 141 DTC), БД устройства и ELM327-колбэков
+// 1. Инициализация реактивного моста внешнего AR HUD (RayNeo / XREAL / Rokid / 2-й экран)
+externalDisplayBridge.init();
+
+// 2. Инициализация локальной базы знаний (12 141 DTC), БД устройства и ELM327-колбэков
 bootstrapAppState();
 
 const TAB_KEYS = ["diag", "dtc", "obd", "sessions", "settings"] as const;
@@ -39,28 +40,21 @@ const switchTab = (tabId: (typeof TAB_KEYS)[number]) => {
   }
 };
 
-// 2. Глобальный AR / VR HUD и 3D-инспектор подсистем автомобиля
-const openGlobal3d = () => {
-  openVehicle3DInspector(appState.active3dSubsystemSignal.value, (promptText, dtcHints) => {
-    if (dtcHints && dtcHints.length > 0) {
-      stageDtcCodes(dtcHints);
-    }
-    switchTab("diag");
-    if (promptText.trim()) {
-      void askExpertHandler(promptText);
-    }
-  });
+// 3. Глобальный двухрежимный AR / VR HUD оверлей
+const arHudModal = createArHudOverlay({
+  getSensors: () => appState.obdStateSignal.value,
+  onClose: () => {},
+});
+
+const openGlobalAr = (mode: "optical" | "vr" = "optical") => {
+  if (arHudModal && typeof arHudModal.openWithMode === "function") {
+    arHudModal.openWithMode(mode);
+  } else if (arHudModal && typeof arHudModal.show === "function") {
+    arHudModal.show();
+  }
 };
 
-const openGlobalAr = (startMode: "optical" | "vr" = "optical") => {
-  createArHudOverlay({
-    startMode,
-    onOpen3d: openGlobal3d,
-    onClose: () => {},
-  });
-};
-
-// 3. Экраны приложения внутри безопасных отступов
+// 4. Экраны приложения внутри безопасных отступов
 const wrapTabScreen = (screenId: string, content: any) =>
   UIScreen(content)
     .named(screenId)
@@ -73,7 +67,6 @@ const diagScreen = wrapTabScreen(
   "diag",
   createDiagnosticsScreen({
     onOpenAr: () => openGlobalAr("optical"),
-    onOpen3d: openGlobal3d,
     onOpenSettings: () => switchTab("settings"),
     onOpenObd: () => switchTab("obd"),
     onOpenDtc: () => switchTab("dtc"),
@@ -86,7 +79,6 @@ const dtcScreen = wrapTabScreen(
   createDtcDictionaryScreen({
     onSelectCode: () => switchTab("diag"),
     onOpenAr: () => openGlobalAr("optical"),
-    onOpen3d: openGlobal3d,
     onOpenSettings: () => switchTab("settings"),
   })
 );
@@ -95,7 +87,6 @@ const obdScreen = wrapTabScreen(
   "obd",
   createObdScannerScreen({
     onOpenAr: () => openGlobalAr("optical"),
-    onOpen3d: openGlobal3d,
     onOpenSettings: () => switchTab("settings"),
     onAttachToAi: () => switchTab("diag"),
   })
@@ -106,7 +97,6 @@ const sessionsScreen = wrapTabScreen(
   createSessionsHistoryScreen({
     onOpenSession: () => switchTab("diag"),
     onOpenAr: () => openGlobalAr("optical"),
-    onOpen3d: openGlobal3d,
     onOpenSettings: () => switchTab("settings"),
   })
 );
@@ -115,11 +105,10 @@ const settingsScreen = wrapTabScreen(
   "settings",
   createSettingsScreen({
     onOpenAr: () => openGlobalAr("optical"),
-    onOpen3d: openGlobal3d,
   })
 );
 
-// 4. Нижняя панель навигации
+// 5. Нижняя панель навигации
 tabs = UITabs({
   diag: {
     label: "Диагноз",
@@ -179,5 +168,5 @@ try {
   });
 } catch {}
 
-// 5. Предупреждение о локальном хранении данных и бэкапах при первом запуске
+// 6. Предупреждение о локальном хранении данных и бэкапах при первом запуске
 openDataLossWarningModal(false);

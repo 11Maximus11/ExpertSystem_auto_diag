@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Merged into the consuming app by the AGP manifest merger (the Android analog of the iOS
+     infoPlist keys — Android permission dialogs are system-worded, so no usage string). -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+    <uses-permission android:name="android.permission.CAMERA" />
+</manifest>

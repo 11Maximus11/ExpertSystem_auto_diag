@@ -23,5 +23,11 @@
       "minWidth": 360,
       "minHeight": 640
     }
+  },
+  "android": {
+    "applicationId": "com.mmcco.aidealauto",
+    "versionCode": 1,
+    "sdk": "2.12.7",
+    "variant": "auto"
   }
 }

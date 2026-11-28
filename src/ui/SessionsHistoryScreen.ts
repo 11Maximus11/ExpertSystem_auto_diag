@@ -26,7 +26,7 @@ import {
 export interface SessionsHistoryCallbacks {
   onOpenSession?: (sessionId: string) => void;
   onOpenAr?: () => void;
-  onOpen3d?: () => void;
+
   onOpenSettings?: () => void;
 }
 
@@ -413,7 +413,7 @@ export function createSessionsHistoryScreen(callbacks?: SessionsHistoryCallbacks
     AppHeader({
       title: "ПРОЕКТЫ И СЕССИИ",
       onOpenAr: callbacks?.onOpenAr,
-      onOpen3d: callbacks?.onOpen3d,
+
       onOpenSettings: callbacks?.onOpenSettings,
     }),
     scrollBody

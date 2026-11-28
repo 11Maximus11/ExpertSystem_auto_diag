@@ -26,7 +26,7 @@ import {
 
 export interface ObdScannerCallbacks {
   onOpenAr?: () => void;
-  onOpen3d?: () => void;
+
   onOpenSettings?: () => void;
   onAttachToAi?: () => void;
 }
@@ -308,11 +308,7 @@ export function createObdScannerScreen(callbacks?: ObdScannerCallbacks): any {
             },
             "lucide:send"
           ).named("obd-btn-send-ai"),
-          ...(callbacks?.onOpen3d
-            ? [
-                SecondaryButton("3D Инспектор", () => callbacks.onOpen3d?.(), "lucide:box"),
-              ]
-            : [])
+
         ).style({ flexWrap: "wrap", gap: 8, width: "100%", marginTop: 4 })
       ).style({
         backgroundColor: () => THEME.bgSurface,
@@ -352,7 +348,7 @@ export function createObdScannerScreen(callbacks?: ObdScannerCallbacks): any {
     AppHeader({
       title: "OBD-2 СКАНЕР",
       onOpenAr: callbacks?.onOpenAr,
-      onOpen3d: callbacks?.onOpen3d,
+
       onOpenSettings: callbacks?.onOpenSettings,
     }),
     scrollBody

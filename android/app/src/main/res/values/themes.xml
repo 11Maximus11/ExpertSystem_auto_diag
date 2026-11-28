@@ -1,0 +1,7 @@
+<resources>
+    <!-- The app's theme. Its parent, Theme.LeCodesRuntime (the CLI-owned lecodes-runtime module),
+         carries the window setup and app.json "splash" — the launch window and Android 12+'s
+         system splash; keep that parent and set no android:windowBackground here, or the splash
+         is lost. Your own items go inside. -->
+    <style name="Theme.LeCodesApp" parent="Theme.LeCodesRuntime" />
+</resources>

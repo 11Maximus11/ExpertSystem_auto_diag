@@ -7,6 +7,7 @@ import type { AffectedSubsystem } from "../../expert.server";
 import { DEMO_SCENARIOS, obdProtocol } from "../obd/ELM327Protocol";
 import { hybridRag } from "../rag/HybridRagEngine";
 import { createWelcomeMessage, localDb } from "../storage/LocalDatabase";
+export { createWelcomeMessage };
 import type {
   AcousticAnalysisMetrics,
   ChatMessageItem,
@@ -57,7 +58,18 @@ export const appState = {
   settingsSignal: signal<LocalSettingsInfo>(localDb.getSettings()),
   hasByokKeySignal: signal<boolean>(false),
 
-  // OBD-2 & Demo Scenarios
+  // Helper aliases for AR and external display bridges
+  get isAskingSignal() {
+    return this.isGeneratingSignal;
+  },
+  get obdStateSignal() {
+    return this.obdSensorsSignal;
+  },
+  get latestAssistantMessageSignal() {
+    const msgs = this.messagesSignal.value || [];
+    const latest = [...msgs].reverse().find((m) => m.role === "assistant");
+    return signal<ChatMessageItem | null>(latest || null);
+  },
   obdConnectedSignal: signal<boolean>(false),
   obdStatusSignal: signal<OBDConnectionStatus>("disconnected"),
   obdStatusMessageSignal: signal<string>("Адаптер не подключен"),
@@ -66,7 +78,7 @@ export const appState = {
   obdLogsSignal: signal<{ time: string; dir: "in" | "out" | "info"; text: string }[]>([]),
 
   // 3D Subsystem Health & Acoustic
-  active3dSubsystemSignal: signal<AffectedSubsystem>("engine"),
+  activeSubsystemSignal: signal<AffectedSubsystem>("engine"),
   systemHealthScoresSignal: signal<Record<SystemKey, number>>({
     engine: 100,
     transmission: 100,
@@ -392,7 +404,7 @@ export async function askExpertHandler(rawQuery: string): Promise<void> {
     appState.messagesSignal.value = updatedMsgs;
     localDb.saveMessages(sessionId, updatedMsgs);
 
-    appState.active3dSubsystemSignal.value = outcome.affectedSystem;
+    appState.activeSubsystemSignal.value = outcome.affectedSystem;
     appState.systemHealthScoresSignal.value = { ...outcome.systemScores };
     appState.aiCallCountSignal.value++;
     appState.workerStatusSignal.value = "completed";

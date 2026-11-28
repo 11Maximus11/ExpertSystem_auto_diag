@@ -24,7 +24,7 @@ import {
 export interface DtcDictionaryCallbacks {
   onSelectCode?: (code: string) => void;
   onOpenAr?: () => void;
-  onOpen3d?: () => void;
+
   onOpenSettings?: () => void;
 }
 
@@ -146,9 +146,7 @@ export function createDtcDictionaryScreen(callbacks?: DtcDictionaryCallbacks): a
             () => void openWorkOrderShareModal(latest),
             "lucide:share-2"
           ),
-          ...(callbacks?.onOpen3d
-            ? [SecondaryButton("3D Схема", () => callbacks.onOpen3d?.(), "lucide:box")]
-            : [])
+
         ).style({ gap: 8, marginTop: 4 })
       ).style({
         backgroundColor: () => THEME.bgSurface,
@@ -518,7 +516,7 @@ export function createDtcDictionaryScreen(callbacks?: DtcDictionaryCallbacks): a
     AppHeader({
       title: "ЧЕКЛИСТ & DTC",
       onOpenAr: callbacks?.onOpenAr,
-      onOpen3d: callbacks?.onOpen3d,
+
       onOpenSettings: callbacks?.onOpenSettings,
     }),
     subTabBar,

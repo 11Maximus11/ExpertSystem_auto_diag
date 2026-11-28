@@ -28,7 +28,7 @@ import {
 
 export interface SettingsScreenCallbacks {
   onOpenAr?: () => void;
-  onOpen3d?: () => void;
+
 }
 
 const ENGINE_MODES: { id: LlmProviderMode; label: string; desc: string }[] = [
@@ -454,7 +454,7 @@ export function createSettingsScreen(callbacks?: SettingsScreenCallbacks): any {
     AppHeader({
       title: "НАСТРОЙКИ",
       onOpenAr: callbacks?.onOpenAr,
-      onOpen3d: callbacks?.onOpen3d,
+
     }),
     scrollBody
   )

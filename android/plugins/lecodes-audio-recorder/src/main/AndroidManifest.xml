@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- lecodes-plugins/audio-recorder: merged into the host app's manifest by the Gradle build.
+     The microphone permission the contract's `@permission microphone` is held to; the microphone
+     feature declared optional so Play does not infer a required microphone from RECORD_AUDIO. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-feature android:name="android.hardware.microphone" android:required="false" />
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+</manifest>
